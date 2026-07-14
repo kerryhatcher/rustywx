@@ -16,7 +16,12 @@ pub const RASTER_SIZE_PX: usize = 1024;
 /// Rasterize one sweep to a square RGBA image, radar at center, north up.
 /// Each pixel is inverse-mapped to (azimuth, range); the nearest radial by
 /// azimuth and nearest gate by range supply its value.
-pub fn rasterize(sweep: &SweepData, product: Product, size_px: usize, max_range_km: f32) -> ColorImage {
+pub fn rasterize(
+    sweep: &SweepData,
+    product: Product,
+    size_px: usize,
+    max_range_km: f32,
+) -> ColorImage {
     let mut pixels = vec![Color32::TRANSPARENT; size_px * size_px];
     if sweep.radials.is_empty() {
         return ColorImage::new([size_px, size_px], pixels);
@@ -24,8 +29,15 @@ pub fn rasterize(sweep: &SweepData, product: Product, size_px: usize, max_range_
 
     // Radial order sorted by azimuth for nearest-neighbor lookup.
     let mut order: Vec<usize> = (0..sweep.radials.len()).collect();
-    order.sort_by(|&a, &b| sweep.radials[a].azimuth_deg.total_cmp(&sweep.radials[b].azimuth_deg));
-    let sorted_azimuths: Vec<f32> = order.iter().map(|&i| sweep.radials[i].azimuth_deg).collect();
+    order.sort_by(|&a, &b| {
+        sweep.radials[a]
+            .azimuth_deg
+            .total_cmp(&sweep.radials[b].azimuth_deg)
+    });
+    let sorted_azimuths: Vec<f32> = order
+        .iter()
+        .map(|&i| sweep.radials[i].azimuth_deg)
+        .collect();
 
     let color_of = match product {
         Product::Reflectivity => colors::dbz_color as fn(f32) -> Color32,
@@ -67,7 +79,9 @@ pub(crate) fn nearest_radial_index(sorted_azimuths: &[f32], az: f32) -> usize {
         Err(i) => {
             let before = (i + n - 1) % n;
             let after = i % n;
-            if angular_distance(sorted_azimuths[before], az) <= angular_distance(sorted_azimuths[after], az) {
+            if angular_distance(sorted_azimuths[before], az)
+                <= angular_distance(sorted_azimuths[after], az)
+            {
                 before
             } else {
                 after
@@ -90,7 +104,7 @@ pub fn draw_scope(
     product: Product,
 ) {
     use crate::geo;
-    use egui::{pos2, vec2, Align2, FontId, Rect, Stroke};
+    use egui::{Align2, FontId, Rect, Stroke, pos2, vec2};
 
     let available = ui.available_rect_before_wrap();
     let side = available.width().min(available.height());
@@ -131,7 +145,13 @@ pub fn draw_scope(
         let (dx, dy) = geo::polar_to_offset(azimuth, MAX_RANGE_KM, px_per_km);
         painter.line_segment([center, center + vec2(dx, dy)], Stroke::new(1.0, grid));
         let (lx, ly) = geo::polar_to_offset(azimuth, MAX_RANGE_KM * 0.96, px_per_km);
-        painter.text(center + vec2(lx, ly), Align2::CENTER_CENTER, label, text_font.clone(), grid_text);
+        painter.text(
+            center + vec2(lx, ly),
+            Align2::CENTER_CENTER,
+            label,
+            text_font.clone(),
+            grid_text,
+        );
     }
 
     // Station marker at scope center.
@@ -152,7 +172,11 @@ pub fn draw_scope(
         }
         let (dx, dy) = geo::polar_to_offset(bearing_deg as f32, range_km as f32, px_per_km);
         let position = center + vec2(dx, dy);
-        painter.circle_stroke(position, 3.5, Stroke::new(1.5, Color32::from_rgb(0xdd, 0xdd, 0xaa)));
+        painter.circle_stroke(
+            position,
+            3.5,
+            Stroke::new(1.5, Color32::from_rgb(0xdd, 0xdd, 0xaa)),
+        );
         painter.text(
             position + vec2(6.0, -6.0),
             Align2::LEFT_BOTTOM,
@@ -165,7 +189,10 @@ pub fn draw_scope(
     // Scan time, top-left of the panel.
     if let Some(scan) = scan {
         let utc = scan.timestamp.format("%Y-%m-%d %H:%M:%S UTC");
-        let local = scan.timestamp.with_timezone(&chrono::Local).format("%H:%M:%S %Z");
+        let local = scan
+            .timestamp
+            .with_timezone(&chrono::Local)
+            .format("%H:%M:%S %Z");
         painter.text(
             available.left_top() + vec2(8.0, 8.0),
             Align2::LEFT_TOP,
@@ -210,9 +237,9 @@ pub fn draw_scope(
 
 #[cfg(test)]
 mod tests {
+    use super::{nearest_radial_index, rasterize};
     use crate::model::{Product, RadialData, SweepData};
     use egui::Color32;
-    use super::{rasterize, nearest_radial_index};
 
     /// Four cardinal radials with distinct dBZ so quadrants are testable.
     /// 200 gates x 0.25 km reach 2.125 + 50 = 52.125 km.

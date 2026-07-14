@@ -1,7 +1,7 @@
 //! The eframe application: owns UI state, drains worker messages, and
 //! re-rasterizes the radar texture only when scan/product/tilt changes.
 
-use crate::data::{WorkerMessage, SITE};
+use crate::data::{SITE, WorkerMessage};
 use crate::model::{Product, ScanData};
 use crate::scope;
 use chrono::{DateTime, Utc};
@@ -38,7 +38,9 @@ impl RadarApp {
                     self.status = format!(
                         "Scan {} UTC ({} local)",
                         scan.timestamp.format("%Y-%m-%d %H:%M:%S"),
-                        scan.timestamp.with_timezone(&chrono::Local).format("%H:%M:%S")
+                        scan.timestamp
+                            .with_timezone(&chrono::Local)
+                            .format("%H:%M:%S")
                     );
                     self.scan = Some(*scan);
                 }
@@ -51,7 +53,10 @@ impl RadarApp {
     /// Clamp the tilt index to the sweeps available for the current product
     /// (velocity may have fewer tilts than reflectivity).
     fn clamped_tilt(&self) -> usize {
-        let count = self.scan.as_ref().map_or(0, |s| s.sweeps(self.product).len());
+        let count = self
+            .scan
+            .as_ref()
+            .map_or(0, |s| s.sweeps(self.product).len());
         self.tilt_index.min(count.saturating_sub(1))
     }
 
@@ -70,7 +75,12 @@ impl RadarApp {
             return;
         }
 
-        let image = scope::rasterize(&sweeps[tilt], self.product, scope::RASTER_SIZE_PX, scope::MAX_RANGE_KM);
+        let image = scope::rasterize(
+            &sweeps[tilt],
+            self.product,
+            scope::RASTER_SIZE_PX,
+            scope::MAX_RANGE_KM,
+        );
         self.texture = Some(ctx.load_texture("radar-sweep", image, TextureOptions::LINEAR));
         self.texture_key = Some(key);
     }
@@ -87,8 +97,16 @@ impl eframe::App for RadarApp {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(format!("{SITE} — Macon, GA")).strong());
                 ui.separator();
-                ui.selectable_value(&mut self.product, Product::Reflectivity, Product::Reflectivity.label());
-                ui.selectable_value(&mut self.product, Product::Velocity, Product::Velocity.label());
+                ui.selectable_value(
+                    &mut self.product,
+                    Product::Reflectivity,
+                    Product::Reflectivity.label(),
+                );
+                ui.selectable_value(
+                    &mut self.product,
+                    Product::Velocity,
+                    Product::Velocity.label(),
+                );
                 ui.separator();
 
                 if let Some(scan) = &self.scan {
@@ -99,7 +117,11 @@ impl eframe::App for RadarApp {
                             .selected_text(format!("{:.1}°", sweeps[current].elevation_deg))
                             .show_ui(ui, |ui| {
                                 for (i, sweep) in sweeps.iter().enumerate() {
-                                    ui.selectable_value(&mut self.tilt_index, i, format!("{:.1}°", sweep.elevation_deg));
+                                    ui.selectable_value(
+                                        &mut self.tilt_index,
+                                        i,
+                                        format!("{:.1}°", sweep.elevation_deg),
+                                    );
                                 }
                             });
                     }

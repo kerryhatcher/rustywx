@@ -49,7 +49,10 @@ mod tests {
     fn macon_range_bearing_from_kjgx() {
         let (range_km, bearing_deg) = range_bearing(KJGX_LAT, KJGX_LON, 32.8407, -83.6324);
         assert!((31.0..34.0).contains(&range_km), "range {range_km}");
-        assert!((302.0..308.0).contains(&bearing_deg), "bearing {bearing_deg}");
+        assert!(
+            (302.0..308.0).contains(&bearing_deg),
+            "bearing {bearing_deg}"
+        );
     }
 
     #[test]

@@ -90,7 +90,10 @@ impl ScanData {
                         .first()
                         .map(|r| r.elevation_angle_degrees())
                         .unwrap_or(0.0);
-                    out.push(SweepData { elevation_deg, radials });
+                    out.push(SweepData {
+                        elevation_deg,
+                        radials,
+                    });
                 }
             }
         }
@@ -98,7 +101,11 @@ impl ScanData {
         sort_and_dedup(&mut reflectivity);
         sort_and_dedup(&mut velocity);
 
-        ScanData { timestamp, reflectivity, velocity }
+        ScanData {
+            timestamp,
+            reflectivity,
+            velocity,
+        }
     }
 }
 
@@ -106,7 +113,8 @@ impl ScanData {
 /// (e.g. 0.48 and 0.52 deg) — keep only the first of each cluster.
 fn sort_and_dedup(sweeps: &mut Vec<SweepData>) {
     sweeps.sort_by(|a, b| a.elevation_deg.total_cmp(&b.elevation_deg));
-    sweeps.dedup_by(|current, previous| (current.elevation_deg - previous.elevation_deg).abs() < 0.2);
+    sweeps
+        .dedup_by(|current, previous| (current.elevation_deg - previous.elevation_deg).abs() < 0.2);
 }
 
 #[cfg(test)]
@@ -126,27 +134,56 @@ mod tests {
         MomentData::from_fixed_point(gate_count, 2125, 250, 8, 2.0, 129.0, raws)
     }
 
-    fn radial(az: f32, elev_num: u8, elev_deg: f32, refl: Option<MomentData>, vel: Option<MomentData>) -> Radial {
+    fn radial(
+        az: f32,
+        elev_num: u8,
+        elev_deg: f32,
+        refl: Option<MomentData>,
+        vel: Option<MomentData>,
+    ) -> Radial {
         Radial::new(
-            0, 1, az, 0.5, RadialStatus::IntermediateRadialData, elev_num, elev_deg,
-            refl, vel, None, None, None, None, None,
+            0,
+            1,
+            az,
+            0.5,
+            RadialStatus::IntermediateRadialData,
+            elev_num,
+            elev_deg,
+            refl,
+            vel,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
     }
 
     fn synthetic_sweeps() -> Vec<Sweep> {
         // Sweep 1 (0.5 deg): reflectivity only (split-cut CS).
-        let s1 = Sweep::new(1, vec![
-            radial(0.0, 1, 0.5, Some(ref_moment(vec![0, 130, 190])), None),
-            radial(0.5, 1, 0.5, Some(ref_moment(vec![0, 130, 190])), None),
-        ]);
+        let s1 = Sweep::new(
+            1,
+            vec![
+                radial(0.0, 1, 0.5, Some(ref_moment(vec![0, 130, 190])), None),
+                radial(0.5, 1, 0.5, Some(ref_moment(vec![0, 130, 190])), None),
+            ],
+        );
         // Sweep 2 (0.5 deg): velocity only (split-cut CD).
-        let s2 = Sweep::new(2, vec![
-            radial(0.0, 2, 0.5, None, Some(vel_moment(vec![0, 1, 65]))),
-        ]);
+        let s2 = Sweep::new(
+            2,
+            vec![radial(0.0, 2, 0.5, None, Some(vel_moment(vec![0, 1, 65])))],
+        );
         // Sweep 3 (1.45 deg): both moments.
-        let s3 = Sweep::new(3, vec![
-            radial(0.0, 3, 1.45, Some(ref_moment(vec![130])), Some(vel_moment(vec![193]))),
-        ]);
+        let s3 = Sweep::new(
+            3,
+            vec![radial(
+                0.0,
+                3,
+                1.45,
+                Some(ref_moment(vec![130])),
+                Some(vel_moment(vec![193])),
+            )],
+        );
         vec![s1, s2, s3]
     }
 
@@ -172,7 +209,11 @@ mod tests {
         let scan_data = ScanData::from_sweeps(&synthetic_sweeps(), Utc::now());
         // Reflectivity: 0.5 deg (from CS cut) and 1.45 deg. The CD cut has no
         // reflectivity so nothing to dedup here, but elevations are ascending.
-        let elevations: Vec<f32> = scan_data.reflectivity.iter().map(|s| s.elevation_deg).collect();
+        let elevations: Vec<f32> = scan_data
+            .reflectivity
+            .iter()
+            .map(|s| s.elevation_deg)
+            .collect();
         assert_eq!(elevations, vec![0.5, 1.45]);
         // Velocity: 0.5 and 1.45.
         let elevations: Vec<f32> = scan_data.velocity.iter().map(|s| s.elevation_deg).collect();
@@ -182,8 +223,14 @@ mod tests {
     #[test]
     fn dedups_near_identical_elevations() {
         // Two reflectivity sweeps both at ~0.5 deg -> keep only the first.
-        let s1 = Sweep::new(1, vec![radial(0.0, 1, 0.48, Some(ref_moment(vec![130])), None)]);
-        let s2 = Sweep::new(2, vec![radial(0.0, 2, 0.52, Some(ref_moment(vec![190])), None)]);
+        let s1 = Sweep::new(
+            1,
+            vec![radial(0.0, 1, 0.48, Some(ref_moment(vec![130])), None)],
+        );
+        let s2 = Sweep::new(
+            2,
+            vec![radial(0.0, 2, 0.52, Some(ref_moment(vec![190])), None)],
+        );
         let scan_data = ScanData::from_sweeps(&[s1, s2], Utc::now());
         assert_eq!(scan_data.reflectivity.len(), 1);
         assert_eq!(scan_data.reflectivity[0].radials[0].gates, vec![Some(32.0)]);

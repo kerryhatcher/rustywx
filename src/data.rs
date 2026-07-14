@@ -2,9 +2,9 @@
 //! volume, decodes it off the UI thread, and reports over an mpsc channel.
 
 use crate::model::ScanData;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
-use nexrad_data::aws::archive::{download_file, list_files, Identifier};
+use nexrad_data::aws::archive::{Identifier, download_file, list_files};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
@@ -33,7 +33,10 @@ fn retry_delay(consecutive_errors: u32) -> Duration {
 
 /// Discard `_MDM` metadata objects; only real volume files remain.
 fn volume_files(identifiers: Vec<Identifier>) -> Vec<Identifier> {
-    identifiers.into_iter().filter(|id| !id.name().ends_with("_MDM")).collect()
+    identifiers
+        .into_iter()
+        .filter(|id| !id.name().ends_with("_MDM"))
+        .collect()
 }
 
 /// Fetch and decode the most recent volume scan for `site`, unless it's the
@@ -42,17 +45,24 @@ fn volume_files(identifiers: Vec<Identifier>) -> Vec<Identifier> {
 /// timestamp is compared against `last_seen` *before* downloading, so an
 /// unchanged volume returns `Ok(None)` without paying for the 5-15 MB
 /// download and decode.
-pub async fn fetch_latest_scan(site: &str, last_seen: Option<DateTime<Utc>>) -> Result<Option<ScanData>> {
+pub async fn fetch_latest_scan(
+    site: &str,
+    last_seen: Option<DateTime<Utc>>,
+) -> Result<Option<ScanData>> {
     let today = Utc::now().date_naive();
-    let mut files = volume_files(list_files(site, &today)
-        .await
-        .map_err(|e| anyhow!("listing volumes for {site} {today}: {e}"))?);
+    let mut files = volume_files(
+        list_files(site, &today)
+            .await
+            .map_err(|e| anyhow!("listing volumes for {site} {today}: {e}"))?,
+    );
 
     if files.is_empty() {
         let yesterday = today - ChronoDuration::days(1);
-        files = volume_files(list_files(site, &yesterday)
-            .await
-            .map_err(|e| anyhow!("listing volumes for {site} {yesterday}: {e}"))?);
+        files = volume_files(
+            list_files(site, &yesterday)
+                .await
+                .map_err(|e| anyhow!("listing volumes for {site} {yesterday}: {e}"))?,
+        );
     }
 
     // Identifier is Ord by name, and names embed the timestamp, so max()
@@ -83,7 +93,10 @@ pub async fn fetch_latest_scan(site: &str, last_seen: Option<DateTime<Utc>>) -> 
 /// runtime; all communication with the UI is via `tx` + `request_repaint`.
 pub fn spawn_worker(tx: Sender<WorkerMessage>, egui_ctx: egui::Context) {
     std::thread::spawn(move || {
-        let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        let runtime = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
             Ok(rt) => rt,
             Err(e) => {
                 let _ = tx.send(WorkerMessage::Error(format!("tokio runtime: {e}")));
@@ -96,7 +109,9 @@ pub fn spawn_worker(tx: Sender<WorkerMessage>, egui_ctx: egui::Context) {
         let mut consecutive_errors: u32 = 0;
 
         loop {
-            let _ = tx.send(WorkerMessage::Status(format!("Checking {SITE} for new data…")));
+            let _ = tx.send(WorkerMessage::Status(format!(
+                "Checking {SITE} for new data…"
+            )));
             egui_ctx.request_repaint();
 
             let delay = match runtime.block_on(fetch_latest_scan(SITE, last_timestamp)) {
@@ -114,7 +129,10 @@ pub fn spawn_worker(tx: Sender<WorkerMessage>, egui_ctx: egui::Context) {
                 Err(e) => {
                     consecutive_errors += 1;
                     let delay = retry_delay(consecutive_errors);
-                    let _ = tx.send(WorkerMessage::Error(format!("{e:#} — retrying in {}s", delay.as_secs())));
+                    let _ = tx.send(WorkerMessage::Error(format!(
+                        "{e:#} — retrying in {}s",
+                        delay.as_secs()
+                    )));
                     delay
                 }
             };

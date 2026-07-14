@@ -63,8 +63,8 @@ pub fn velocity_color(ms: f32) -> Color32 {
 
 #[cfg(test)]
 mod tests {
+    use super::{DBZ_LEGEND, VELOCITY_LEGEND, dbz_color, velocity_color};
     use egui::Color32;
-    use super::{dbz_color, velocity_color, DBZ_LEGEND, VELOCITY_LEGEND};
 
     #[test]
     fn dbz_below_minimum_is_transparent() {
@@ -85,8 +85,14 @@ mod tests {
         // Inbound (negative) is green; outbound (positive) is red.
         let inbound = velocity_color(-25.0);
         let outbound = velocity_color(25.0);
-        assert!(inbound.g() > inbound.r(), "inbound should be green: {inbound:?}");
-        assert!(outbound.r() > outbound.g(), "outbound should be red: {outbound:?}");
+        assert!(
+            inbound.g() > inbound.r(),
+            "inbound should be green: {inbound:?}"
+        );
+        assert!(
+            outbound.r() > outbound.g(),
+            "outbound should be red: {outbound:?}"
+        );
     }
 
     #[test]
