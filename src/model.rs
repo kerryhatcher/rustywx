@@ -4,7 +4,7 @@
 //! cuts at the same elevation appear once in the tilt selector.
 
 use chrono::{DateTime, Utc};
-use nexrad_model::data::{MomentValue, Scan};
+use nexrad_model::data::{MomentValue, Scan, Sweep};
 
 /// Radar products the app can display.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
@@ -50,10 +50,14 @@ impl ScanData {
     }
 
     pub fn from_nexrad(scan: &Scan, timestamp: DateTime<Utc>) -> Self {
+        Self::from_sweeps(scan.sweeps(), timestamp)
+    }
+
+    pub fn from_sweeps(sweeps: &[Sweep], timestamp: DateTime<Utc>) -> Self {
         let mut reflectivity = Vec::new();
         let mut velocity = Vec::new();
 
-        for sweep in scan.sweeps() {
+        for sweep in sweeps {
             for (product, out) in [
                 (Product::Reflectivity, &mut reflectivity),
                 (Product::Velocity, &mut velocity),
@@ -109,11 +113,17 @@ fn sort_and_dedup(sweeps: &mut Vec<SweepData>) {
 mod tests {
     use super::{Product, ScanData};
     use chrono::Utc;
-    use nexrad_model::data::{MomentData, Radial, RadialStatus, Scan, Sweep};
+    use nexrad_model::data::{MomentData, Radial, RadialStatus, Sweep};
 
     /// A REF-encoded moment: value = (raw - 66.0) / 2.0 dBZ.
     fn ref_moment(raws: Vec<u8>) -> MomentData {
-        MomentData::from_fixed_point(2.0, 66.0, raws)
+        let gate_count = raws.len() as u16;
+        MomentData::from_fixed_point(gate_count, 2125, 250, 8, 2.0, 66.0, raws)
+    }
+
+    fn vel_moment(raws: Vec<u8>) -> MomentData {
+        let gate_count = raws.len() as u16;
+        MomentData::from_fixed_point(gate_count, 2125, 250, 8, 2.0, 129.0, raws)
     }
 
     fn radial(az: f32, elev_num: u8, elev_deg: f32, refl: Option<MomentData>, vel: Option<MomentData>) -> Radial {
@@ -123,7 +133,7 @@ mod tests {
         )
     }
 
-    fn synthetic_scan() -> Scan {
+    fn synthetic_sweeps() -> Vec<Sweep> {
         // Sweep 1 (0.5 deg): reflectivity only (split-cut CS).
         let s1 = Sweep::new(1, vec![
             radial(0.0, 1, 0.5, Some(ref_moment(vec![0, 130, 190])), None),
@@ -131,18 +141,18 @@ mod tests {
         ]);
         // Sweep 2 (0.5 deg): velocity only (split-cut CD).
         let s2 = Sweep::new(2, vec![
-            radial(0.0, 2, 0.5, None, Some(MomentData::from_fixed_point(2.0, 129.0, vec![0, 1, 65]))),
+            radial(0.0, 2, 0.5, None, Some(vel_moment(vec![0, 1, 65]))),
         ]);
         // Sweep 3 (1.5 deg): both moments.
         let s3 = Sweep::new(3, vec![
-            radial(0.0, 3, 1.45, Some(ref_moment(vec![130])), Some(MomentData::from_fixed_point(2.0, 129.0, vec![193]))),
+            radial(0.0, 3, 1.45, Some(ref_moment(vec![130])), Some(vel_moment(vec![193]))),
         ]);
-        Scan::new(215, vec![s1, s2, s3])
+        vec![s1, s2, s3]
     }
 
     #[test]
     fn converts_moment_values_to_gates() {
-        let scan_data = ScanData::from_nexrad(&synthetic_scan(), Utc::now());
+        let scan_data = ScanData::from_sweeps(&synthetic_sweeps(), Utc::now());
         let sweep = &scan_data.reflectivity[0];
         // raw 0 -> BelowThreshold -> None; raw 130 -> 32 dBZ; raw 190 -> 62 dBZ.
         assert_eq!(sweep.radials[0].gates, vec![None, Some(32.0), Some(62.0)]);
@@ -151,7 +161,7 @@ mod tests {
 
     #[test]
     fn range_folded_becomes_none() {
-        let scan_data = ScanData::from_nexrad(&synthetic_scan(), Utc::now());
+        let scan_data = ScanData::from_sweeps(&synthetic_sweeps(), Utc::now());
         // Velocity sweep at 0.5 deg: raws [0, 1, 65] -> [None, None(RF), Some(-32.0)].
         let sweep = &scan_data.velocity[0];
         assert_eq!(sweep.radials[0].gates, vec![None, None, Some(-32.0)]);
@@ -159,7 +169,7 @@ mod tests {
 
     #[test]
     fn products_split_and_dedup_by_elevation() {
-        let scan_data = ScanData::from_nexrad(&synthetic_scan(), Utc::now());
+        let scan_data = ScanData::from_sweeps(&synthetic_sweeps(), Utc::now());
         // Reflectivity: 0.5 deg (from CS cut) and 1.45 deg. The CD cut has no
         // reflectivity so nothing to dedup here, but elevations are ascending.
         let elevations: Vec<f32> = scan_data.reflectivity.iter().map(|s| s.elevation_deg).collect();
@@ -174,15 +184,14 @@ mod tests {
         // Two reflectivity sweeps both at ~0.5 deg -> keep only the first.
         let s1 = Sweep::new(1, vec![radial(0.0, 1, 0.48, Some(ref_moment(vec![130])), None)]);
         let s2 = Sweep::new(2, vec![radial(0.0, 2, 0.52, Some(ref_moment(vec![190])), None)]);
-        let scan = Scan::new(215, vec![s1, s2]);
-        let scan_data = ScanData::from_nexrad(&scan, Utc::now());
+        let scan_data = ScanData::from_sweeps(&[s1, s2], Utc::now());
         assert_eq!(scan_data.reflectivity.len(), 1);
         assert_eq!(scan_data.reflectivity[0].radials[0].gates, vec![Some(32.0)]);
     }
 
     #[test]
     fn sweeps_accessor_selects_product() {
-        let scan_data = ScanData::from_nexrad(&synthetic_scan(), Utc::now());
+        let scan_data = ScanData::from_sweeps(&synthetic_sweeps(), Utc::now());
         assert_eq!(scan_data.sweeps(Product::Reflectivity).len(), 2);
         assert_eq!(scan_data.sweeps(Product::Velocity).len(), 2);
     }
