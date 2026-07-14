@@ -4,7 +4,7 @@
 use crate::model::ScanData;
 use anyhow::{anyhow, Result};
 use chrono::{Duration as ChronoDuration, Utc};
-use nexrad_data::aws::archive::{download_file, list_files};
+use nexrad_data::aws::archive::{download_file, list_files, Identifier};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
@@ -31,26 +31,30 @@ fn retry_delay(consecutive_errors: u32) -> Duration {
     }
 }
 
+/// Discard `_MDM` metadata objects; only real volume files remain.
+fn volume_files(identifiers: Vec<Identifier>) -> Vec<Identifier> {
+    identifiers.into_iter().filter(|id| !id.name().ends_with("_MDM")).collect()
+}
+
 /// Fetch and decode the most recent volume scan for `site`. Checks today's
 /// (UTC) prefix and falls back to yesterday's shortly after midnight UTC.
 pub async fn fetch_latest_scan(site: &str) -> Result<ScanData> {
     let today = Utc::now().date_naive();
-    let mut files = list_files(site, &today)
+    let mut files = volume_files(list_files(site, &today)
         .await
-        .map_err(|e| anyhow!("listing volumes for {site} {today}: {e}"))?;
+        .map_err(|e| anyhow!("listing volumes for {site} {today}: {e}"))?);
 
     if files.is_empty() {
         let yesterday = today - ChronoDuration::days(1);
-        files = list_files(site, &yesterday)
+        files = volume_files(list_files(site, &yesterday)
             .await
-            .map_err(|e| anyhow!("listing volumes for {site} {yesterday}: {e}"))?;
+            .map_err(|e| anyhow!("listing volumes for {site} {yesterday}: {e}"))?);
     }
 
-    // `_MDM` objects are metadata, not volume data. Identifier is Ord by
-    // name, and names embed the timestamp, so max() is the newest volume.
+    // Identifier is Ord by name, and names embed the timestamp, so max()
+    // is the newest volume.
     let identifier = files
         .into_iter()
-        .filter(|id| !id.name().ends_with("_MDM"))
         .max()
         .ok_or_else(|| anyhow!("no volume files found for {site}"))?;
 
@@ -121,5 +125,16 @@ mod tests {
         assert_eq!(retry_delay(3), std::time::Duration::from_secs(120));
         assert_eq!(retry_delay(6), std::time::Duration::from_secs(600)); // capped
         assert_eq!(retry_delay(20), std::time::Duration::from_secs(600));
+    }
+
+    #[test]
+    fn volume_files_filters_mdm() {
+        let ids = vec![
+            Identifier::new("KJGX20260713_000237_V06".to_string()),
+            Identifier::new("KJGX20260713_000237_V06_MDM".to_string()),
+        ];
+        let filtered = volume_files(ids);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name(), "KJGX20260713_000237_V06");
     }
 }
