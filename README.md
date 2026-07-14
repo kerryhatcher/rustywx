@@ -18,6 +18,9 @@ with egui.
 
 Requires network access. No AWS credentials needed — the bucket is public.
 
+See [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) for a full walkthrough of the
+controls and how to read the display.
+
 ## Test
 
     cargo test                                  # unit tests, no network
@@ -32,4 +35,6 @@ Requires network access. No AWS credentials needed — the bucket is public.
 - `src/geo.rs` — range/bearing and polar→screen projection
 - `src/app.rs` — egui application state and layout
 
-Design docs live in `docs/superpowers/`.
+Design docs live in `docs/superpowers/`. For build/test/lint commands, the
+module map, and how to extend the app, see
+[`CONTRIBUTING.md`](CONTRIBUTING.md).
