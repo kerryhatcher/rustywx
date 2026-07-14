@@ -83,39 +83,38 @@ impl eframe::App for RadarApp {
         self.drain_messages();
         self.ensure_texture(&ctx);
 
-        // Top control panel
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(format!("{SITE} — Macon, GA")).strong());
-            ui.separator();
-            ui.selectable_value(&mut self.product, Product::Reflectivity, Product::Reflectivity.label());
-            ui.selectable_value(&mut self.product, Product::Velocity, Product::Velocity.label());
-            ui.separator();
+        egui::Panel::top("controls").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(format!("{SITE} — Macon, GA")).strong());
+                ui.separator();
+                ui.selectable_value(&mut self.product, Product::Reflectivity, Product::Reflectivity.label());
+                ui.selectable_value(&mut self.product, Product::Velocity, Product::Velocity.label());
+                ui.separator();
 
-            if let Some(scan) = &self.scan {
-                let sweeps = scan.sweeps(self.product);
-                if !sweeps.is_empty() {
-                    let current = self.clamped_tilt();
-                    egui::ComboBox::from_label("Tilt")
-                        .selected_text(format!("{:.1}°", sweeps[current].elevation_deg))
-                        .show_ui(ui, |ui| {
-                            for (i, sweep) in sweeps.iter().enumerate() {
-                                ui.selectable_value(&mut self.tilt_index, i, format!("{:.1}°", sweep.elevation_deg));
-                            }
-                        });
+                if let Some(scan) = &self.scan {
+                    let sweeps = scan.sweeps(self.product);
+                    if !sweeps.is_empty() {
+                        let current = self.clamped_tilt();
+                        egui::ComboBox::from_label("Tilt")
+                            .selected_text(format!("{:.1}°", sweeps[current].elevation_deg))
+                            .show_ui(ui, |ui| {
+                                for (i, sweep) in sweeps.iter().enumerate() {
+                                    ui.selectable_value(&mut self.tilt_index, i, format!("{:.1}°", sweep.elevation_deg));
+                                }
+                            });
+                    }
                 }
-            }
+            });
         });
 
-        ui.separator();
-
-        // Central radar display
-        egui::Frame::new().fill(Color32::from_rgb(6, 9, 14)).show(ui, |ui| {
-            scope::draw_scope(ui, self.texture.as_ref(), self.scan.as_ref(), self.product);
+        egui::Panel::bottom("status").show(ui, |ui| {
+            ui.label(&self.status);
         });
 
-        ui.separator();
-
-        // Status bar
-        ui.label(&self.status);
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(Color32::from_rgb(6, 9, 14)))
+            .show(ui, |ui| {
+                scope::draw_scope(ui, self.texture.as_ref(), self.scan.as_ref(), self.product);
+            });
     }
 }
