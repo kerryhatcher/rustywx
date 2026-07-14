@@ -81,6 +81,29 @@ fn angular_distance(a: f32, b: f32) -> f32 {
     d.min(360.0 - d)
 }
 
+/// Draw the scope into the available space: the radar texture in a centered
+/// square. Overlays are added in a later task.
+pub fn draw_scope(
+    ui: &mut egui::Ui,
+    texture: Option<&egui::TextureHandle>,
+    _scan: Option<&crate::model::ScanData>,
+    _product: Product,
+) {
+    let available = ui.available_rect_before_wrap();
+    let side = available.width().min(available.height());
+    let rect = egui::Rect::from_center_size(available.center(), egui::vec2(side, side));
+    let painter = ui.painter_at(available);
+
+    if let Some(texture) = texture {
+        painter.image(
+            texture.id(),
+            rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::model::{Product, RadialData, SweepData};
