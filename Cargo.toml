@@ -4,3 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+anyhow = "1"
+chrono = "0.4"
+eframe = "0.35"
+egui = "0.35"
+nexrad-data = "0.2"
+nexrad-model = "0.1"
+tokio = { version = "1", features = ["rt", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }

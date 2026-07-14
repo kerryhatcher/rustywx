@@ -1,3 +1,3 @@
 fn main() {
-    println!("Hello, world!");
+    println!("rustywx: UI arrives in Task 6");
 }
