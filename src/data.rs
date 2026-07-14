@@ -3,7 +3,7 @@
 
 use crate::model::ScanData;
 use anyhow::{anyhow, Result};
-use chrono::{Duration as ChronoDuration, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use nexrad_data::aws::archive::{download_file, list_files, Identifier};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
@@ -36,9 +36,13 @@ fn volume_files(identifiers: Vec<Identifier>) -> Vec<Identifier> {
     identifiers.into_iter().filter(|id| !id.name().ends_with("_MDM")).collect()
 }
 
-/// Fetch and decode the most recent volume scan for `site`. Checks today's
-/// (UTC) prefix and falls back to yesterday's shortly after midnight UTC.
-pub async fn fetch_latest_scan(site: &str) -> Result<ScanData> {
+/// Fetch and decode the most recent volume scan for `site`, unless it's the
+/// same volume the caller already has. Checks today's (UTC) prefix and falls
+/// back to yesterday's shortly after midnight UTC. The newest listing's
+/// timestamp is compared against `last_seen` *before* downloading, so an
+/// unchanged volume returns `Ok(None)` without paying for the 5-15 MB
+/// download and decode.
+pub async fn fetch_latest_scan(site: &str, last_seen: Option<DateTime<Utc>>) -> Result<Option<ScanData>> {
     let today = Utc::now().date_naive();
     let mut files = volume_files(list_files(site, &today)
         .await
@@ -62,13 +66,17 @@ pub async fn fetch_latest_scan(site: &str) -> Result<ScanData> {
         .date_time()
         .ok_or_else(|| anyhow!("unparseable volume name: {}", identifier.name()))?;
 
+    if last_seen == Some(timestamp) {
+        return Ok(None);
+    }
+
     let file = download_file(identifier)
         .await
         .map_err(|e| anyhow!("downloading volume: {e}"))?;
 
     let scan = file.scan().map_err(|e| anyhow!("decoding volume: {e}"))?;
 
-    Ok(ScanData::from_nexrad(&scan, timestamp))
+    Ok(Some(ScanData::from_nexrad(&scan, timestamp)))
 }
 
 /// Spawn the background polling thread. It owns a current-thread tokio
@@ -91,24 +99,28 @@ pub fn spawn_worker(tx: Sender<WorkerMessage>, egui_ctx: egui::Context) {
             let _ = tx.send(WorkerMessage::Status(format!("Checking {SITE} for new data…")));
             egui_ctx.request_repaint();
 
-            match runtime.block_on(fetch_latest_scan(SITE)) {
-                Ok(scan) => {
+            let delay = match runtime.block_on(fetch_latest_scan(SITE, last_timestamp)) {
+                Ok(Some(scan)) => {
                     consecutive_errors = 0;
-                    if last_timestamp != Some(scan.timestamp) {
-                        last_timestamp = Some(scan.timestamp);
-                        let _ = tx.send(WorkerMessage::NewScan(Box::new(scan)));
-                    } else {
-                        let _ = tx.send(WorkerMessage::Status("Up to date".to_string()));
-                    }
+                    last_timestamp = Some(scan.timestamp);
+                    let _ = tx.send(WorkerMessage::NewScan(Box::new(scan)));
+                    retry_delay(consecutive_errors)
+                }
+                Ok(None) => {
+                    consecutive_errors = 0;
+                    let _ = tx.send(WorkerMessage::Status("Up to date".to_string()));
+                    retry_delay(consecutive_errors)
                 }
                 Err(e) => {
                     consecutive_errors += 1;
-                    let _ = tx.send(WorkerMessage::Error(format!("{e:#}")));
+                    let delay = retry_delay(consecutive_errors);
+                    let _ = tx.send(WorkerMessage::Error(format!("{e:#} — retrying in {}s", delay.as_secs())));
+                    delay
                 }
-            }
+            };
             egui_ctx.request_repaint();
 
-            std::thread::sleep(retry_delay(consecutive_errors));
+            std::thread::sleep(delay);
         }
     });
 }

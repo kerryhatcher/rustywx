@@ -4,9 +4,10 @@
 #[tokio::test]
 #[ignore = "requires network access to the NEXRAD AWS archive"]
 async fn fetches_and_decodes_latest_kjgx_volume() {
-    let scan = rustywx::data::fetch_latest_scan(rustywx::data::SITE)
+    let scan = rustywx::data::fetch_latest_scan(rustywx::data::SITE, None)
         .await
-        .expect("fetch+decode should succeed");
+        .expect("fetch+decode should succeed")
+        .expect("first fetch should return a scan");
 
     assert!(!scan.reflectivity.is_empty(), "volume should contain reflectivity sweeps");
     let sweep = &scan.reflectivity[0];

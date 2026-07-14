@@ -43,7 +43,7 @@ impl RadarApp {
                     self.scan = Some(*scan);
                 }
                 WorkerMessage::Status(text) => self.status = text,
-                WorkerMessage::Error(text) => self.status = format!("Error: {text} — retrying"),
+                WorkerMessage::Error(text) => self.status = format!("Error: {text}"),
             }
         }
     }

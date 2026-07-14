@@ -143,7 +143,7 @@ mod tests {
         let s2 = Sweep::new(2, vec![
             radial(0.0, 2, 0.5, None, Some(vel_moment(vec![0, 1, 65]))),
         ]);
-        // Sweep 3 (1.5 deg): both moments.
+        // Sweep 3 (1.45 deg): both moments.
         let s3 = Sweep::new(3, vec![
             radial(0.0, 3, 1.45, Some(ref_moment(vec![130])), Some(vel_moment(vec![193]))),
         ]);
