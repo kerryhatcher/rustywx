@@ -102,9 +102,11 @@ draws texture + overlays.
 - Unit tests: color table mapping at boundary values; polar→cartesian gate
   mapping (known azimuth/range → pixel); lat/lon → range/bearing (Macon ≈
   33 km at ≈ 305° from KJGX); tilt fallback logic.
-- Integration test: decode + rasterize a committed fixture Level II file
-  (small, real KJGX volume) with no network, assert non-empty image and
-  plausible dBZ range.
+- Integration test: an opt-in (`#[ignore]`-tagged) live network test that
+  fetches and decodes the latest KJGX volume, asserting sweep/radial counts
+  and a plausible dBZ range. (Chosen over a committed fixture file: Level II
+  volumes are 5–15 MB binaries, and `nexrad-model`'s public constructors let
+  unit tests build synthetic scans without any fixture.)
 - Manual/visual verification of the running app for layout and colors.
 
 ## Dependencies (anticipated)
