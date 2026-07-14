@@ -81,27 +81,131 @@ fn angular_distance(a: f32, b: f32) -> f32 {
     d.min(360.0 - d)
 }
 
-/// Draw the scope into the available space: the radar texture in a centered
-/// square. Overlays are added in a later task.
+/// Draw the scope: radar texture, range rings every 50 km, cardinal spokes,
+/// city markers, station marker, scan time, and the product color legend.
 pub fn draw_scope(
     ui: &mut egui::Ui,
     texture: Option<&egui::TextureHandle>,
-    _scan: Option<&crate::model::ScanData>,
-    _product: Product,
+    scan: Option<&crate::model::ScanData>,
+    product: Product,
 ) {
+    use crate::geo;
+    use egui::{pos2, vec2, Align2, FontId, Rect, Stroke};
+
     let available = ui.available_rect_before_wrap();
     let side = available.width().min(available.height());
-    let rect = egui::Rect::from_center_size(available.center(), egui::vec2(side, side));
+    let rect = Rect::from_center_size(available.center(), vec2(side, side));
+    let center = rect.center();
+    let px_per_km = (side / 2.0) / MAX_RANGE_KM;
     let painter = ui.painter_at(available);
+
+    let grid = Color32::from_rgb(0x2a, 0x3a, 0x2f);
+    let grid_text = Color32::from_rgb(0x5f, 0x8a, 0x6a);
+    let text_font = FontId::monospace(12.0);
 
     if let Some(texture) = texture {
         painter.image(
             texture.id(),
             rect,
-            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-            egui::Color32::WHITE,
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+            Color32::WHITE,
         );
     }
+
+    // Range rings every 50 km, labeled along the north spoke.
+    let mut ring_km = 50.0;
+    while ring_km <= MAX_RANGE_KM {
+        painter.circle_stroke(center, ring_km * px_per_km, Stroke::new(1.0, grid));
+        painter.text(
+            center + vec2(4.0, -ring_km * px_per_km),
+            Align2::LEFT_BOTTOM,
+            format!("{ring_km:.0} km"),
+            text_font.clone(),
+            grid_text,
+        );
+        ring_km += 50.0;
+    }
+
+    // Cardinal spokes and labels.
+    for (azimuth, label) in [(0.0, "N"), (90.0, "E"), (180.0, "S"), (270.0, "W")] {
+        let (dx, dy) = geo::polar_to_offset(azimuth, MAX_RANGE_KM, px_per_km);
+        painter.line_segment([center, center + vec2(dx, dy)], Stroke::new(1.0, grid));
+        let (lx, ly) = geo::polar_to_offset(azimuth, MAX_RANGE_KM * 0.96, px_per_km);
+        painter.text(center + vec2(lx, ly), Align2::CENTER_CENTER, label, text_font.clone(), grid_text);
+    }
+
+    // Station marker at scope center.
+    painter.circle_filled(center, 3.0, Color32::WHITE);
+    painter.text(
+        center + vec2(6.0, 6.0),
+        Align2::LEFT_TOP,
+        crate::data::SITE,
+        text_font.clone(),
+        Color32::WHITE,
+    );
+
+    // City markers.
+    for &(name, lat, lon) in geo::CITIES {
+        let (range_km, bearing_deg) = geo::range_bearing(geo::KJGX_LAT, geo::KJGX_LON, lat, lon);
+        if range_km as f32 > MAX_RANGE_KM {
+            continue;
+        }
+        let (dx, dy) = geo::polar_to_offset(bearing_deg as f32, range_km as f32, px_per_km);
+        let position = center + vec2(dx, dy);
+        painter.circle_stroke(position, 3.5, Stroke::new(1.5, Color32::from_rgb(0xdd, 0xdd, 0xaa)));
+        painter.text(
+            position + vec2(6.0, -6.0),
+            Align2::LEFT_BOTTOM,
+            name,
+            text_font.clone(),
+            Color32::from_rgb(0xdd, 0xdd, 0xaa),
+        );
+    }
+
+    // Scan time, top-left of the panel.
+    if let Some(scan) = scan {
+        let utc = scan.timestamp.format("%Y-%m-%d %H:%M:%S UTC");
+        let local = scan.timestamp.with_timezone(&chrono::Local).format("%H:%M:%S %Z");
+        painter.text(
+            available.left_top() + vec2(8.0, 8.0),
+            Align2::LEFT_TOP,
+            format!("{utc}\n{local}"),
+            text_font.clone(),
+            Color32::WHITE,
+        );
+    }
+
+    // Color legend, bottom-left of the panel.
+    let legend: &[(f32, Color32)] = match product {
+        Product::Reflectivity => crate::colors::DBZ_LEGEND,
+        Product::Velocity => crate::colors::VELOCITY_LEGEND,
+    };
+    let unit = match product {
+        Product::Reflectivity => "dBZ",
+        Product::Velocity => "m/s",
+    };
+    let swatch = vec2(18.0, 12.0);
+    let legend_origin = available.left_bottom() + vec2(8.0, -(swatch.y + 22.0));
+    for (i, &(threshold, color)) in legend.iter().enumerate() {
+        let min = legend_origin + vec2(i as f32 * swatch.x, 0.0);
+        painter.rect_filled(Rect::from_min_size(min, swatch), 0.0, color);
+        if i % 2 == 0 {
+            painter.text(
+                min + vec2(0.0, swatch.y + 2.0),
+                Align2::LEFT_TOP,
+                format!("{threshold:.0}"),
+                FontId::monospace(10.0),
+                grid_text,
+            );
+        }
+    }
+    painter.text(
+        legend_origin + vec2(legend.len() as f32 * swatch.x + 6.0, 0.0),
+        Align2::LEFT_TOP,
+        unit,
+        text_font,
+        grid_text,
+    );
 }
 
 #[cfg(test)]
