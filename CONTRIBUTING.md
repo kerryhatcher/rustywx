@@ -69,7 +69,7 @@ ScanData (rustywx's own thin model)
 RadarApp (src/app.rs) — picks product + tilt, tracks what needs redrawing
       │  scope::rasterize (src/scope.rs)
       ▼
-egui texture → scope::draw_scope (overlays: rings, spokes, cities, legend)
+egui texture → scope::draw_scope (overlays: rings, spokes, cities, borders, legend)
 ```
 
 | Module | Responsibility |
