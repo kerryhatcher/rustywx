@@ -12,6 +12,7 @@ nexrad-data = "1.0.0-rc.7"
 nexrad-model = "1.0.0-rc.2"
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "time"] }
+ureq = "3"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }

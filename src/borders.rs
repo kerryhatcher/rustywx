@@ -118,9 +118,23 @@ pub fn load_or_fetch(path: &Path) -> Result<Vec<Ring>> {
     }
 }
 
-/// Placeholder for Task 3, which replaces this with a real TIGERweb fetch.
+/// Georgia plus its neighbors whose border could plausibly fall within the
+/// scope's 230 km display radius from KJGX: Alabama, South Carolina, Florida.
+/// Verified live against the TIGERweb service: returns 4 features (SC, GA,
+/// AL as `Polygon`, FL as `MultiPolygon`).
+const TIGERWEB_URL: &str = "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/State_County/MapServer/0/query?where=STUSAB+IN+(%27GA%27%2C%27AL%27%2C%27SC%27%2C%27FL%27)&outFields=STUSAB,NAME&f=geojson";
+
+/// Fetch the GA/AL/SC/FL state boundaries from the Census Bureau's TIGERweb
+/// REST service as GeoJSON. A single blocking request — unlike
+/// `data::fetch_latest_scan`, this has no polling loop, since boundary data
+/// doesn't change on a timescale this app cares about.
 fn fetch_geojson() -> Result<String> {
-    Err(anyhow!("state border fetch not yet implemented"))
+    ureq::get(TIGERWEB_URL)
+        .call()
+        .map_err(|e| anyhow!("fetching state borders: {e}"))?
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| anyhow!("reading state borders response: {e}"))
 }
 
 #[cfg(test)]
