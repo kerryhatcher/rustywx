@@ -59,12 +59,19 @@ centered on the radar, with north pointing up, exactly like a map.
 | **Range rings** | Concentric circles every 50 km, labeled along the north spoke, showing distance from the radar. |
 | **N / E / S / W spokes** | Compass directions, for orientation. |
 | **Small circles labeled "Macon" / "Warner Robins"** | City markers, positioned by real latitude/longitude. |
+| **Thin brown lines** | State borders (Georgia/Alabama/South Carolina/Florida), for orientation. Only drawn once the app has downloaded and cached them — see below. |
 | **Colored regions** | The radar data itself — precipitation or wind, depending on the selected product (see below). |
 | **Color legend, bottom-left** | The color scale for whichever product is currently displayed. |
 | **Timestamp, top-left** | When the currently displayed scan was captured, in both UTC and your local time. |
 
 Areas with no color (transparent/background) mean no significant echo was
 detected there — clear air, or a value too weak to show.
+
+State border lines require a one-time download the first time you run
+rustywx (cached afterward at `~/.rustywx/state_borders.geojson`, so later
+launches show them immediately with no delay). If they don't appear, the
+radar display and all controls still work normally — see
+[Troubleshooting](#troubleshooting).
 
 ## Products: Reflectivity vs. Velocity
 

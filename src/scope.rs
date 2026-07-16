@@ -100,7 +100,7 @@ fn angular_distance(a: f32, b: f32) -> f32 {
 }
 
 /// Draw the scope: radar texture, range rings every 50 km, cardinal spokes,
-/// city markers, station marker, scan time, and the product color legend.
+/// state border overlay, city markers, station marker, scan time, and the product color legend.
 pub fn draw_scope(
     ui: &mut egui::Ui,
     texture: Option<&egui::TextureHandle>,

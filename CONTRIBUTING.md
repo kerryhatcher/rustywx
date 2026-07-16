@@ -26,8 +26,9 @@ noticeably slow. Always use `--release` when running the app interactively.
 ## Testing
 
 ```
-cargo test                                # unit tests — no network required
-cargo test --test network -- --ignored    # live end-to-end fetch/decode
+cargo test                                         # unit tests — no network required
+cargo test --test network -- --ignored             # live NEXRAD fetch/decode
+cargo test --test borders_network -- --ignored     # live TIGERweb state-border fetch
 ```
 
 The unit test suite (`src/*.rs`, inline `#[cfg(test)]` modules) covers
@@ -78,6 +79,7 @@ egui texture → scope::draw_scope (overlays: rings, spokes, cities, legend)
 | [`src/scope.rs`](src/scope.rs) | Rasterizes one sweep into an RGBA `ColorImage` (inverse polar mapping — for each pixel, find its azimuth/range and look up the nearest radial/gate), and paints all overlays (rings, spokes, city markers, legend, timestamp). |
 | [`src/colors.rs`](src/colors.rs) | NWS-style stepped color tables for dBZ and velocity, plus the lookup functions the rasterizer calls per-gate. |
 | [`src/geo.rs`](src/geo.rs) | Great-circle range/bearing (haversine) and polar-to-screen-pixel projection. Also holds the KJGX coordinates and the city list. |
+| [`src/borders.rs`](src/borders.rs) | Loads US state boundary lines for the scope overlay: checks `~/.rustywx/state_borders.geojson`, fetching it from the Census TIGERweb REST API on first run if missing, then reports parsed rings to the UI over its own one-shot channel. |
 | [`src/app.rs`](src/app.rs) | The `eframe::App` impl: owns UI state (selected product/tilt, current scan, cached texture), drains worker messages, and lays out the control/status panels. |
 
 ### Why a separate `ScanData` model instead of using `nexrad-model` directly
