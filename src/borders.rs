@@ -7,6 +7,7 @@
 
 use anyhow::{Result, anyhow};
 use serde_json::Value;
+use std::path::{Path, PathBuf};
 
 /// One polygon ring: a closed sequence of (lat, lon) vertices in degrees.
 pub type Ring = Vec<(f64, f64)>;
@@ -84,6 +85,44 @@ fn polygon_rings(coordinates: &Value) -> Result<Vec<Ring>> {
         .collect()
 }
 
+/// Where the borders cache lives, under a given home directory. Split out
+/// from `cache_path` so it's testable without touching the real `$HOME` env
+/// var (mutating env vars in tests is racy across parallel test threads).
+fn cache_path_under(home: &Path) -> PathBuf {
+    home.join(".rustywx").join("state_borders.geojson")
+}
+
+/// Where the borders cache lives on this machine.
+fn cache_path() -> Result<PathBuf> {
+    let home = std::env::var("HOME").map_err(|_| anyhow!("HOME environment variable is not set"))?;
+    Ok(cache_path_under(Path::new(&home)))
+}
+
+/// Load cached state-boundary rings from `path`, fetching and caching them
+/// first if the file doesn't exist yet. Malformed or unreadable existing
+/// files are returned as errors rather than silently overwritten — a
+/// corrupt cache is left for a human to investigate.
+pub fn load_or_fetch(path: &Path) -> Result<Vec<Ring>> {
+    match std::fs::read_to_string(path) {
+        Ok(json) => parse_geojson_rings(&json),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let json = fetch_geojson()?;
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| anyhow!("creating {}: {e}", parent.display()))?;
+            }
+            std::fs::write(path, &json).map_err(|e| anyhow!("writing {}: {e}", path.display()))?;
+            parse_geojson_rings(&json)
+        }
+        Err(e) => Err(anyhow!("reading {}: {e}", path.display())),
+    }
+}
+
+/// Placeholder for Task 3, which replaces this with a real TIGERweb fetch.
+fn fetch_geojson() -> Result<String> {
+    Err(anyhow!("state border fetch not yet implemented"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,5 +184,32 @@ mod tests {
     #[test]
     fn rejects_missing_features_array() {
         assert!(parse_geojson_rings(r#"{"type": "FeatureCollection"}"#).is_err());
+    }
+
+    #[test]
+    fn cache_path_is_under_dot_rustywx() {
+        let path = cache_path_under(std::path::Path::new("/home/example"));
+        assert_eq!(
+            path,
+            std::path::Path::new("/home/example/.rustywx/state_borders.geojson")
+        );
+    }
+
+    fn unique_temp_path(name: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("rustywx-test-{}-{n}-{name}", std::process::id()))
+    }
+
+    #[test]
+    fn load_or_fetch_reads_existing_cache_without_network() {
+        let path = unique_temp_path("cache-hit.geojson");
+        std::fs::write(&path, POLYGON_FIXTURE).unwrap();
+
+        let rings = load_or_fetch(&path).unwrap();
+
+        assert_eq!(rings.len(), 1);
+        std::fs::remove_file(&path).unwrap();
     }
 }
