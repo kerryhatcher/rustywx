@@ -13,6 +13,10 @@ pub const MAX_RANGE_KM: f32 = 230.0;
 /// Side length of the rasterized radar texture.
 pub const RASTER_SIZE_PX: usize = 1024;
 
+/// Muted brown for state border overlays, distinct from the grid green
+/// (`0x2a3a2f`) and the pale-yellow city markers (`0xddddaa`).
+const BORDER_COLOR: Color32 = Color32::from_rgb(0x8a, 0x6d, 0x4a);
+
 /// Rasterize one sweep to a square RGBA image, radar at center, north up.
 /// Each pixel is inverse-mapped to (azimuth, range); the nearest radial by
 /// azimuth and nearest gate by range supply its value.
@@ -102,6 +106,7 @@ pub fn draw_scope(
     texture: Option<&egui::TextureHandle>,
     scan: Option<&crate::model::ScanData>,
     product: Product,
+    borders: &[crate::borders::Ring],
 ) {
     use crate::geo;
     use egui::{Align2, FontId, Rect, Stroke, pos2, vec2};
@@ -152,6 +157,26 @@ pub fn draw_scope(
             text_font.clone(),
             grid_text,
         );
+    }
+
+    // State border outlines, drawn only where both endpoints of a segment
+    // are within the display radius (same rule city markers use).
+    for ring in borders {
+        for pair in ring.windows(2) {
+            let (lat1, lon1) = pair[0];
+            let (lat2, lon2) = pair[1];
+            let (range1, bearing1) = geo::range_bearing(geo::KJGX_LAT, geo::KJGX_LON, lat1, lon1);
+            let (range2, bearing2) = geo::range_bearing(geo::KJGX_LAT, geo::KJGX_LON, lat2, lon2);
+            if range1 as f32 > MAX_RANGE_KM || range2 as f32 > MAX_RANGE_KM {
+                continue;
+            }
+            let (dx1, dy1) = geo::polar_to_offset(bearing1 as f32, range1 as f32, px_per_km);
+            let (dx2, dy2) = geo::polar_to_offset(bearing2 as f32, range2 as f32, px_per_km);
+            painter.line_segment(
+                [center + vec2(dx1, dy1), center + vec2(dx2, dy2)],
+                Stroke::new(1.2, BORDER_COLOR),
+            );
+        }
     }
 
     // Station marker at scope center.

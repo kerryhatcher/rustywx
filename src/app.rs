@@ -149,7 +149,13 @@ impl eframe::App for RadarApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(Color32::from_rgb(6, 9, 14)))
             .show(ui, |ui| {
-                scope::draw_scope(ui, self.texture.as_ref(), self.scan.as_ref(), self.product);
+                scope::draw_scope(
+                    ui,
+                    self.texture.as_ref(),
+                    self.scan.as_ref(),
+                    self.product,
+                    &self.borders,
+                );
             });
     }
 }
