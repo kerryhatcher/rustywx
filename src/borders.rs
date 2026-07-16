@@ -137,6 +137,27 @@ fn fetch_geojson() -> Result<String> {
         .map_err(|e| anyhow!("reading state borders response: {e}"))
 }
 
+/// Messages the border-loader thread sends to the UI thread.
+pub enum BorderMessage {
+    Loaded(Vec<Ring>),
+    Error(String),
+}
+
+/// Spawn a one-shot thread that loads (fetching and caching first, if
+/// needed) the state-boundary rings and reports them once. Unlike
+/// `data::spawn_worker`, this thread does its work once and exits — there's
+/// no polling loop, since state borders aren't expected to change.
+pub fn spawn_border_loader(tx: std::sync::mpsc::Sender<BorderMessage>, egui_ctx: egui::Context) {
+    std::thread::spawn(move || {
+        let message = match cache_path().and_then(|path| load_or_fetch(&path)) {
+            Ok(rings) => BorderMessage::Loaded(rings),
+            Err(e) => BorderMessage::Error(format!("{e:#}")),
+        };
+        let _ = tx.send(message);
+        egui_ctx.request_repaint();
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

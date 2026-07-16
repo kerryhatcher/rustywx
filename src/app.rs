@@ -1,6 +1,7 @@
 //! The eframe application: owns UI state, drains worker messages, and
 //! re-rasterizes the radar texture only when scan/product/tilt changes.
 
+use crate::borders::BorderMessage;
 use crate::data::{SITE, WorkerMessage};
 use crate::model::{Product, ScanData};
 use crate::scope;
@@ -10,24 +11,28 @@ use std::sync::mpsc::Receiver;
 
 pub struct RadarApp {
     rx: Receiver<WorkerMessage>,
+    border_rx: Receiver<BorderMessage>,
     scan: Option<ScanData>,
     product: Product,
     tilt_index: usize,
     status: String,
     texture: Option<TextureHandle>,
     texture_key: Option<(DateTime<Utc>, Product, usize)>,
+    borders: Vec<crate::borders::Ring>,
 }
 
 impl RadarApp {
-    pub fn new(rx: Receiver<WorkerMessage>) -> Self {
+    pub fn new(rx: Receiver<WorkerMessage>, border_rx: Receiver<BorderMessage>) -> Self {
         Self {
             rx,
+            border_rx,
             scan: None,
             product: Product::Reflectivity,
             tilt_index: 0,
             status: format!("Starting up — fetching latest {SITE} volume…"),
             texture: None,
             texture_key: None,
+            borders: Vec::new(),
         }
     }
 
@@ -46,6 +51,14 @@ impl RadarApp {
                 }
                 WorkerMessage::Status(text) => self.status = text,
                 WorkerMessage::Error(text) => self.status = format!("Error: {text}"),
+            }
+        }
+        while let Ok(message) = self.border_rx.try_recv() {
+            match message {
+                BorderMessage::Loaded(rings) => self.borders = rings,
+                BorderMessage::Error(text) => {
+                    self.status = format!("State borders unavailable: {text}");
+                }
             }
         }
     }
