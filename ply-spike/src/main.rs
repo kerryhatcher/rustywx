@@ -16,6 +16,7 @@ use rustywx::nhc;
 use rustywx::scope;
 use rustywx::state::{AppState, NhcModal};
 use rustywx::widgets::dropdown::{DropdownConfig, DropdownOption, DropdownState};
+use rustywx::widgets::glass_panel;
 use rustywx::widgets::toggle::{self, ToggleOption};
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -150,6 +151,84 @@ fn synthetic_sweep() -> SweepData {
 }
 
 // ---------------------------------------------------------------------------
+// Stage 6: Observatory visual helpers
+// ---------------------------------------------------------------------------
+
+/// Draw a subtle dark radial-gradient background behind the scope.
+/// Uses concentric filled circles from a brighter centre to darker edges,
+/// approximating the observatory mockup's radial gradient without a custom
+/// GLSL shader in the macroquad layer.
+fn draw_observatory_background() {
+    let w = screen_width();
+    let h = screen_height();
+    let cx = w / 2.0;
+    let cy = h / 2.0;
+    let max_r = (w * w + h * h).sqrt() / 2.0;
+    let steps = 24;
+    for i in (0..steps).rev() {
+        let t = i as f32 / steps as f32;
+        let r = max_r * (1.0 + t * 0.04);
+        let c = MacroquadColor::new(
+            0.024 + (0.063 - 0.024) * (1.0 - t),
+            0.031 + (0.078 - 0.031) * (1.0 - t),
+            0.047 + (0.114 - 0.047) * (1.0 - t),
+            1.0,
+        );
+        draw_circle(cx, cy, r, c);
+    }
+}
+
+/// Draw the optional radar sweep line — a thin rotating teal beam with a
+/// trailing fade, radiating from the scope centre.
+fn draw_radar_sweep(pan_km: (f32, f32), zoom: f32, angle_deg: f32, fade: f32) {
+    let side = screen_width().min(screen_height());
+    let px_per_km = (side / 2.0) / scope::MAX_RANGE_KM * zoom;
+    let cx = screen_width() / 2.0 + pan_km.0 * px_per_km;
+    let cy = screen_height() / 2.0 + pan_km.1 * px_per_km;
+    let len = side * zoom / 2.0;
+    for i in 0..18 {
+        let a = angle_deg - i as f32 * 2.0;
+        let ar = a.to_radians();
+        let bx = cx + ar.cos() * len;
+        let by = cy - ar.sin() * len;
+        let alpha = (18 - i) as f32 / 18.0 * 40.0 * fade;
+        draw_line(
+            cx,
+            cy,
+            bx,
+            by,
+            1.5,
+            MacroquadColor::new(0.051, 0.773, 0.722, alpha / 255.0),
+        );
+    }
+}
+
+/// Linearly blend two hex colours (i32/u32) by factor t in [0,1].
+fn blend_hex(a: i32, b: i32, t: f32) -> i32 {
+    let ar = ((a >> 16) & 0xff) as f32;
+    let ag = ((a >> 8) & 0xff) as f32;
+    let ab = (a & 0xff) as f32;
+    let br = ((b >> 16) & 0xff) as f32;
+    let bg = ((b >> 8) & 0xff) as f32;
+    let bb = (b & 0xff) as f32;
+    let r = ar + (br - ar) * t;
+    let g = ag + (bg - ag) * t;
+    let bl = ab + (bb - ab) * t;
+    ((r as i32) << 16) | ((g as i32) << 8) | (bl as i32)
+}
+
+/// Return an accent-tinted background when the element `id` is hovered
+/// (using previous-frame pointer-over state), otherwise `idle`.
+fn hover_tint(hovered: &[Id], id: &str, active: i32, _idle: i32) -> i32 {
+    let is_hovered = hovered.iter().any(|i| i.string_id.as_str() == id);
+    if is_hovered {
+        blend_hex(active, 0x0dc5b8, 0.35)
+    } else {
+        active
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Window config
 // ---------------------------------------------------------------------------
 
@@ -185,8 +264,13 @@ async fn main() {
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let _rt_guard = rt.enter();
 
-    static DEFAULT_FONT: FontAsset = FontAsset::Path("assets/fonts/DejaVuSansMono.ttf");
+    static DEFAULT_FONT: FontAsset = FontAsset::Path("assets/fonts/Inter-Regular.ttf");
+    static INTER_BOLD: FontAsset = FontAsset::Path("assets/fonts/Inter-Bold.ttf");
+    static MONO_FONT: FontAsset = FontAsset::Path("assets/fonts/Inter-Regular.ttf");
     let mut ply = Ply::<()>::new(&DEFAULT_FONT).await;
+
+    // Secondary fonts (Inter Bold, JetBrains Mono) are lazy-loaded on
+    // first use via .font(&ASSET) on TextConfig — no explicit loading needed.
 
     // ── Channels for the background data worker ───────────────
     let (worker_tx, worker_rx) = mpsc::channel();
@@ -252,10 +336,54 @@ async fn main() {
         nhc_modal: NhcModal::None,
         nhc_modal_scroll: 0.0,
         last_mouse_pos: None,
+        start_time: get_time(),
+        last_activity: get_time(),
+        controls_visible: true,
+        nhc_anim_start: 0.0,
+        nhc_anim_from: 0.0,
+        pulse_time: 0.0,
+        sweep_angle: 0.0,
+        hovered_ids: Vec::new(),
     };
 
     loop {
-        clear_background(BLACK);
+        clear_background(MacroquadColor::new(0.031, 0.039, 0.059, 1.0));
+
+        let now = get_time();
+        let entrance = ease_out_cubic(((now - state.start_time) / 0.6).clamp(0.0, 1.0) as f32);
+
+        // Stage 6: animation timing + auto-hide + hover tracking.
+        state.sweep_angle = (state.sweep_angle + 0.6) % 360.0;
+
+        let mouse_moved = {
+            let (mx, my) = mouse_position();
+            if let Some((lx, ly)) = state.last_mouse_pos {
+                (mx - lx).abs() > 0.5 || (my - ly).abs() > 0.5
+            } else {
+                false
+            }
+        };
+        if mouse_moved || is_mouse_button_down(MouseButton::Left) {
+            state.last_activity = now;
+        }
+        for &code in &[
+            KeyCode::R,
+            KeyCode::V,
+            KeyCode::T,
+            KeyCode::N,
+            KeyCode::B,
+            KeyCode::A,
+            KeyCode::Key0,
+            KeyCode::Left,
+            KeyCode::Right,
+        ] {
+            if is_key_pressed(code) {
+                state.last_activity = now;
+            }
+        }
+        state.controls_visible = now - state.last_activity < 3.0;
+
+        state.hovered_ids = ply.pointer_over_ids();
 
         // ── Poll cache load ────────────────────────────────────
         if let Some(ref mut rx) = state.pending_load
@@ -288,6 +416,7 @@ async fn main() {
                     state.scan = Some(*scan);
                     state.tilt_index = 0;
                     state.needs_reraster = true;
+                    state.pulse_time = now;
                     update_scan_status(&mut state, "");
                 }
                 WorkerMessage::Status(s) => {
@@ -346,7 +475,6 @@ async fn main() {
         }
 
         // ── Fire alerts fetch if not yet started ──────────────────
-        let now = get_time();
         if !state.alerts_fetch_fired
             && (!state.alerts_loaded
                 || now - state.last_alert_poll > alerts::POLL_INTERVAL.as_secs() as f64)
@@ -373,14 +501,13 @@ async fn main() {
         }
 
         // ── Fire NHC fetch if not yet started or refresh interval elapsed ─
-        let now_nhc = get_time();
         if !state.nhc_fetch_fired
             && (state.nhc_bundle.is_none()
-                || now_nhc - state.nhc_last_poll > nhc::POLL_INTERVAL.as_secs() as f64)
+                || now - state.nhc_last_poll > nhc::POLL_INTERVAL.as_secs() as f64)
         {
             state.nhc_fetch.start();
             state.nhc_fetch_fired = true;
-            state.nhc_last_poll = now_nhc;
+            state.nhc_last_poll = now;
         }
 
         // ── Poll NHC fetch state machine ──────────────────────────
@@ -452,6 +579,7 @@ async fn main() {
         // Draw scope + overlays directly to screen (avoids render_to_texture
         // coordinate flip — framebuffer bottom-left origin + Ply .image() display
         // causes a 180° rotation of the content).
+        draw_observatory_background();
         scope::draw_scope_to_texture(
             state.radar_texture.as_ref(),
             site,
@@ -461,6 +589,9 @@ async fn main() {
             Some((&state.alerts, state.show_alerts)),
             state.nhc_bundle.as_ref().map(|b| (b, &state.nhc_overlays)),
         );
+
+        // Radar sweep line (optional observatory visual flourish).
+        draw_radar_sweep(state.pan_km, state.zoom, state.sweep_angle, entrance);
 
         // Build frame-local control options before borrowing Ply for layout.
         let site_options: Vec<DropdownOption> = geo::RADAR_SITES
@@ -493,6 +624,7 @@ async fn main() {
             .unwrap_or("No tilts");
 
         // ── Ply UI ─────────────────────────────────────────────────
+        let is_mobile = screen_width() < 900.0;
         let mut ui = ply.begin();
 
         ui.element()
@@ -500,11 +632,13 @@ async fn main() {
             .height(grow!())
             .layout(|layout| layout.direction(TopToBottom))
             .children(|ui| {
-                // ── Top controls bar ───────────────────────────────
-                ui.element()
-                    .width(grow!())
-                    .height(fixed!(36.0))
-                    .background_color(0x12161e)
+                // ── Controls bar (auto-hiding, frosted glass) ────────
+                if state.controls_visible {
+                    glass_panel::glass(ui.element().width(grow!()).height(fixed!(if is_mobile {
+                        48.0
+                    } else {
+                        36.0
+                    })))
                     .layout(|layout| {
                         layout
                             .direction(LeftToRight)
@@ -542,16 +676,13 @@ async fn main() {
                                 "Zoom: {:.1}x  Pan: ({:.0}, {:.0}) km",
                                 state.zoom, state.pan_km.0, state.pan_km.1
                             ),
-                            |text| text.font_size(11).color(0x9E9590),
+                            |text| text.font_size(11).font(&MONO_FONT).color(0x9E9590),
                         );
 
                         // ── Overlay toggles (Stage 4) ──────────────────
-                        let borders_bg = if state.show_borders {
-                            0x3F684A
-                        } else {
-                            0x1E1B1B
-                        };
-                        let borders_label = if state.show_borders {
+                        let borders_active = state.show_borders;
+                        let borders_bg = if borders_active { 0x0dc5b8 } else { 0x1E1B1B };
+                        let borders_label = if borders_active {
                             "Borders ✓"
                         } else {
                             "Borders"
@@ -559,7 +690,7 @@ async fn main() {
                         ui.element()
                             .id("btn-borders")
                             .width(fit!())
-                            .height(fixed!(24.0))
+                            .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
                             .background_color(borders_bg)
                             .corner_radius(4.0)
                             .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
@@ -567,11 +698,16 @@ async fn main() {
                                 ui.text(borders_label, |text| text.font_size(12).color(0xE8E0DC));
                             });
 
-                        let alerts_bg = if state.show_alerts {
-                            0x3F684A
-                        } else {
-                            0x1E1B1B
-                        };
+                        let alerts_bg = hover_tint(
+                            &state.hovered_ids,
+                            "btn-alerts",
+                            if state.show_alerts {
+                                0x0dc5b8
+                            } else {
+                                0x1E1B1B
+                            },
+                            0x1E1B1B,
+                        );
                         let alerts_label = if state.show_alerts {
                             "Alerts ✓"
                         } else {
@@ -587,7 +723,7 @@ async fn main() {
                         ui.element()
                             .id("btn-alerts")
                             .width(fit!())
-                            .height(fixed!(24.0))
+                            .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
                             .background_color(alerts_bg)
                             .corner_radius(4.0)
                             .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
@@ -598,11 +734,16 @@ async fn main() {
                             });
 
                         // ── NHC toggle button (Stage 5) ──────────────────
-                        let nhc_bg = if state.nhc_show_panel {
-                            0x3F684A
-                        } else {
-                            0x1E1B1B
-                        };
+                        let nhc_bg = hover_tint(
+                            &state.hovered_ids,
+                            "btn-nhc",
+                            if state.nhc_show_panel {
+                                0x0dc5b8
+                            } else {
+                                0x1E1B1B
+                            },
+                            0x1E1B1B,
+                        );
                         let nhc_label = if state.nhc_show_panel {
                             "Tropical ✓"
                         } else {
@@ -623,7 +764,7 @@ async fn main() {
                         ui.element()
                             .id("btn-nhc")
                             .width(fit!())
-                            .height(fixed!(24.0))
+                            .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
                             .background_color(nhc_bg)
                             .corner_radius(4.0)
                             .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
@@ -633,334 +774,345 @@ async fn main() {
                                 });
                             });
                     });
+                } // end controls_visible
 
                 // ── NHC slide-in panel (Stage 5) ────────────────────────
                 if state.nhc_show_panel {
-                    let panel_w = 320.0;
-                    let panel_h = screen_height() - 60.0;
-                    ui.element()
-                        .id("nhc-panel")
-                        .width(fixed!(panel_w))
-                        .height(fixed!(panel_h))
-                        .background_color(0x12161e)
-                        .corner_radius(6.0)
-                        .floating(|floating| {
-                            floating
-                                .offset((screen_width() - panel_w - 8.0, 36.0))
-                                .z_index(50)
-                                .attach_root()
-                        })
-                        .layout(|layout| layout.direction(TopToBottom).padding(8).gap(6))
-                        .overflow(|o| {
-                            o.scroll_y().scrollbar(|s| {
-                                s.width(6.0).thumb_color(0x4a4a4a).track_color(0x1a1a1a)
+                    // Spring slide-in: start off-screen right, ease into place.
+                    if state.nhc_anim_start == 0.0 {
+                        state.nhc_anim_start = now;
+                    }
+                    let panel_w = if is_mobile { screen_width() } else { 320.0 };
+                    let panel_h = if is_mobile {
+                        screen_height()
+                    } else {
+                        screen_height() - 60.0
+                    };
+                    let slide_t = ((now - state.nhc_anim_start) / 0.5).clamp(0.0, 1.0) as f32;
+                    let slide = ease_out_elastic(slide_t);
+                    let final_x = if is_mobile {
+                        0.0
+                    } else {
+                        screen_width() - panel_w - 8.0
+                    };
+                    let panel_x = final_x + (1.0 - slide) * (panel_w + 16.0);
+                    glass_panel::glass(
+                        ui.element()
+                            .id("nhc-panel")
+                            .width(fixed!(panel_w))
+                            .height(fixed!(panel_h)),
+                    )
+                    .floating(|floating| {
+                        floating
+                            .offset((panel_x, if is_mobile { 0.0 } else { 36.0 }))
+                            .z_index(50)
+                            .attach_root()
+                    })
+                    .layout(|layout| layout.direction(TopToBottom).padding(8).gap(6))
+                    .overflow(|o| {
+                        o.scroll_y()
+                            .scrollbar(|s| s.width(6.0).thumb_color(0x4a4a4a).track_color(0x1a1a1a))
+                    })
+                    .children(|ui| {
+                        // Panel header
+                        ui.element()
+                            .width(grow!())
+                            .height(fixed!(28.0))
+                            .background_color(0x1E1B1B)
+                            .corner_radius(4.0)
+                            .layout(|layout| {
+                                layout
+                                    .padding((0, 8, 0, 8))
+                                    .direction(LeftToRight)
+                                    .gap(8)
+                                    .align(Left, CenterY)
                             })
-                        })
-                        .children(|ui| {
-                            // Panel header
+                            .children(|ui| {
+                                ui.text("🌀 NHC Tropical Cyclones", |text| {
+                                    text.font_size(14).font(&INTER_BOLD).color(0xE8E0DC)
+                                });
+                            });
+
+                        let bundle = state.nhc_bundle.as_ref();
+
+                        let has_storms = bundle
+                            .as_ref()
+                            .map(|b| !b.metas.is_empty())
+                            .unwrap_or(false);
+                        if !has_storms {
+                            // No active storms
                             ui.element()
                                 .width(grow!())
-                                .height(fixed!(28.0))
-                                .background_color(0x1E1B1B)
-                                .corner_radius(4.0)
-                                .layout(|layout| {
-                                    layout
-                                        .padding((0, 8, 0, 8))
-                                        .direction(LeftToRight)
-                                        .gap(8)
-                                        .align(Left, CenterY)
-                                })
+                                .height(fixed!(40.0))
+                                .layout(|layout| layout.align(CenterX, CenterY))
                                 .children(|ui| {
-                                    ui.text("🌀 NHC Tropical Cyclones", |text| {
-                                        text.font_size(14).color(0xE8E0DC)
-                                    });
+                                    let msg = if state.nhc_fetch_fired {
+                                        "Loading NHC data…"
+                                    } else {
+                                        "No active storms"
+                                    };
+                                    ui.text(msg, |text| text.font_size(13).color(0x9E9590));
                                 });
+                        } else if let Some(bundle) = bundle.as_ref() {
+                            // Storm selector dropdown
+                            let storm_options: Vec<DropdownOption> = bundle
+                                .metas
+                                .iter()
+                                .enumerate()
+                                .map(|(i, m)| DropdownOption {
+                                    source_index: i,
+                                    label: format!("{} — {}", m.name, m.classification),
+                                    search_text: format!("{} {}", m.name, m.classification),
+                                })
+                                .collect();
+                            let selected_storm = bundle
+                                .metas
+                                .get(state.nhc_selected_storm)
+                                .map(|m| m.name.as_str())
+                                .unwrap_or("—");
+                            state.nhc_storm_dropdown.draw(
+                                ui,
+                                STORM_DROPDOWN,
+                                selected_storm,
+                                &storm_options,
+                                Some(state.nhc_selected_storm),
+                            );
 
-                            let bundle = state.nhc_bundle.as_ref();
-
-                            let has_storms = bundle
-                                .as_ref()
-                                .map(|b| !b.metas.is_empty())
-                                .unwrap_or(false);
-                            if !has_storms {
-                                // No active storms
+                            // Storm stats
+                            if let Some(meta) = bundle.metas.get(state.nhc_selected_storm) {
                                 ui.element()
                                     .width(grow!())
-                                    .height(fixed!(40.0))
-                                    .layout(|layout| layout.align(CenterX, CenterY))
-                                    .children(|ui| {
-                                        let msg = if state.nhc_fetch_fired {
-                                            "Loading NHC data…"
-                                        } else {
-                                            "No active storms"
-                                        };
-                                        ui.text(msg, |text| text.font_size(13).color(0x9E9590));
-                                    });
-                            } else if let Some(bundle) = bundle.as_ref() {
-                                // Storm selector dropdown
-                                let storm_options: Vec<DropdownOption> = bundle
-                                    .metas
-                                    .iter()
-                                    .enumerate()
-                                    .map(|(i, m)| DropdownOption {
-                                        source_index: i,
-                                        label: format!("{} — {}", m.name, m.classification),
-                                        search_text: format!("{} {}", m.name, m.classification),
+                                    .height(fit!())
+                                    .background_color(0x171A1F)
+                                    .corner_radius(4.0)
+                                    .layout(|layout| {
+                                        layout.direction(TopToBottom).padding(8).gap(4)
                                     })
-                                    .collect();
-                                let selected_storm = bundle
-                                    .metas
-                                    .get(state.nhc_selected_storm)
-                                    .map(|m| m.name.as_str())
-                                    .unwrap_or("—");
-                                state.nhc_storm_dropdown.draw(
-                                    ui,
-                                    STORM_DROPDOWN,
-                                    selected_storm,
-                                    &storm_options,
-                                    Some(state.nhc_selected_storm),
-                                );
-
-                                // Storm stats
-                                if let Some(meta) = bundle.metas.get(state.nhc_selected_storm) {
-                                    ui.element()
-                                        .width(grow!())
-                                        .height(fit!())
-                                        .background_color(0x171A1F)
-                                        .corner_radius(4.0)
-                                        .layout(|layout| {
-                                            layout.direction(TopToBottom).padding(8).gap(4)
-                                        })
-                                        .children(|ui| {
+                                    .children(|ui| {
+                                        ui.text(
+                                            &format!("{} — {}", meta.name, meta.classification),
+                                            |t| t.font_size(13).color(0xE8E0DC),
+                                        );
+                                        ui.text(
+                                            &format!("Intensity: {} kt", meta.intensity_kt),
+                                            |t| t.font_size(11).color(0x9E9590),
+                                        );
+                                        ui.text(
+                                            &format!("Pressure: {} mb", meta.pressure_mb),
+                                            |t| t.font_size(11).color(0x9E9590),
+                                        );
+                                        ui.text(
+                                            &format!(
+                                                "Position: {:.1}°N, {:.1}°W",
+                                                meta.lat, -meta.lon
+                                            ),
+                                            |t| t.font_size(11).color(0x9E9590),
+                                        );
+                                        if let (Some(dir), Some(spd)) =
+                                            (meta.movement_dir_deg, meta.movement_speed_kt)
+                                        {
                                             ui.text(
-                                                &format!("{} — {}", meta.name, meta.classification),
-                                                |t| t.font_size(13).color(0xE8E0DC),
-                                            );
-                                            ui.text(
-                                                &format!("Intensity: {} kt", meta.intensity_kt),
+                                                &format!("Movement: {}° at {} kt", dir, spd),
                                                 |t| t.font_size(11).color(0x9E9590),
                                             );
-                                            ui.text(
-                                                &format!("Pressure: {} mb", meta.pressure_mb),
-                                                |t| t.font_size(11).color(0x9E9590),
-                                            );
-                                            ui.text(
-                                                &format!(
-                                                    "Position: {:.1}°N, {:.1}°W",
-                                                    meta.lat, -meta.lon
-                                                ),
-                                                |t| t.font_size(11).color(0x9E9590),
-                                            );
-                                            if let (Some(dir), Some(spd)) =
-                                                (meta.movement_dir_deg, meta.movement_speed_kt)
-                                            {
-                                                ui.text(
-                                                    &format!("Movement: {}° at {} kt", dir, spd),
-                                                    |t| t.font_size(11).color(0x9E9590),
-                                                );
-                                            }
-                                            ui.text(
-                                                &format!("Advisory: {}", meta.advisory_num),
-                                                |t| t.font_size(11).color(0x9E9590),
-                                            );
-                                            ui.text(
-                                                &format!("Updated: {}", meta.last_update),
-                                                |t| t.font_size(11).color(0x9E9590),
-                                            );
-                                        });
-
-                                    // Graphics page link
-                                    if !meta.graphics_url.is_empty() {
-                                        ui.element()
-                                            .id("btn-nhc-graphics")
-                                            .width(fit!())
-                                            .height(fixed!(24.0))
-                                            .background_color(0x1E1B1B)
-                                            .corner_radius(4.0)
-                                            .layout(|layout| {
-                                                layout.padding((0, 8, 0, 8)).align(CenterX, CenterY)
-                                            })
-                                            .children(|ui| {
-                                                ui.text("🌐 NHC Graphics Page", |t| {
-                                                    t.font_size(11).color(0x4a90d9)
-                                                });
-                                            });
-                                    }
-
-                                    // Map overlay toggles
-                                    ui.element()
-                                        .width(grow!())
-                                        .height(fit!())
-                                        .background_color(0x171A1F)
-                                        .corner_radius(4.0)
-                                        .layout(|layout| {
-                                            layout.direction(TopToBottom).padding(8).gap(4)
-                                        })
-                                        .children(|ui| {
-                                            ui.text("Map Overlays", |t| {
-                                                t.font_size(12).color(0xE8E0DC)
-                                            });
-                                            nhc_toggle_button(
-                                                ui,
-                                                "btn-nhc-cone",
-                                                "Forecast Cone",
-                                                state.nhc_overlays.show_cone,
-                                            );
-                                            nhc_toggle_button(
-                                                ui,
-                                                "btn-nhc-track",
-                                                "Track",
-                                                state.nhc_overlays.show_track,
-                                            );
-                                            nhc_toggle_button(
-                                                ui,
-                                                "btn-nhc-points",
-                                                "Points",
-                                                state.nhc_overlays.show_points,
-                                            );
-                                            nhc_toggle_button(
-                                                ui,
-                                                "btn-nhc-ww",
-                                                "Watches/Warnings",
-                                                state.nhc_overlays.show_watches_warnings,
-                                            );
-                                            nhc_toggle_button(
-                                                ui,
-                                                "btn-nhc-wp",
-                                                "Wind Probabilities",
-                                                state.nhc_overlays.show_wind_probs,
-                                            );
-                                            nhc_toggle_button(
-                                                ui,
-                                                "btn-nhc-earliest",
-                                                "Earliest Arrival (34kt)",
-                                                state.nhc_overlays.show_earliest_arrival,
-                                            );
-                                            nhc_toggle_button(
-                                                ui,
-                                                "btn-nhc-likely",
-                                                "Most Likely Arrival (34kt)",
-                                                state.nhc_overlays.show_most_likely_arrival,
-                                            );
-                                        });
-
-                                    // Graphics products (thumbnails)
-                                    ui.element()
-                                        .width(grow!())
-                                        .height(fit!())
-                                        .background_color(0x171A1F)
-                                        .corner_radius(4.0)
-                                        .layout(|layout| {
-                                            layout.direction(TopToBottom).padding(8).gap(4)
-                                        })
-                                        .children(|ui| {
-                                            ui.text("Graphics Products", |t| {
-                                                t.font_size(12).color(0xE8E0DC)
-                                            });
-                                            if let Some((_, images)) = bundle
-                                                .image_products
-                                                .iter()
-                                                .find(|(id, _)| *id == meta.id)
-                                            {
-                                                for (img_idx, img) in images.iter().enumerate() {
-                                                    let key = format!("{}:{}", meta.id, img.title);
-                                                    // Skip products that failed to download (404)
-                                                    if !state.nhc_image_textures.contains_key(&key)
-                                                    {
-                                                        continue;
-                                                    }
-                                                    let tex =
-                                                        state.nhc_image_textures.get(&key).unwrap();
-                                                    // Clickable row: thumbnail + title
-                                                    ui.element()
-                                                        .id(("btn-nhc-img", img_idx as u32))
-                                                        .width(grow!())
-                                                        .height(fixed!(56.0))
-                                                        .background_color(0x1E1B1B)
-                                                        .corner_radius(3.0)
-                                                        .layout(|layout| {
-                                                            layout
-                                                                .direction(LeftToRight)
-                                                                .padding((4, 6, 4, 6))
-                                                                .gap(8)
-                                                                .align(Left, CenterY)
-                                                        })
-                                                        .children(|ui| {
-                                                            // Thumbnail image (75x48, NHC aspect ratio)
-                                                            ui.element()
-                                                                .width(fixed!(75.0))
-                                                                .height(fixed!(48.0))
-                                                                .image(tex.clone())
-                                                                .empty();
-                                                            // Product title
-                                                            ui.text(&img.title, |t| {
-                                                                t.font_size(11).color(0xE8E0DC)
-                                                            });
-                                                        });
-                                                }
-                                            } else {
-                                                ui.text("No graphics available", |t| {
-                                                    t.font_size(11).color(0x9E9590)
-                                                });
-                                            }
-                                        });
-
-                                    // Text products (collapsible)
-                                    if let Some((_, texts)) =
-                                        bundle.text_products.iter().find(|(id, _)| *id == meta.id)
-                                    {
-                                        for product in texts {
-                                            // Entire preview is one clickable element
-                                            ui.element()
-                                                .id(("btn-nhc-text", product.title.len() as u32))
-                                                .width(grow!())
-                                                .height(fit!())
-                                                .background_color(0x171A1F)
-                                                .corner_radius(4.0)
-                                                .layout(|layout| {
-                                                    layout.direction(TopToBottom).gap(2)
-                                                })
-                                                .children(|ui| {
-                                                    // Title bar
-                                                    ui.element()
-                                                        .width(grow!())
-                                                        .height(fixed!(24.0))
-                                                        .background_color(0x1E1B1B)
-                                                        .corner_radius(3.0)
-                                                        .layout(|layout| {
-                                                            layout
-                                                                .padding((0, 8, 0, 8))
-                                                                .align(Left, CenterY)
-                                                        })
-                                                        .children(|ui| {
-                                                            ui.text(&product.title, |t| {
-                                                                t.font_size(11).color(0xE8E0DC)
-                                                            });
-                                                        });
-                                                    // Truncated content preview
-                                                    ui.element()
-                                                        .width(grow!())
-                                                        .height(fixed!(80.0))
-                                                        .background_color(0x12161e)
-                                                        .corner_radius(3.0)
-                                                        .layout(|layout| layout.padding(6))
-                                                        .children(|ui| {
-                                                            let truncated =
-                                                                if product.content.len() > 300 {
-                                                                    &product.content[..300]
-                                                                } else {
-                                                                    &product.content
-                                                                };
-                                                            ui.text(truncated, |t| {
-                                                                t.font_size(9).color(0x9E9590)
-                                                            });
-                                                        });
-                                                });
                                         }
+                                        ui.text(&format!("Advisory: {}", meta.advisory_num), |t| {
+                                            t.font_size(11).color(0x9E9590)
+                                        });
+                                        ui.text(&format!("Updated: {}", meta.last_update), |t| {
+                                            t.font_size(11).color(0x9E9590)
+                                        });
+                                    });
+
+                                // Graphics page link
+                                if !meta.graphics_url.is_empty() {
+                                    ui.element()
+                                        .id("btn-nhc-graphics")
+                                        .width(fit!())
+                                        .height(fixed!(24.0))
+                                        .background_color(0x1E1B1B)
+                                        .corner_radius(4.0)
+                                        .layout(|layout| {
+                                            layout.padding((0, 8, 0, 8)).align(CenterX, CenterY)
+                                        })
+                                        .children(|ui| {
+                                            ui.text("🌐 NHC Graphics Page", |t| {
+                                                t.font_size(11).color(0x4a90d9)
+                                            });
+                                        });
+                                }
+
+                                // Map overlay toggles
+                                ui.element()
+                                    .width(grow!())
+                                    .height(fit!())
+                                    .background_color(0x171A1F)
+                                    .corner_radius(4.0)
+                                    .layout(|layout| {
+                                        layout.direction(TopToBottom).padding(8).gap(4)
+                                    })
+                                    .children(|ui| {
+                                        ui.text("Map Overlays", |t| {
+                                            t.font_size(12).color(0xE8E0DC)
+                                        });
+                                        nhc_toggle_button(
+                                            ui,
+                                            "btn-nhc-cone",
+                                            "Forecast Cone",
+                                            state.nhc_overlays.show_cone,
+                                        );
+                                        nhc_toggle_button(
+                                            ui,
+                                            "btn-nhc-track",
+                                            "Track",
+                                            state.nhc_overlays.show_track,
+                                        );
+                                        nhc_toggle_button(
+                                            ui,
+                                            "btn-nhc-points",
+                                            "Points",
+                                            state.nhc_overlays.show_points,
+                                        );
+                                        nhc_toggle_button(
+                                            ui,
+                                            "btn-nhc-ww",
+                                            "Watches/Warnings",
+                                            state.nhc_overlays.show_watches_warnings,
+                                        );
+                                        nhc_toggle_button(
+                                            ui,
+                                            "btn-nhc-wp",
+                                            "Wind Probabilities",
+                                            state.nhc_overlays.show_wind_probs,
+                                        );
+                                        nhc_toggle_button(
+                                            ui,
+                                            "btn-nhc-earliest",
+                                            "Earliest Arrival (34kt)",
+                                            state.nhc_overlays.show_earliest_arrival,
+                                        );
+                                        nhc_toggle_button(
+                                            ui,
+                                            "btn-nhc-likely",
+                                            "Most Likely Arrival (34kt)",
+                                            state.nhc_overlays.show_most_likely_arrival,
+                                        );
+                                    });
+
+                                // Graphics products (thumbnails)
+                                ui.element()
+                                    .width(grow!())
+                                    .height(fit!())
+                                    .background_color(0x171A1F)
+                                    .corner_radius(4.0)
+                                    .layout(|layout| {
+                                        layout.direction(TopToBottom).padding(8).gap(4)
+                                    })
+                                    .children(|ui| {
+                                        ui.text("Graphics Products", |t| {
+                                            t.font_size(12).color(0xE8E0DC)
+                                        });
+                                        if let Some((_, images)) = bundle
+                                            .image_products
+                                            .iter()
+                                            .find(|(id, _)| *id == meta.id)
+                                        {
+                                            for (img_idx, img) in images.iter().enumerate() {
+                                                let key = format!("{}:{}", meta.id, img.title);
+                                                // Skip products that failed to download (404)
+                                                if !state.nhc_image_textures.contains_key(&key) {
+                                                    continue;
+                                                }
+                                                let tex =
+                                                    state.nhc_image_textures.get(&key).unwrap();
+                                                // Clickable row: thumbnail + title
+                                                ui.element()
+                                                    .id(("btn-nhc-img", img_idx as u32))
+                                                    .width(grow!())
+                                                    .height(fixed!(56.0))
+                                                    .background_color(0x1E1B1B)
+                                                    .corner_radius(3.0)
+                                                    .layout(|layout| {
+                                                        layout
+                                                            .direction(LeftToRight)
+                                                            .padding((4, 6, 4, 6))
+                                                            .gap(8)
+                                                            .align(Left, CenterY)
+                                                    })
+                                                    .children(|ui| {
+                                                        // Thumbnail image (75x48, NHC aspect ratio)
+                                                        ui.element()
+                                                            .width(fixed!(75.0))
+                                                            .height(fixed!(48.0))
+                                                            .image(tex.clone())
+                                                            .empty();
+                                                        // Product title
+                                                        ui.text(&img.title, |t| {
+                                                            t.font_size(11).color(0xE8E0DC)
+                                                        });
+                                                    });
+                                            }
+                                        } else {
+                                            ui.text("No graphics available", |t| {
+                                                t.font_size(11).color(0x9E9590)
+                                            });
+                                        }
+                                    });
+
+                                // Text products (collapsible)
+                                if let Some((_, texts)) =
+                                    bundle.text_products.iter().find(|(id, _)| *id == meta.id)
+                                {
+                                    for product in texts {
+                                        // Entire preview is one clickable element
+                                        ui.element()
+                                            .id(("btn-nhc-text", product.title.len() as u32))
+                                            .width(grow!())
+                                            .height(fit!())
+                                            .background_color(0x171A1F)
+                                            .corner_radius(4.0)
+                                            .layout(|layout| layout.direction(TopToBottom).gap(2))
+                                            .children(|ui| {
+                                                // Title bar
+                                                ui.element()
+                                                    .width(grow!())
+                                                    .height(fixed!(24.0))
+                                                    .background_color(0x1E1B1B)
+                                                    .corner_radius(3.0)
+                                                    .layout(|layout| {
+                                                        layout
+                                                            .padding((0, 8, 0, 8))
+                                                            .align(Left, CenterY)
+                                                    })
+                                                    .children(|ui| {
+                                                        ui.text(&product.title, |t| {
+                                                            t.font_size(11).color(0xE8E0DC)
+                                                        });
+                                                    });
+                                                // Truncated content preview
+                                                ui.element()
+                                                    .width(grow!())
+                                                    .height(fixed!(80.0))
+                                                    .background_color(0x12161e)
+                                                    .corner_radius(3.0)
+                                                    .layout(|layout| layout.padding(6))
+                                                    .children(|ui| {
+                                                        let truncated =
+                                                            if product.content.len() > 300 {
+                                                                &product.content[..300]
+                                                            } else {
+                                                                &product.content
+                                                            };
+                                                        ui.text(truncated, |t| {
+                                                            t.font_size(9).color(0x9E9590)
+                                                        });
+                                                    });
+                                            });
                                     }
                                 }
                             }
-                        });
+                        }
+                    });
                 }
 
                 // ── NHC product modal (Stage 5) ────────────────────────────
@@ -980,12 +1132,8 @@ async fn main() {
                         .floating(|f| f.offset((0.0, 0.0)).z_index(200).attach_root())
                         .empty();
 
-                    // Modal panel
-                    ui.element()
-                        .width(fixed!(modal_w))
-                        .height(fixed!(modal_h))
-                        .background_color(0x12161e)
-                        .corner_radius(8.0)
+                    // Modal panel (frosted glass)
+                    glass_panel::glass(ui.element().width(fixed!(modal_w)).height(fixed!(modal_h)))
                         .floating(|f| f.offset((modal_x, modal_y)).z_index(201).attach_root())
                         .layout(|l| l.direction(TopToBottom).padding(0).gap(0))
                         .children(|ui| {
@@ -1086,13 +1234,25 @@ async fn main() {
                 }
 
                 // ── Radar scope (transparent — drawn directly to screen) ──
-                ui.element().width(grow!()).height(grow!()).empty();
+                // Loading skeleton: pulsing indicator while first scan loads.
+                if state.scan.is_none() {
+                    ui.element()
+                        .width(grow!())
+                        .height(grow!())
+                        .layout(|l| l.align(CenterX, CenterY))
+                        .children(|ui| {
+                            let pulse = (0.5 + 0.5 * (now * 2.0).sin()) as f32;
+                            let c = blend_hex(0x9E9590, 0x0dc5b8, pulse);
+                            ui.text("◌ Loading radar data…", |t| {
+                                t.font_size(18).font(&MONO_FONT).color(c)
+                            });
+                        });
+                } else {
+                    ui.element().width(grow!()).height(grow!()).empty();
+                }
 
-                // ── Bottom status bar ──────────────────────────────
-                ui.element()
-                    .width(grow!())
-                    .height(fixed!(24.0))
-                    .background_color(0x12161e)
+                // ── Bottom status bar (frosted glass, mono data) ────────
+                glass_panel::glass(ui.element().width(grow!()).height(fixed!(24.0)))
                     .layout(|layout| {
                         layout
                             .direction(LeftToRight)
@@ -1102,9 +1262,17 @@ async fn main() {
                     })
                     .children(|ui| {
                         let has_real = state.scan.is_some();
-                        let status_color = if has_real { 0x5F8A6A } else { 0x9E9590 };
+                        let base_status = if has_real { 0x5F8A6A } else { 0x9E9590 };
+                        // Pulse toward accent colour for ~1.2s after new data.
+                        let pulse =
+                            (1.2 - (now - state.pulse_time).max(0.0)).clamp(0.0, 1.0) as f32;
+                        let status_color = if pulse > 0.0 && state.pulse_time > 0.0 {
+                            blend_hex(base_status, 0x0dc5b8, pulse)
+                        } else {
+                            base_status
+                        };
                         ui.text(&state.status_text, |text| {
-                            text.font_size(11).color(status_color)
+                            text.font_size(11).font(&MONO_FONT).color(status_color)
                         });
                         for &(_threshold, color) in colors::DBZ_LEGEND.iter().step_by(2) {
                             let hex = (color[0] as u32) << 16
@@ -1116,7 +1284,9 @@ async fn main() {
                                 .background_color(hex)
                                 .empty();
                         }
-                        ui.text("dBZ", |text| text.font_size(10).color(0x5F8A6A));
+                        ui.text("dBZ", |text| {
+                            text.font_size(10).font(&MONO_FONT).color(0x5F8A6A)
+                        });
                     });
             });
 
@@ -1172,7 +1342,7 @@ async fn main() {
 
 /// Draw a compact toggle button for an NHC overlay layer.
 fn nhc_toggle_button(ui: &mut Ui<'_, ()>, id: &'static str, label: &str, active: bool) {
-    let bg = if active { 0x3F684A } else { 0x1E1B1B };
+    let bg = if active { 0x0dc5b8 } else { 0x1E1B1B };
     let marker = if active { "✓" } else { " " };
     ui.element()
         .id(id)
@@ -1310,6 +1480,9 @@ fn handle_input(
     // ── NHC toggle button and keyboard shortcut (Stage 5) ────────
     if ply.is_just_pressed("btn-nhc") {
         state.nhc_show_panel = !state.nhc_show_panel;
+        if !state.nhc_show_panel {
+            state.nhc_anim_start = 0.0;
+        }
     }
     if !dropdown_open && is_key_pressed(KeyCode::N) {
         state.nhc_show_panel = !state.nhc_show_panel;

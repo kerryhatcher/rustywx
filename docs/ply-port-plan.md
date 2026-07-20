@@ -14,7 +14,7 @@ future-stage polish — every one stands on its own as a working app.
 | 3 | Custom Widgets | ✅ Complete | `v0.2.0-stage3` | [stage-3-custom-widgets.md](stages/stage-3-custom-widgets.md) |
 | 4 | Borders & Alerts | ✅ Complete | `v0.2.0-stage4` | [stage-4-borders-alerts.md](stages/stage-4-borders-alerts.md) |
 | 5 | Tropical | ✅ Complete | `v0.3.0-stage5` | [stage-5-tropical.md](stages/stage-5-tropical.md) |
-| 6 | Observatory Look | 🔲 Not started | `v0.4.0-stage6` | [stage-6-observatory-look.md](stages/stage-6-observatory-look.md) |
+| 6 | Observatory Look | ✅ Complete | `v0.4.0-stage6` | [stage-6-observatory-look.md](stages/stage-6-observatory-look.md) |
 | 7 | Settings & Polish | 🔲 Not started | `v0.5.0-stage7` | [stage-7-settings-polish.md](stages/stage-7-settings-polish.md) |
 | 8 | Linux Polish | 🔲 Not started | `v1.0.0-stage8` | [stage-8-linux-polish.md](stages/stage-8-linux-polish.md) |
 | — | **Post-v1** | 📝 Planned | — | [post-v1-multi-site-animation.md](post-v1-multi-site-animation.md) |
@@ -179,7 +179,7 @@ rustywx/
 | 3 | Custom Widgets | 1 ✅ local | Searchable site/tilt dropdowns, product toggle, collapsing |
 | 4 | Borders & Alerts | 1 ✅ | State lines, NWS warnings via Ply net |
 | 5 | Tropical | 2 ✅ | NHC data, GIS overlays, panel via Ply net |
-| 6 | Observatory Look | 2–3 | Visual design, custom blur shader, animations, responsive |
+| 6 | Observatory Look | 2–3 ✅ | Visual design, custom blur shader, animations, responsive |
 | 7 | Settings & Polish | 1 | Settings via Ply storage, shortcuts, error handling |
 | 8 | Linux Polish | 2 | HiDPI, Wayland, perf, a11y |
 

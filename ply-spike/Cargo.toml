@@ -1,12 +1,12 @@
 [package]
 name = "rustywx"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 license = "AGPL-3.0-only"
 publish = false
 
 [dependencies]
-ply-engine = { version = "1.1", features = ["net", "net-json", "storage"] }
+ply-engine = { version = "1.1", features = ["net", "net-json", "storage", "built-in-shaders", "text-styling"] }
 nexrad-data = "=1.0.0-rc.7"
 nexrad-model = "=1.0.0-rc.2"
 tokio = { version = "1", features = ["rt", "time", "sync"] }

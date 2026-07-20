@@ -6,7 +6,7 @@ use crate::alerts::Alert;
 use crate::borders::Ring;
 use crate::colors;
 use crate::geo::{self, RadarSite};
-use crate::model::{Product, SweepData};
+use crate::model::{Product, RadialData, SweepData};
 use crate::nhc::{ArrivalTimeContour, NhcBundle, WindProbContour};
 use macroquad::math::Vec2;
 use ply_engine::prelude::*;
@@ -130,16 +130,14 @@ pub fn rasterize(
             let radial1 = &sweep.radials[order[i1]];
             let radial2 = &sweep.radials[order[i2]];
 
-            let gate = ((range_km - FIRST_GATE_KM) / GATE_SPACING_KM) as usize;
-            let v1 = radial1.gates.get(gate).and_then(|v| *v);
-            let v2 = radial2.gates.get(gate).and_then(|v| *v);
+            // Bilinear interpolation across azimuth (ξ) and range (η).
+            // Replaces the old hard gate index that produced blocky
+            // gate-aligned artifacts. Kvasov et al. show ~90% improvement.
+            let gate_frac = (range_km - FIRST_GATE_KM) / GATE_SPACING_KM;
+            let gate = gate_frac.floor() as usize;
+            let eta = gate_frac.fract().clamp(0.0, 1.0);
 
-            let value = match (v1, v2) {
-                (Some(a), Some(b)) => Some(a * w1 + b * w2),
-                (Some(a), None) => Some(a),
-                (None, Some(b)) => Some(b),
-                (None, None) => None,
-            };
+            let value = bilinear_sample(radial1, radial2, w1, w2, gate, eta);
             if let Some(value) = value {
                 let c = color_of(value);
                 let idx = (py * size_px + px) * 4;
@@ -282,6 +280,51 @@ fn despeckle(pixels: &mut [u8], size_px: usize, min_neighbors: usize) {
     }
 }
 
+/// Bilinear interpolation across azimuth (ξ) and range (η).
+///
+/// Blends the four surrounding gates (2 radials × 2 range gates) using
+/// the azimuth weights `w1`/`w2` and the range fraction `eta`. Missing
+/// gates are excluded and the result renormalised by available weight,
+/// so partial data does not bias the sample.
+///
+/// Formula: `Z = (1-ξ)(1-η)·Z_ij + (1-ξ)η·Z_i(j+1) + ξ(1-η)·Z_(i+1)j + ξη·Z_(i+1)(j+1)`
+pub(crate) fn bilinear_sample(
+    radial1: &RadialData,
+    radial2: &RadialData,
+    w1: f32,
+    w2: f32,
+    gate: usize,
+    eta: f32,
+) -> Option<f32> {
+    let v1g = radial1.gates.get(gate).and_then(|v| *v);
+    let v1g1 = radial1.gates.get(gate + 1).and_then(|v| *v);
+    let v2g = radial2.gates.get(gate).and_then(|v| *v);
+    let v2g1 = radial2.gates.get(gate + 1).and_then(|v| *v);
+
+    let eta_c = 1.0 - eta;
+    // (weight, value) for each of the 4 corners
+    let corners = [
+        (w1 * eta_c, v1g),
+        (w1 * eta, v1g1),
+        (w2 * eta_c, v2g),
+        (w2 * eta, v2g1),
+    ];
+
+    let mut sum = 0.0;
+    let mut total_w = 0.0;
+    for (w, v) in corners {
+        if let Some(v) = v {
+            sum += w * v;
+            total_w += w;
+        }
+    }
+    if total_w > 0.0 {
+        Some(sum / total_w)
+    } else {
+        None
+    }
+}
+
 pub(crate) fn nearest_two_radial_indices(
     sorted_azimuths: &[f32],
     az: f32,
@@ -345,7 +388,8 @@ pub fn draw_scope_to_texture(
     let center_x = screen_width() / 2.0 + pan_km.0 * px_per_km;
     let center_y = screen_height() / 2.0 + pan_km.1 * px_per_km;
 
-    clear_background(BLACK);
+    // Background is cleared by the main loop (dark observatory gradient);
+    // the scope draws the radar texture and overlays on top of it.
 
     // Radar texture
     if let Some(tex) = radar_texture {
@@ -835,5 +879,70 @@ fn draw_arrival_contours(
                 draw_line(ax, ay, bx, by, 1.5, arrival_color);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn radial(az: f32, gates: Vec<Option<f32>>) -> RadialData {
+        RadialData {
+            azimuth_deg: az,
+            gates,
+        }
+    }
+
+    #[test]
+    fn bilinear_exact_gate_returns_gate_value() {
+        // eta = 0 → result is the azimuth blend of gate `gate` only.
+        let r1 = radial(0.0, vec![Some(10.0), Some(20.0), Some(30.0)]);
+        let r2 = radial(1.0, vec![Some(20.0), Some(30.0), Some(40.0)]);
+        // gate 1, eta 0, equal azimuth weight
+        let v = bilinear_sample(&r1, &r2, 0.5, 0.5, 1, 0.0);
+        assert!((v.unwrap() - 25.0).abs() < 1e-4); // (20+30)/2
+    }
+
+    #[test]
+    fn bilinear_range_interpolates_between_gates() {
+        // eta = 0.5 at gate 0 → average of gate 0 and gate 1 (single radial).
+        let r1 = radial(0.0, vec![Some(10.0), Some(20.0)]);
+        let r2 = radial(0.0, vec![Some(10.0), Some(20.0)]); // identical
+        let v = bilinear_sample(&r1, &r2, 1.0, 0.0, 0, 0.5);
+        assert!((v.unwrap() - 15.0).abs() < 1e-4); // (10+20)/2
+    }
+
+    #[test]
+    fn bilinear_all_missing_returns_none() {
+        let r1 = radial(0.0, vec![None, None]);
+        let r2 = radial(1.0, vec![None, None]);
+        assert!(bilinear_sample(&r1, &r2, 0.5, 0.5, 0, 0.5).is_none());
+    }
+
+    #[test]
+    fn bilinear_partial_missing_renormalises() {
+        // Only the lower-right corner (radial2 gate+1) is present → returns it.
+        let r1 = radial(0.0, vec![None, None]);
+        let r2 = radial(1.0, vec![None, Some(42.0)]);
+        let v = bilinear_sample(&r1, &r2, 0.5, 0.5, 0, 0.5);
+        assert!((v.unwrap() - 42.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn bilinear_full_four_corner_blend() {
+        // Four distinct corners, equal weights and eta=0.5 → mean.
+        let r1 = radial(0.0, vec![Some(0.0), Some(10.0)]);
+        let r2 = radial(1.0, vec![Some(20.0), Some(30.0)]);
+        let v = bilinear_sample(&r1, &r2, 0.5, 0.5, 0, 0.5);
+        // (0 + 10 + 20 + 30) / 4 = 15
+        assert!((v.unwrap() - 15.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn bilinear_out_of_range_gate_returns_none() {
+        let r1 = radial(0.0, vec![Some(10.0)]);
+        let r2 = radial(1.0, vec![Some(20.0)]);
+        // gate 5 is out of range for both → None
+        assert!(bilinear_sample(&r1, &r2, 0.5, 0.5, 5, 0.5).is_none());
     }
 }

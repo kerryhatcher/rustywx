@@ -116,4 +116,23 @@ pub struct AppState {
 
     /// Last mouse position for manual pan delta calculation.
     pub last_mouse_pos: Option<(f32, f32)>,
+
+    // ── Stage 6: Observatory Look (animations / auto-hide) ──────────
+    /// Wall-clock time at app start (for staggered entrance animation).
+    pub start_time: f64,
+    /// Wall-clock time of the last pointer/keyboard activity (control-bar
+    /// auto-hide). Controls fade out after 3s of inactivity.
+    pub last_activity: f64,
+    /// Whether the control bar is currently visible (auto-hide state).
+    pub controls_visible: bool,
+    /// NHC panel open/close animation start time (0 = not animating).
+    pub nhc_anim_start: f64,
+    /// NHC panel animation progress at animation start (for easing).
+    pub nhc_anim_from: f32,
+    /// Wall-clock time of the last new-data arrival (for pulse animation).
+    pub pulse_time: f64,
+    /// Radar sweep line angle in degrees (optional visual flourish).
+    pub sweep_angle: f32,
+    /// Previous-frame hovered element IDs (for hover-glow styling).
+    pub hovered_ids: Vec<ply_engine::prelude::Id>,
 }
