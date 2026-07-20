@@ -103,6 +103,7 @@ setup:
 setup-tools:
     @echo "Install these tools manually:"
     @echo "  gitleaks:  https://github.com/gitleaks/gitleaks#installing"
+    @echo "           or use Docker: source ~/.zshrc.d/gitleaks.zsh"
     @echo "  trivy:     https://trivy.dev/latest/getting-started/installation/"
     @echo "  kingfisher: cargo install kingfisher"
     @echo "  shellcheck: apt install shellcheck"
