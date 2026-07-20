@@ -1,6 +1,6 @@
 # Stage 4: "Borders & Alerts" — Map Overlays
 
-**Status:** 🟡 Implementation complete; pushed; CI pending; tag pending
+**Status:** ✅ Complete
 
 **Target tag:** `v0.2.0-stage4`
 
@@ -121,7 +121,7 @@ re-fetching alerts.
 - [x] No overlays when none are active (graceful empty state)
 - [x] `cargo fmt`, clippy, check, tests pass locally
 - [x] Workspace unit tests: 28 passed (13 new)
-- [ ] `git push` → CI passes → `git tag v0.2.0-stage4` → `git push --tags`
+- [x] `git push` → CI passes → `git tag v0.2.0-stage4` → `git push --tags`
 
 ## Follow-ups / Deferred Polish
 

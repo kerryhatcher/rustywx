@@ -12,7 +12,7 @@ future-stage polish — every one stands on its own as a working app.
 | 1 | Hello Radar | ✅ Complete | `v0.2.0-stage1` | [stage-1-hello-radar.md](stages/stage-1-hello-radar.md) |
 | 2 | Live Data | ✅ Complete | `v0.2.0-stage2` | [stage-2-live-data.md](stages/stage-2-live-data.md) |
 | 3 | Custom Widgets | ✅ Complete | `v0.2.0-stage3` | [stage-3-custom-widgets.md](stages/stage-3-custom-widgets.md) |
-| 4 | Borders & Alerts | 🟡 Complete; CI pending; tag pending | `v0.2.0-stage4` | [stage-4-borders-alerts.md](stages/stage-4-borders-alerts.md) |
+| 4 | Borders & Alerts | ✅ Complete | `v0.2.0-stage4` | [stage-4-borders-alerts.md](stages/stage-4-borders-alerts.md) |
 | 5 | Tropical | 🔲 Not started | `v0.3.0-stage5` | [stage-5-tropical.md](stages/stage-5-tropical.md) |
 | 6 | Observatory Look | 🔲 Not started | `v0.4.0-stage6` | [stage-6-observatory-look.md](stages/stage-6-observatory-look.md) |
 | 7 | Settings & Polish | 🔲 Not started | `v0.5.0-stage7` | [stage-7-settings-polish.md](stages/stage-7-settings-polish.md) |
