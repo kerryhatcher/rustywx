@@ -60,6 +60,7 @@ centered on the radar, with north pointing up, exactly like a map.
 | **N / E / S / W spokes** | Compass directions, for orientation. |
 | **Small circles labeled "Macon" / "Warner Robins"** | City markers, positioned by real latitude/longitude. |
 | **Thin brown lines** | State borders (Georgia/Alabama/South Carolina/Florida), for orientation. Only drawn once the app has downloaded and cached them — see below. |
+| **Bright colored outlines** | Active NWS warnings and watches whose polygons intersect the radar display (e.g., red for tornado warnings, orange for severe thunderstorm warnings). Updated automatically in the background. |
 | **Colored regions** | The radar data itself — precipitation or wind, depending on the selected product (see below). |
 | **Color legend, bottom-left** | The color scale for whichever product is currently displayed. |
 | **Timestamp, top-left** | When the currently displayed scan was captured, in both UTC and your local time. |
@@ -124,7 +125,8 @@ The control bar at the top of the window has three parts:
 ## Auto-refresh and status messages
 
 rustywx checks for a new volume scan every **2 minutes** in the background,
-without interrupting what you're looking at. You'll see one of these in the
+without interrupting what you're looking at. It also refreshes the active
+NWS warning/watch list every **2 minutes**. You'll see one of these in the
 status bar:
 
 | Message | Meaning |
@@ -157,6 +159,16 @@ This is often correct, not a bug — it means little or no precipitation is
 within range of KJGX right now. Try a different tilt angle, or check back
 later. If you have reason to believe there should be weather showing (e.g.
 you can see rain out the window), see the note below about coverage.
+
+**I see "NWS alerts unavailable: …" in the status bar.**
+The warning/watch overlay couldn't reach `api.weather.gov`. The radar image
+and all other controls continue to work normally; rustywx will keep retrying
+in the background.
+
+**Why don't I see any warning/watch outlines?**
+If there are no active warnings or watches near Macon, nothing is drawn. The
+overlay only appears when NWS has an actual warning or watch whose polygon
+overlaps the 230 km radar display.
 
 **Velocity shows nothing even though Reflectivity has data.**
 Velocity data can be genuinely absent below a certain range near the radar,

@@ -5,14 +5,19 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1"
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 eframe = "0.35"
 egui = "0.35"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 nexrad-data = "1.0.0-rc.7"
 nexrad-model = "1.0.0-rc.2"
+rusqlite = { version = "0.34", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "time"] }
 ureq = "3"
+webbrowser = "0.8"
+zip = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }

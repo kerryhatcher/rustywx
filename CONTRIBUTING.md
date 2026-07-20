@@ -17,6 +17,7 @@ how to extend it. For what the app *does* from a user's perspective, see
 ```
 cargo build             # debug build
 cargo run --release     # run the GUI; release mode matters, see below
+just run                # alias for `cargo run --release`
 ```
 
 Debug builds are fine for `cargo check`/`cargo test`, but running the actual

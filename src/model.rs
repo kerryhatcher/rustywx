@@ -5,9 +5,10 @@
 
 use chrono::{DateTime, Utc};
 use nexrad_model::data::{MomentValue, Scan, Sweep};
+use serde::{Deserialize, Serialize};
 
 /// Radar products the app can display.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, Serialize, Deserialize)]
 pub enum Product {
     Reflectivity,
     Velocity,
@@ -23,18 +24,21 @@ impl Product {
 }
 
 /// One ray of gate values. `None` gates are below threshold or range folded.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct RadialData {
     pub azimuth_deg: f32,
     pub gates: Vec<Option<f32>>,
 }
 
 /// One full rotation at a single elevation angle, for a single product.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SweepData {
     pub elevation_deg: f32,
     pub radials: Vec<RadialData>,
 }
 
 /// A decoded volume scan, split per product, sweeps sorted by elevation.
+#[derive(Serialize, Deserialize)]
 pub struct ScanData {
     pub timestamp: DateTime<Utc>,
     pub reflectivity: Vec<SweepData>,

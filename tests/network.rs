@@ -4,7 +4,7 @@
 #[tokio::test]
 #[ignore = "requires network access to the NEXRAD AWS archive"]
 async fn fetches_and_decodes_latest_kjgx_volume() {
-    let scan = rustywx::data::fetch_latest_scan(rustywx::data::SITE, None)
+    let scan = rustywx::data::fetch_latest_scan("KJGX", None)
         .await
         .expect("fetch+decode should succeed")
         .expect("first fetch should return a scan");

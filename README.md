@@ -11,6 +11,7 @@ with egui.
 - Elevation tilt selector
 - Auto-refresh (polls for new volume scans every 2 minutes)
 - Range rings, cardinal spokes, city markers, and state border lines
+- NWS warning/watch polygon overlay (refreshed every 2 minutes)
 
 ## Run
 

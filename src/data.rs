@@ -1,15 +1,13 @@
-//! Background worker: polls the AWS archive bucket for the latest KJGX
-//! volume, decodes it off the UI thread, and reports over an mpsc channel.
+//! Background worker: polls the AWS archive bucket for the latest volume,
+//! decodes it off the UI thread, and reports over an mpsc channel.
 
 use crate::model::ScanData;
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use nexrad_data::aws::archive::{Identifier, download_file, list_files};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
-/// The NEXRAD site covering Macon, GA (Robins AFB).
-pub const SITE: &str = "KJGX";
 /// How often to check for a new volume scan.
 pub const POLL_INTERVAL: Duration = Duration::from_secs(120);
 
@@ -91,7 +89,14 @@ pub async fn fetch_latest_scan(
 
 /// Spawn the background polling thread. It owns a current-thread tokio
 /// runtime; all communication with the UI is via `tx` + `request_repaint`.
-pub fn spawn_worker(tx: Sender<WorkerMessage>, egui_ctx: egui::Context) {
+/// `site_rx` delivers site-change requests; `recv_timeout` is used so the
+/// worker wakes immediately when the user selects a new radar.
+pub fn spawn_worker(
+    tx: Sender<WorkerMessage>,
+    egui_ctx: egui::Context,
+    initial_site: String,
+    site_rx: Receiver<String>,
+) {
     std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -105,19 +110,41 @@ pub fn spawn_worker(tx: Sender<WorkerMessage>, egui_ctx: egui::Context) {
             }
         };
 
+        let mut current_site = initial_site;
         let mut last_timestamp = None;
         let mut consecutive_errors: u32 = 0;
+        // Start with a zero delay so the first fetch happens immediately.
+        let mut delay = Duration::ZERO;
 
         loop {
+            // Wait for either a site-change request or the poll delay.
+            match site_rx.recv_timeout(delay) {
+                Ok(new_site) => {
+                    current_site = new_site;
+                    last_timestamp = None;
+                    consecutive_errors = 0;
+                    delay = Duration::ZERO; // fetch immediately
+                    continue;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    // Timeout elapsed — proceed with the poll.
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return; // UI dropped the sender; shut down.
+                }
+            }
+
+            let site = current_site.clone();
             let _ = tx.send(WorkerMessage::Status(format!(
-                "Checking {SITE} for new data…"
+                "Checking {site} for new data…"
             )));
             egui_ctx.request_repaint();
 
-            let delay = match runtime.block_on(fetch_latest_scan(SITE, last_timestamp)) {
+            delay = match runtime.block_on(fetch_latest_scan(&site, last_timestamp)) {
                 Ok(Some(scan)) => {
                     consecutive_errors = 0;
                     last_timestamp = Some(scan.timestamp);
+                    crate::cache::save_radar(&site, &scan);
                     let _ = tx.send(WorkerMessage::NewScan(Box::new(scan)));
                     retry_delay(consecutive_errors)
                 }
@@ -128,17 +155,15 @@ pub fn spawn_worker(tx: Sender<WorkerMessage>, egui_ctx: egui::Context) {
                 }
                 Err(e) => {
                     consecutive_errors += 1;
-                    let delay = retry_delay(consecutive_errors);
+                    let d = retry_delay(consecutive_errors);
                     let _ = tx.send(WorkerMessage::Error(format!(
                         "{e:#} — retrying in {}s",
-                        delay.as_secs()
+                        d.as_secs()
                     )));
-                    delay
+                    d
                 }
             };
             egui_ctx.request_repaint();
-
-            std::thread::sleep(delay);
         }
     });
 }
