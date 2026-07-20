@@ -1,5 +1,7 @@
 # rustywx → Ply Port — Staged Implementation Plan
 
+**Target Platform:** Linux Desktop (v1.0)
+
 Each stage ships a **runnable, validatable** increment. No stage depends on
 future-stage polish — every one stands on its own as a working app.
 
@@ -39,16 +41,8 @@ Full research in `research/`.
 - **Frosted glass:** Ply's `built-in-shaders` has GLOW but no Gaussian blur.
   A custom GLSL ES 1.00 fragment shader will be needed for the blur effect.
   ✅ Spike S1 validated this — 5×5 Gaussian blur compiles and runs.
-- **WASM radar data:** The NEXRAD S3 bucket does NOT serve CORS headers.
-  WASM builds will need a relay proxy for live radar data (see Stage 8).
-- **NWS alerts from WASM:** Works — `api.weather.gov` returns
-  `Access-Control-Allow-Origin: *`. Don't set a custom `User-Agent` header.
-- **NHC data from WASM:** Researched (R1 in `de-risking-report.md`).
-  `CurrentStorms.json` has **NO CORS** (needs relay proxy).
-  GIS MapServer (`mapservices.weather.noaa.gov`) **has CORS** — overlays
-  work directly from WASM.
-- **Natural Earth GeoJSON from WASM:** Works — GitHub serves
-  `Access-Control-Allow-Origin: *`. Borders load directly in WASM builds.
+- **Linux desktop:** Native HTTP clients (Ply `net`, `reqwest`) don't require CORS headers.
+  All data sources (NEXRAD S3, NHC, NWS alerts, Natural Earth) work directly without proxies.
 
 ## Git Workflow
 
@@ -362,38 +356,30 @@ typography, responsive layout.
 
 ---
 
-## Stage 8: "Cross-Platform" — WASM, Android, Perf
+## Stage 8: "Linux Polish" — Performance & Accessibility
 
-**Goal:** Build and test on all target platforms.
+**Goal:** Optimize for Linux desktop, ensure accessibility compliance.
 
 **Scope:**
-- WASM build via `plyx web` (requires `rustup target add wasm32-unknown-unknown`;
-  see R3 in `de-risking-report.md`)
-- **WASM relay proxy (Cloudflare Worker).** Two routes are needed:
-  | Route | Proxied URL | Reason |
-  |---|---|---|
-  | `/api/nexrad/*` | NEXRAD S3 (`unidata-nexrad-level2`) | S3 has no CORS |
-  | `/api/nhc/storms` | `www.nhc.noaa.gov/CurrentStorms.json` | CloudFront has no CORS |
-  **Not needed** (direct fetch from WASM): NWS Alerts, NHC GIS overlays,
-  Natural Earth GeoJSON — all serve CORS headers.
-- Android build via `plyx apk`
 - Performance profiling (frame time, texture cache hit rate)
+- HiDPI testing (verify scaling on high-DPI displays)
+- Wayland testing (verify native Wayland support, no X11 fallback issues)
 - Accessibility audit (labels, tab order, screen reader via Ply's `a11y`
-  feature — AccessKit on desktop, JS bridge on web)
+  feature — AccessKit on desktop)
+- System tray icon (optional — runs in background, quick access to current alerts)
 - Final cleanup and release build
 
-**Deliverable:** App runs on desktop, web, and Android.
+**Deliverable:** Optimized Linux desktop build with full accessibility support.
 
 **Validation:**
-- [ ] `plyx web` produces working WASM build
-- [ ] WASM build loads real radar data via relay proxy (or documented limitation)
-- [ ] `plyx apk` produces working Android APK
-- [ ] Frame time <16ms (60fps) on desktop
-- [ ] Frame time <33ms (30fps) on mobile
+- [ ] Frame time <16ms (60fps) on target hardware
 - [ ] Texture cache hit rate >90% (scope not re-rendered when static)
+- [ ] HiDPI display renders correctly (no blurry UI)
+- [ ] Wayland native — no X11 warnings or fallback
 - [ ] Screen reader announces controls correctly
 - [ ] Tab navigation works through all interactive elements
 - [ ] Release build runs without debug overhead
+- [ ] (Optional) System tray icon shows current alert status
 - [ ] `git push` → CI passes → `git tag v1.0.0-stage8` → `git push --tags`
 
 ---
@@ -470,10 +456,9 @@ the egui root crate and `ply-spike` buildable.
   Download from Google Fonts or GitHub releases, place in `assets/fonts/`,
   and commit to the repo. On Android, Ply's asset bundling handles paths;
   on WASM, fonts are bundled into the build by `plyx web`.
-- **`plyx init` vs manual scaffold:** Stage 1 uses a manual scaffold
-  (matching the existing `ply-spike/` structure). `plyx web` and `plyx apk`
-  in Stage 8 have been tested against this structure (R3) — they work as
-  long as `wasm32-unknown-unknown` is installed.
+- **Manual scaffold:** Stage 1 uses a manual scaffold
+  (matching the existing `ply-spike/` structure). This is sufficient for Linux
+  desktop builds — no `plyx` tooling required for Stage 8.
 
 ## Summary
 
@@ -492,13 +477,15 @@ the egui root crate and `ply-spike` buildable.
 (S1–S6 in `de-risking-report.md`) to de-risk the blur shader, nexrad-data
 integration, and custom widget approach before their respective stages.
 
+**Linux-desktop scope saves ~7–10 hours** by eliminating WASM/Android spikes
+(S7, S9, S10) and simplifying Stage 8.
+
 ### Key risk items
 
 | Risk | Stage | Mitigation |
 |---|---|---|
 | Custom GLSL blur shader | 6 | ✅ Spike S1 validated — 5×5 Gaussian blur compiles and runs; GLOW shader is fallback |
-| WASM CORS relay proxy | 8 | Cloudflare Worker with 2 routes (NEXRAD S3 + NHC CurrentStorms.json) |
-| NHC CORS: CurrentStorms.json blocked on WASM | 5, 8 | Confirmed no CORS (R1); relay proxy route added to Stage 8 Worker |
-| Font loading on WASM/Android | 6 | Test font bundling early; DejaVuSansMono from spike is known-good fallback |
+| Font loading on Linux | 6 | Standard file paths; test early with Inter/JetBrains Mono TTF files |
+| HiDPI/Wayland compatibility | 8 | Test on target hardware; Ply uses AccessKit for native Linux support |
 | nexrad-data + Ply integration unvalidated | 2 | ✅ Spike S2 validated — background-thread + mpsc pattern works |
 | Custom dropdown widget unvalidated | 3 | ✅ Spike S3 validated — Ply-native approach works; no raw macroquad needed |
