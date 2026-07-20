@@ -137,7 +137,7 @@ button for each product.
 - [x] Data refreshes every 5 minutes
 - [x] NHC CORS status confirmed: CurrentStorms.json native (no CORS needed on desktop), GIS MapServer direct
 - [x] `cargo fmt`, clippy, check, tests pass locally (54 tests)
-- [ ] `git push` → CI passes → `git tag v0.3.0-stage5` → `git push --tags`
+- [x] `git push` → CI passes → `git tag v0.3.0-stage5` → `git push --tags` ✅
 
 ## Follow-ups / Deferred Polish
 
