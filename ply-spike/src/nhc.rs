@@ -532,20 +532,26 @@ pub fn parse_arrival_kml(kml: &str) -> Vec<ArrivalTimeContour> {
         let placemark = &kml[abs_start..abs_end];
         search_start = abs_end;
 
-        let Some(name) = extract_xml_text(placemark, "name") else {
-            continue;
-        };
-        let name = name.trim().to_string();
-        if name.is_empty() {
-            continue;
-        }
+        // NHC arrival time KML placemarks often lack a <name> element;
+        // the label is embedded in the <description> CDATA instead.
+        // Fall back to stripping HTML from the description, then to an
+        // empty string so the contour is still drawn.
+        let label = extract_xml_text(placemark, "name")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                extract_xml_text(placemark, "description")
+                    .map(|s| strip_html(&s).trim().to_string())
+                    .filter(|s| !s.is_empty())
+            })
+            .unwrap_or_default();
 
         let rings = extract_kml_rings(placemark);
         if rings.is_empty() {
             continue;
         }
 
-        contours.push(ArrivalTimeContour { label: name, rings });
+        contours.push(ArrivalTimeContour { label, rings });
     }
 
     contours
@@ -752,19 +758,23 @@ pub fn parse_gis_storms(
     {
         for feature in features {
             let name = prop_str(feature, "stormname");
-            if let Some(storm) = storms.iter_mut().find(|s| s.name == name) {
+            if let Some(storm) = storms.iter_mut().find(|s| name.contains(&s.name)) {
                 storm.track = extract_rings_for_feature(feature);
             }
         }
     }
 
     // Merge forecast points.
+    // The points layer (5) uses a full "Tropical Storm Fausto" style
+    // stormname, while the cone layer (7) uses just "Fausto".  Match by
+    // checking if any existing storm's name is contained in the points
+    // feature's stormname.
     if let Some(points) = points_json
         && let Some(features) = points.get("features").and_then(Value::as_array)
     {
         for feature in features {
             let name = prop_str(feature, "stormname");
-            if let Some(storm) = storms.iter_mut().find(|s| s.name == name)
+            if let Some(storm) = storms.iter_mut().find(|s| name.contains(&s.name))
                 && let Some(geom) = feature.get("geometry")
                 && let Some(coords) = geom.get("coordinates").and_then(Value::as_array)
                 && let (Some(lon), Some(lat)) = (
@@ -785,7 +795,7 @@ pub fn parse_gis_storms(
         for feature in features {
             let name = prop_str(feature, "stormname");
             let ww_type = prop_str(feature, "tcww");
-            if let Some(storm) = storms.iter_mut().find(|s| s.name == name) {
+            if let Some(storm) = storms.iter_mut().find(|s| name.contains(&s.name)) {
                 for ring in extract_rings_for_feature(feature) {
                     storm.watches_warnings.push((ring, ww_type.clone()));
                 }
@@ -1564,5 +1574,57 @@ mod tests {
     fn nhc_fetch_state_starts_idle() {
         let state = NhcFetchState::new();
         assert!(!state.is_fetching());
+    }
+
+    #[test]
+    fn parse_arrival_kml_without_name_element() {
+        // NHC arrival time KML uses <description> instead of <name> for labels
+        let kml = r#"<Placemark>
+    <Snippet maxLines="0">empty</Snippet>
+    <styleUrl>#toa_line</styleUrl>
+    <description><![CDATA[<table><tr><td>Mon 2 pm</td></tr></table>]]></description>
+    <LineString><coordinates>-85.4,27.0,0.0 -85.5,27.1,0.0 -85.6,27.2,0.0 -85.4,27.0,0.0</coordinates></LineString>
+</Placemark>"#;
+        let contours = parse_arrival_kml(kml);
+        assert_eq!(contours.len(), 1);
+        assert!(!contours[0].rings.is_empty());
+        // Label extracted from description HTML
+        assert!(contours[0].label.contains("Mon"));
+    }
+
+    #[test]
+    fn parse_arrival_kml_no_name_no_description() {
+        // Placemark with only coordinates — should still produce a contour
+        let kml = r#"<Placemark>
+    <LineString><coordinates>-85.4,27.0,0.0 -85.5,27.1,0.0 -85.6,27.2,0.0 -85.4,27.0,0.0</coordinates></LineString>
+</Placemark>"#;
+        let contours = parse_arrival_kml(kml);
+        assert_eq!(contours.len(), 1);
+        assert!(contours[0].label.is_empty());
+        assert!(!contours[0].rings.is_empty());
+    }
+
+    #[test]
+    fn parse_gis_storms_matches_points_by_substring() {
+        // Points layer uses "Tropical Storm Fausto" but cone uses "Fausto"
+        let cone_json: Value = serde_json::from_str(r#"{
+            "features": [{
+                "properties": {"stormname": "Fausto", "stormtype": "TS", "basin": "EP", "advisnum": "7", "advdate": "2026-07-20"},
+                "geometry": {"type": "Polygon", "coordinates": [[[-80.0, 25.0], [-81.0, 26.0], [-80.5, 27.0], [-80.0, 25.0]]]}
+            }]
+        }"#).unwrap();
+        let points_json: Value = serde_json::from_str(
+            r#"{
+            "features": [{
+                "properties": {"stormname": "Tropical Storm Fausto", "datelbl": "8:00 AM Mon"},
+                "geometry": {"type": "Point", "coordinates": [-116.4, 13.5]}
+            }]
+        }"#,
+        )
+        .unwrap();
+        let storms = parse_gis_storms(Some(&cone_json), None, Some(&points_json), None);
+        assert_eq!(storms.len(), 1);
+        assert_eq!(storms[0].points.len(), 1);
+        assert_eq!(storms[0].points[0].2, "8:00 AM Mon");
     }
 }
