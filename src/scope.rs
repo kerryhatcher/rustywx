@@ -18,7 +18,7 @@ pub const RASTER_SIZE_PX: usize = 1024;
 const BORDER_COLOR: Color32 = Color32::from_rgb(0x8a, 0x6d, 0x4a);
 
 /// Toggle options for optional NHC overlay layers.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct OverlayOptions {
     pub show_wind_probs_34kt: bool,
     pub show_wind_probs_50kt: bool,
@@ -35,23 +35,6 @@ pub struct OverlayOptions {
     pub earliest_arrival: Vec<crate::nhc::ArrivalTimeContour>,
     /// Reference to most likely arrival contours.
     pub most_likely_arrival: Vec<crate::nhc::ArrivalTimeContour>,
-}
-
-impl Default for OverlayOptions {
-    fn default() -> Self {
-        Self {
-            show_wind_probs_34kt: false,
-            show_wind_probs_50kt: false,
-            show_wind_probs_64kt: false,
-            show_earliest_arrival: false,
-            show_most_likely_arrival: false,
-            wind_probs_34kt: Vec::new(),
-            wind_probs_50kt: Vec::new(),
-            wind_probs_64kt: Vec::new(),
-            earliest_arrival: Vec::new(),
-            most_likely_arrival: Vec::new(),
-        }
-    }
 }
 
 /// Pre-process a sweep: apply range-adaptive thresholding (reflectivity
@@ -154,9 +137,7 @@ fn morphological_close(pixels: &mut [Color32], size_px: usize, radius: usize) {
                 for dx in -r..=r {
                     let nx = x + dx;
                     let ny = y + dy;
-                    if nx >= 0 && nx < s && ny >= 0 && ny < s
-                        && mask[(ny * s + nx) as usize]
-                    {
+                    if nx >= 0 && nx < s && ny >= 0 && ny < s && mask[(ny * s + nx) as usize] {
                         found = true;
                         break 'outer;
                     }
@@ -181,9 +162,7 @@ fn morphological_close(pixels: &mut [Color32], size_px: usize, radius: usize) {
                 for dx in -r..=r {
                     let nx = x + dx;
                     let ny = y + dy;
-                    if nx >= 0 && nx < s && ny >= 0 && ny < s
-                        && !dilated[(ny * s + nx) as usize]
-                    {
+                    if nx >= 0 && nx < s && ny >= 0 && ny < s && !dilated[(ny * s + nx) as usize] {
                         invalid = true;
                         break 'outer;
                     }
@@ -272,8 +251,7 @@ pub fn rasterize(
 
             // Screen +y is down; north (0 deg) points up, east 90 deg right.
             let azimuth = dx.atan2(-dy).to_degrees().rem_euclid(360.0);
-            let (i1, i2, w1, w2) =
-                nearest_two_radial_indices(&sorted_azimuths, azimuth);
+            let (i1, i2, w1, w2) = nearest_two_radial_indices(&sorted_azimuths, azimuth);
             let radial1 = &sweep.radials[order[i1]];
             let radial2 = &sweep.radials[order[i2]];
 
@@ -369,7 +347,10 @@ fn despeckle(pixels: &mut [Color32], size_px: usize, min_neighbors: usize) {
                     }
                     let nx = x + dx;
                     let ny = y + dy;
-                    if nx >= 0 && nx < s && ny >= 0 && ny < s
+                    if nx >= 0
+                        && nx < s
+                        && ny >= 0
+                        && ny < s
                         && original[(ny * s + nx) as usize] != Color32::TRANSPARENT
                     {
                         neighbors += 1;
@@ -424,27 +405,15 @@ fn draw_wind_prob_overlay(
             for pair in ring.windows(2) {
                 let (lat1, lon1) = pair[0];
                 let (lat2, lon2) = pair[1];
-                let (r1, b1) =
-                    crate::geo::range_bearing(site.lat, site.lon, lat1, lon1);
-                let (r2, b2) =
-                    crate::geo::range_bearing(site.lat, site.lon, lat2, lon2);
+                let (r1, b1) = crate::geo::range_bearing(site.lat, site.lon, lat1, lon1);
+                let (r2, b2) = crate::geo::range_bearing(site.lat, site.lon, lat2, lon2);
                 // Use a generous filter — these are basin-wide contours
                 // meant to be viewed when zoomed out.
-                if r1 as f32 > MAX_RANGE_KM * 5.0
-                    && r2 as f32 > MAX_RANGE_KM * 5.0
-                {
+                if r1 as f32 > MAX_RANGE_KM * 5.0 && r2 as f32 > MAX_RANGE_KM * 5.0 {
                     continue;
                 }
-                let (dx1, dy1) = crate::geo::polar_to_offset(
-                    b1 as f32,
-                    r1 as f32,
-                    px_per_km,
-                );
-                let (dx2, dy2) = crate::geo::polar_to_offset(
-                    b2 as f32,
-                    r2 as f32,
-                    px_per_km,
-                );
+                let (dx1, dy1) = crate::geo::polar_to_offset(b1 as f32, r1 as f32, px_per_km);
+                let (dx2, dy2) = crate::geo::polar_to_offset(b2 as f32, r2 as f32, px_per_km);
                 let a = center + egui::vec2(dx1, dy1);
                 let b = center + egui::vec2(dx2, dy2);
                 painter.line_segment([a, b], Stroke::new(2.0, color));
@@ -472,25 +441,13 @@ fn draw_arrival_overlay(
             for pair in ring.windows(2) {
                 let (lat1, lon1) = pair[0];
                 let (lat2, lon2) = pair[1];
-                let (r1, b1) =
-                    crate::geo::range_bearing(site.lat, site.lon, lat1, lon1);
-                let (r2, b2) =
-                    crate::geo::range_bearing(site.lat, site.lon, lat2, lon2);
-                if r1 as f32 > MAX_RANGE_KM * 5.0
-                    && r2 as f32 > MAX_RANGE_KM * 5.0
-                {
+                let (r1, b1) = crate::geo::range_bearing(site.lat, site.lon, lat1, lon1);
+                let (r2, b2) = crate::geo::range_bearing(site.lat, site.lon, lat2, lon2);
+                if r1 as f32 > MAX_RANGE_KM * 5.0 && r2 as f32 > MAX_RANGE_KM * 5.0 {
                     continue;
                 }
-                let (dx1, dy1) = crate::geo::polar_to_offset(
-                    b1 as f32,
-                    r1 as f32,
-                    px_per_km,
-                );
-                let (dx2, dy2) = crate::geo::polar_to_offset(
-                    b2 as f32,
-                    r2 as f32,
-                    px_per_km,
-                );
+                let (dx1, dy1) = crate::geo::polar_to_offset(b1 as f32, r1 as f32, px_per_km);
+                let (dx2, dy2) = crate::geo::polar_to_offset(b2 as f32, r2 as f32, px_per_km);
                 let a = center + egui::vec2(dx1, dy1);
                 let b = center + egui::vec2(dx2, dy2);
                 painter.line_segment([a, b], Stroke::new(2.5, color));
@@ -576,10 +533,8 @@ pub fn draw_scope(
         for pair in ring.windows(2) {
             let (lat1, lon1) = pair[0];
             let (lat2, lon2) = pair[1];
-            let (range1, bearing1) =
-                geo::range_bearing(site.lat, site.lon, lat1, lon1);
-            let (range2, bearing2) =
-                geo::range_bearing(site.lat, site.lon, lat2, lon2);
+            let (range1, bearing1) = geo::range_bearing(site.lat, site.lon, lat1, lon1);
+            let (range2, bearing2) = geo::range_bearing(site.lat, site.lon, lat2, lon2);
             let (dx1, dy1) = geo::polar_to_offset(bearing1 as f32, range1 as f32, px_per_km);
             let (dx2, dy2) = geo::polar_to_offset(bearing2 as f32, range2 as f32, px_per_km);
             let a = center + vec2(dx1, dy1);
@@ -600,8 +555,7 @@ pub fn draw_scope(
 
     // City markers.
     for &(name, lat, lon) in geo::CITIES {
-        let (range_km, bearing_deg) =
-            geo::range_bearing(site.lat, site.lon, lat, lon);
+        let (range_km, bearing_deg) = geo::range_bearing(site.lat, site.lon, lat, lon);
         if range_km as f32 > MAX_RANGE_KM {
             continue;
         }
@@ -630,10 +584,8 @@ pub fn draw_scope(
             for pair in ring.windows(2) {
                 let (lat1, lon1) = pair[0];
                 let (lat2, lon2) = pair[1];
-                let (range1, bearing1) =
-                    geo::range_bearing(site.lat, site.lon, lat1, lon1);
-                let (range2, bearing2) =
-                    geo::range_bearing(site.lat, site.lon, lat2, lon2);
+                let (range1, bearing1) = geo::range_bearing(site.lat, site.lon, lat1, lon1);
+                let (range2, bearing2) = geo::range_bearing(site.lat, site.lon, lat2, lon2);
                 let (dx1, dy1) = geo::polar_to_offset(bearing1 as f32, range1 as f32, px_per_km);
                 let (dx2, dy2) = geo::polar_to_offset(bearing2 as f32, range2 as f32, px_per_km);
                 let a = center + vec2(dx1, dy1);
@@ -652,8 +604,7 @@ pub fn draw_scope(
         let mut label_count = 0;
         for ring in &alert.rings {
             for &(lat, lon) in ring {
-                let (range_km, bearing_deg) =
-                    geo::range_bearing(site.lat, site.lon, lat, lon);
+                let (range_km, bearing_deg) = geo::range_bearing(site.lat, site.lon, lat, lon);
                 if range_km as f32 > MAX_RANGE_KM {
                     continue;
                 }
@@ -714,10 +665,7 @@ pub fn draw_scope(
                         let end = (t + step * 0.5).min(len);
                         let p1 = a + dir * (t / len);
                         let p2 = a + dir * (end / len);
-                        painter.line_segment(
-                            [p1, p2],
-                            Stroke::new(2.0, Color32::WHITE),
-                        );
+                        painter.line_segment([p1, p2], Stroke::new(2.0, Color32::WHITE));
                         t += step;
                     }
                 }
@@ -728,7 +676,9 @@ pub fn draw_scope(
         // Find matching meta for intensity info.
         let intensity = storm_metas
             .iter()
-            .find(|m| m.name == storm.name || m.id.to_uppercase().contains(&storm.name.to_uppercase()))
+            .find(|m| {
+                m.name == storm.name || m.id.to_uppercase().contains(&storm.name.to_uppercase())
+            })
             .map(|m| m.intensity_kt)
             .unwrap_or(0);
 
@@ -836,7 +786,11 @@ pub fn draw_scope(
 
         // Draw hurricane symbol (double circle for hurricane).
         if is_hurricane {
-            painter.circle_filled(pos, symbol_radius + 2.0, Color32::from_rgba_premultiplied(255, 200, 0, 80));
+            painter.circle_filled(
+                pos,
+                symbol_radius + 2.0,
+                Color32::from_rgba_premultiplied(255, 200, 0, 80),
+            );
         }
         painter.circle_filled(pos, symbol_radius, symbol_color);
         painter.circle_stroke(pos, symbol_radius, Stroke::new(1.5, Color32::WHITE));
@@ -987,10 +941,26 @@ mod tests {
         // 40 km max range on 128 px -> center at (64, 64), 0.625 km/px.
         // 32 px from center = 20 km: inside gate coverage, outside first-gate hole.
         let at = |x: usize, y: usize| img.pixels[y * 128 + x];
-        assert_eq!(at(64, 32), Color32::from_rgb(0x01, 0xc5, 0x01), "north 25 dBZ");
-        assert_eq!(at(96, 64), Color32::from_rgb(0x00, 0x8e, 0x00), "east 30 dBZ");
-        assert_eq!(at(64, 96), Color32::from_rgb(0xd4, 0x00, 0x00), "south 55 dBZ");
-        assert_eq!(at(32, 64), Color32::TRANSPARENT, "west 4 dBZ below threshold");
+        assert_eq!(
+            at(64, 32),
+            Color32::from_rgb(0x01, 0xc5, 0x01),
+            "north 25 dBZ"
+        );
+        assert_eq!(
+            at(96, 64),
+            Color32::from_rgb(0x00, 0x8e, 0x00),
+            "east 30 dBZ"
+        );
+        assert_eq!(
+            at(64, 96),
+            Color32::from_rgb(0xd4, 0x00, 0x00),
+            "south 55 dBZ"
+        );
+        assert_eq!(
+            at(32, 64),
+            Color32::TRANSPARENT,
+            "west 4 dBZ below threshold"
+        );
     }
 
     #[test]

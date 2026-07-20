@@ -1,5 +1,12 @@
 # rustywx
 
+## License
+
+- **Code:** [AGPL-3.0-only](LICENSE)
+- **Custom graphics, artwork, and assets:** [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/legalcode.en)
+
+---
+
 A Rust desktop radarscope for the Macon, GA area. Fetches live NEXRAD
 Level II data for KJGX (Robins AFB) from the public AWS archive bucket
 (`unidata-nexrad-level2`), decodes it, and renders a classic PPI scope

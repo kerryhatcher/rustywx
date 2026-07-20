@@ -146,7 +146,9 @@ fn parse_alerts(json: &str) -> Result<Vec<Alert>> {
             other => return Err(anyhow!("unsupported alert geometry type: {other}")),
         }
 
-        if !rings.iter().any(|r| crate::borders::ring_affects_scope(r, crate::geo::KJGX_LAT, crate::geo::KJGX_LON)) {
+        if !rings.iter().any(|r| {
+            crate::borders::ring_affects_scope(r, crate::geo::KJGX_LAT, crate::geo::KJGX_LON)
+        }) {
             continue;
         }
 

@@ -9,4 +9,3 @@ pub mod logger;
 pub mod model;
 pub mod nhc;
 pub mod scope;
-pub mod store;

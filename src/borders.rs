@@ -64,8 +64,7 @@ fn parse_state_lines(json: &str) -> Result<Vec<Ring>> {
 
 /// Parse Natural Earth coastline GeoJSON. Takes all coastlines (global).
 fn parse_coastlines(json: &str) -> Result<Vec<Ring>> {
-    let root: Value =
-        serde_json::from_str(json).map_err(|e| anyhow!("parsing coastlines: {e}"))?;
+    let root: Value = serde_json::from_str(json).map_err(|e| anyhow!("parsing coastlines: {e}"))?;
     let features = root
         .get("features")
         .and_then(Value::as_array)
@@ -113,11 +112,7 @@ fn extract_linestring(feature: &Value) -> Option<Ring> {
             Some((arr.get(1)?.as_f64()?, arr.first()?.as_f64()?))
         })
         .collect();
-    if ring.len() >= 2 {
-        Some(ring)
-    } else {
-        None
-    }
+    if ring.len() >= 2 { Some(ring) } else { None }
 }
 
 /// Does a ring have any portion inside the 230 km radarscope?
@@ -151,18 +146,16 @@ fn cache_path() -> Result<PathBuf> {
 /// of state lines + coastlines as JSON.
 pub fn load_or_fetch(path: &Path) -> Result<Vec<Ring>> {
     match std::fs::read_to_string(path) {
-        Ok(json) => serde_json::from_str(&json)
-            .map_err(|e| anyhow!("parsing cached borders: {e}")),
+        Ok(json) => serde_json::from_str(&json).map_err(|e| anyhow!("parsing cached borders: {e}")),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let rings = fetch_all()?;
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)
                     .map_err(|e| anyhow!("creating {}: {e}", parent.display()))?;
             }
-            let json = serde_json::to_string(&rings)
-                .map_err(|e| anyhow!("serializing borders: {e}"))?;
-            std::fs::write(path, &json)
-                .map_err(|e| anyhow!("writing {}: {e}", path.display()))?;
+            let json =
+                serde_json::to_string(&rings).map_err(|e| anyhow!("serializing borders: {e}"))?;
+            std::fs::write(path, &json).map_err(|e| anyhow!("writing {}: {e}", path.display()))?;
             Ok(rings)
         }
         Err(e) => Err(anyhow!("reading {}: {e}", path.display())),
@@ -177,10 +170,7 @@ pub enum BorderMessage {
 
 /// Spawn a one-shot thread that loads (fetching and caching first, if
 /// needed) the state boundary rings and sends them to the UI.
-pub fn spawn_border_loader(
-    tx: std::sync::mpsc::Sender<BorderMessage>,
-    egui_ctx: egui::Context,
-) {
+pub fn spawn_border_loader(tx: std::sync::mpsc::Sender<BorderMessage>, egui_ctx: egui::Context) {
     std::thread::spawn(move || {
         let message = match cache_path().and_then(|path| load_or_fetch(&path)) {
             Ok(rings) => BorderMessage::Loaded(rings),

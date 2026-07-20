@@ -1,0 +1,951 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Observatory — rustywx Ply Port Mockup</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg-deep: #040810;
+    --bg-mid: #0a0f18;
+    --glass-bg: rgba(18, 22, 30, 0.85);
+    --glass-border: rgba(255, 255, 255, 0.06);
+    --accent: #0dc5b8;
+    --accent-glow: rgba(13, 197, 184, 0.25);
+    --text-primary: #e8e0dc;
+    --text-secondary: #8a9597;
+    --text-muted: #5a6568;
+    --danger: #e04040;
+    --warning: #f0a030;
+    --radius-sm: 6px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --font-ui: 'Inter', system-ui, sans-serif;
+    --font-mono: 'JetBrains Mono', 'DejaVu Sans Mono', monospace;
+  }
+
+  body {
+    font-family: var(--font-ui);
+    background: var(--bg-deep);
+    color: var(--text-primary);
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  /* ── Background ─────────────────────────────────── */
+  .bg-gradient {
+    position: fixed; inset: 0;
+    background: radial-gradient(ellipse at 50% 40%, #0d1a2d 0%, #0a0f18 40%, #040810 100%);
+    z-index: 0;
+  }
+  .bg-noise {
+    position: fixed; inset: 0;
+    opacity: 0.03;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    z-index: 1; pointer-events: none;
+  }
+
+  /* ── Radar Scope Canvas ─────────────────────────── */
+  #scope-canvas {
+    position: fixed; inset: 0;
+    z-index: 2;
+  }
+
+  /* ── Glass Panel Mixin ──────────────────────────── */
+  .glass {
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+  }
+
+  /* ── Top Control Bar ────────────────────────────── */
+  .control-bar {
+    position: fixed;
+    top: 16px; left: 50%;
+    transform: translateX(-50%);
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 8px;
+    border-radius: var(--radius-lg);
+    transition: opacity 0.4s ease, transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+  .control-bar.hidden {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-20px);
+    pointer-events: none;
+  }
+
+  .ctrl-btn {
+    font-family: var(--font-ui);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-sm);
+    padding: 6px 12px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: background 0.2s, box-shadow 0.2s;
+    white-space: nowrap;
+  }
+  .ctrl-btn:hover { background: rgba(255,255,255,0.08); }
+  .ctrl-btn:active { background: rgba(255,255,255,0.12); }
+  .ctrl-btn.active {
+    background: rgba(13, 197, 184, 0.15);
+    color: var(--accent);
+    box-shadow: 0 0 12px var(--accent-glow);
+  }
+  .ctrl-btn .arrow { font-size: 10px; color: var(--text-secondary); }
+  .ctrl-btn .badge {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    background: var(--danger);
+    color: #fff;
+    border-radius: 10px;
+    padding: 1px 6px;
+    margin-left: 2px;
+  }
+  .ctrl-divider {
+    width: 1px; height: 20px;
+    background: var(--glass-border);
+    margin: 0 4px;
+  }
+
+  /* ── Dropdown ───────────────────────────────────── */
+  .dropdown {
+    position: relative;
+  }
+  .dropdown-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    min-width: 220px;
+    max-height: 300px;
+    overflow-y: auto;
+    border-radius: var(--radius-md);
+    padding: 4px;
+    z-index: 20;
+    display: none;
+    flex-direction: column;
+  }
+  .dropdown.open .dropdown-menu { display: flex; }
+  .dropdown-menu input {
+    font-family: var(--font-ui);
+    font-size: 12px;
+    color: var(--text-primary);
+    background: rgba(255,255,255,0.06);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-sm);
+    padding: 6px 10px;
+    margin-bottom: 4px;
+    outline: none;
+  }
+  .dropdown-menu input:focus { border-color: var(--accent); }
+  .dropdown-menu input::placeholder { color: var(--text-muted); }
+  .dropdown-item {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-secondary);
+    padding: 6px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .dropdown-item:hover { background: rgba(255,255,255,0.06); color: var(--text-primary); }
+  .dropdown-item.selected { color: var(--accent); background: rgba(13,197,184,0.1); }
+
+  /* ── NHC Panel ──────────────────────────────────── */
+  .nhc-panel {
+    position: fixed;
+    top: 16px; right: 16px; bottom: 40px;
+    width: 360px;
+    z-index: 10;
+    border-radius: var(--radius-lg);
+    display: flex;
+    flex-direction: column;
+    transform: translateX(calc(100% + 32px));
+    transition: transform 0.5s cubic-bezier(0.22, 0.61, 0.36, 1);
+  }
+  .nhc-panel.open { transform: translateX(0); }
+  .nhc-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--glass-border);
+  }
+  .nhc-panel-header h2 {
+    font-size: 15px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .nhc-panel-header .storm-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--danger);
+    box-shadow: 0 0 8px rgba(224,64,64,0.6);
+    animation: pulse-dot 2s ease-in-out infinite;
+  }
+  @keyframes pulse-dot {
+    0%, 100% { box-shadow: 0 0 8px rgba(224,64,64,0.6); }
+    50% { box-shadow: 0 0 16px rgba(224,64,64,0.9); }
+  }
+  .nhc-close {
+    font-size: 18px;
+    background: none; border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: var(--radius-sm);
+    transition: color 0.2s, background 0.2s;
+  }
+  .nhc-close:hover { color: var(--text-primary); background: rgba(255,255,255,0.06); }
+  .nhc-panel-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .nhc-stat-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 13px;
+    padding: 4px 0;
+  }
+  .nhc-stat-label { color: var(--text-secondary); }
+  .nhc-stat-value { font-family: var(--font-mono); font-weight: 500; }
+  .nhc-section-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding-top: 8px;
+  }
+  .nhc-image-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .nhc-image-card {
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    border: 1px solid var(--glass-border);
+    cursor: pointer;
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+  .nhc-image-card:hover {
+    border-color: var(--accent);
+    box-shadow: 0 0 16px var(--accent-glow);
+  }
+  .nhc-image-card .img-placeholder {
+    aspect-ratio: 4/3;
+    background: rgba(255,255,255,0.03);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+  .nhc-image-card .img-label {
+    font-size: 11px;
+    padding: 6px 8px;
+    color: var(--text-secondary);
+    background: rgba(0,0,0,0.2);
+  }
+  .nhc-overlay-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    padding: 4px 0;
+    cursor: pointer;
+  }
+  .nhc-overlay-toggle .toggle-switch {
+    width: 32px; height: 18px;
+    border-radius: 9px;
+    background: rgba(255,255,255,0.1);
+    position: relative;
+    transition: background 0.2s;
+  }
+  .nhc-overlay-toggle .toggle-switch.on {
+    background: var(--accent);
+  }
+  .nhc-overlay-toggle .toggle-switch::after {
+    content: '';
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: #fff;
+    transition: transform 0.2s;
+  }
+  .nhc-overlay-toggle .toggle-switch.on::after {
+    transform: translateX(14px);
+  }
+
+  /* ── Bottom Status Strip ────────────────────────── */
+  .status-strip {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 16px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    background: rgba(4, 8, 16, 0.7);
+    border-top: 1px solid var(--glass-border);
+  }
+  .status-strip .status-left { display: flex; align-items: center; gap: 16px; }
+  .status-strip .status-right { display: flex; align-items: center; gap: 12px; }
+  .status-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 6px var(--accent-glow);
+    animation: pulse-dot 2s ease-in-out infinite;
+  }
+
+  /* ── Color Legend ────────────────────────────────── */
+  .legend {
+    position: fixed;
+    bottom: 36px; left: 16px;
+    z-index: 10;
+    display: flex;
+    align-items: flex-end;
+    gap: 0;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-muted);
+  }
+  .legend-swatches {
+    display: flex;
+    gap: 0;
+    border-radius: 3px;
+    overflow: hidden;
+    border: 1px solid var(--glass-border);
+  }
+  .legend-swatch {
+    width: 16px; height: 10px;
+  }
+  .legend-label {
+    margin-left: 6px;
+    line-height: 10px;
+  }
+
+  /* ── Settings Panel ──────────────────────────────── */
+  .settings-panel {
+    position: fixed;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%) scale(0.9);
+    width: 380px;
+    z-index: 30;
+    border-radius: var(--radius-lg);
+    padding: 20px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+  .settings-panel.open {
+    opacity: 1;
+    pointer-events: all;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  .settings-backdrop {
+    position: fixed; inset: 0;
+    z-index: 29;
+    background: rgba(0,0,0,0.5);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s;
+  }
+  .settings-backdrop.open { opacity: 1; pointer-events: all; }
+  .settings-panel h2 {
+    font-size: 16px; font-weight: 600;
+    margin-bottom: 16px;
+  }
+  .settings-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 0;
+    font-size: 13px;
+  }
+  .settings-row label { color: var(--text-secondary); }
+
+  /* ── Mobile ──────────────────────────────────────── */
+  @media (max-width: 899px) {
+    .control-bar {
+      top: auto; bottom: 36px;
+      transform: translateX(-50%);
+      border-radius: var(--radius-lg);
+    }
+    .control-bar.hidden {
+      transform: translateX(-50%) translateY(20px);
+    }
+    .nhc-panel {
+      top: 0; right: 0; bottom: 0; left: 0;
+      width: 100%;
+      border-radius: 0;
+      transform: translateY(100%);
+      transition: transform 0.4s cubic-bezier(0.22, 0.61, 0.36, 1);
+    }
+    .nhc-panel.open { transform: translateY(0); }
+    .legend { bottom: 80px; left: 8px; }
+    .status-strip { font-size: 10px; padding: 4px 10px; }
+  }
+
+  /* ── Scrollbar ──────────────────────────────────── */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<div class="bg-gradient"></div>
+<div class="bg-noise"></div>
+
+<canvas id="scope-canvas"></canvas>
+
+<!-- ── Top Control Bar ─────────────────────────────── -->
+<div class="control-bar glass" id="controlBar">
+  <div class="dropdown" id="siteDropdown">
+    <button class="ctrl-btn active" onclick="toggleDropdown('siteDropdown')">
+      KJGX <span class="arrow">▾</span>
+    </button>
+    <div class="dropdown-menu glass">
+      <input type="text" placeholder="Filter sites…" oninput="filterSites(this.value)">
+      <div class="dropdown-item selected" onclick="selectSite('KJGX')">KJGX — Robins AFB, GA</div>
+      <div class="dropdown-item" onclick="selectSite('KFFC')">KFFC — Atlanta, GA</div>
+      <div class="dropdown-item" onclick="selectSite('KBMX')">KBMX — Birmingham, AL</div>
+      <div class="dropdown-item" onclick="selectSite('KTBW')">KTBW — Tampa Bay, FL</div>
+      <div class="dropdown-item" onclick="selectSite('KMLB')">KMLB — Melbourne, FL</div>
+      <div class="dropdown-item" onclick="selectSite('KJAX')">KJAX — Jacksonville, FL</div>
+      <div class="dropdown-item" onclick="selectSite('KCLX')">KCLX — Charleston, SC</div>
+      <div class="dropdown-item" onclick="selectSite('KCAE')">KCAE — Columbia, SC</div>
+      <div class="dropdown-item" onclick="selectSite('KRAX')">KRAX — Raleigh/Durham, NC</div>
+      <div class="dropdown-item" onclick="selectSite('KMHX')">KMHX — Morehead City, NC</div>
+    </div>
+  </div>
+
+  <div class="ctrl-divider"></div>
+
+  <button class="ctrl-btn active" id="btnRefl" onclick="setProduct('refl')">Reflectivity</button>
+  <button class="ctrl-btn" id="btnVel" onclick="setProduct('vel')">Velocity</button>
+
+  <div class="ctrl-divider"></div>
+
+  <div class="dropdown" id="tiltDropdown">
+    <button class="ctrl-btn" onclick="toggleDropdown('tiltDropdown')">
+      0.5° <span class="arrow">▾</span>
+    </button>
+    <div class="dropdown-menu glass">
+      <div class="dropdown-item selected">0.5°</div>
+      <div class="dropdown-item">1.45°</div>
+      <div class="dropdown-item">2.4°</div>
+      <div class="dropdown-item">3.35°</div>
+    </div>
+  </div>
+
+  <div class="ctrl-divider"></div>
+
+  <button class="ctrl-btn" id="btnNHC" onclick="toggleNHC()">
+    ⚡ NHC <span class="badge">2</span>
+  </button>
+
+  <div class="ctrl-divider"></div>
+
+  <button class="ctrl-btn" onclick="toggleSettings()" title="Settings">⚙</button>
+</div>
+
+<!-- ── NHC Panel ───────────────────────────────────── -->
+<div class="nhc-panel glass" id="nhcPanel">
+  <div class="nhc-panel-header">
+    <h2><span class="storm-dot"></span> Tropical Weather</h2>
+    <button class="nhc-close" onclick="toggleNHC()">✕</button>
+  </div>
+  <div class="nhc-panel-body">
+    <!-- Storm selector -->
+    <div class="dropdown" id="stormDropdown" style="width:100%">
+      <button class="ctrl-btn" style="width:100%;justify-content:space-between" onclick="toggleDropdown('stormDropdown')">
+        BERYL — Hurricane (120kt) <span class="arrow">▾</span>
+      </button>
+      <div class="dropdown-menu glass" style="width:100%">
+        <div class="dropdown-item selected">BERYL — Hurricane (120kt)</div>
+        <div class="dropdown-item">CHRIS — Tropical Storm (45kt)</div>
+      </div>
+    </div>
+
+    <!-- Storm stats -->
+    <div class="nhc-stat-row">
+      <span class="nhc-stat-label">Intensity</span>
+      <span class="nhc-stat-value">120 kt</span>
+    </div>
+    <div class="nhc-stat-row">
+      <span class="nhc-stat-label">Pressure</span>
+      <span class="nhc-stat-value">938 mb</span>
+    </div>
+    <div class="nhc-stat-row">
+      <span class="nhc-stat-label">Position</span>
+      <span class="nhc-stat-value">18.5°N, 68.2°W</span>
+    </div>
+    <div class="nhc-stat-row">
+      <span class="nhc-stat-label">Movement</span>
+      <span class="nhc-stat-value">295° at 16 kt</span>
+    </div>
+    <div class="nhc-stat-row">
+      <span class="nhc-stat-label">Advisory</span>
+      <span class="nhc-stat-value">#14</span>
+    </div>
+
+    <button class="ctrl-btn" style="justify-content:center;width:100%;margin-top:4px">
+      🌐 Open NHC Graphics Page
+    </button>
+
+    <!-- Graphics products -->
+    <div class="nhc-section-title">Graphics Products</div>
+    <div class="nhc-image-grid">
+      <div class="nhc-image-card">
+        <div class="img-placeholder">📡<br>Cone</div>
+        <div class="img-label">5-Day Cone</div>
+      </div>
+      <div class="nhc-image-card">
+        <div class="img-placeholder">💨<br>Wind</div>
+        <div class="img-label">Wind Field</div>
+      </div>
+      <div class="nhc-image-card">
+        <div class="img-placeholder">📊<br>Probs</div>
+        <div class="img-label">Wind Probs 34kt</div>
+      </div>
+      <div class="nhc-image-card">
+        <div class="img-placeholder">🌊<br>Surge</div>
+        <div class="img-label">Peak Surge</div>
+      </div>
+    </div>
+
+    <!-- Map overlays -->
+    <div class="nhc-section-title">Map Overlays</div>
+    <div class="nhc-overlay-toggle" onclick="this.querySelector('.toggle-switch').classList.toggle('on')">
+      <div class="toggle-switch on"></div>
+      34kt Wind Probability
+    </div>
+    <div class="nhc-overlay-toggle" onclick="this.querySelector('.toggle-switch').classList.toggle('on')">
+      <div class="toggle-switch"></div>
+      50kt Wind Probability
+    </div>
+    <div class="nhc-overlay-toggle" onclick="this.querySelector('.toggle-switch').classList.toggle('on')">
+      <div class="toggle-switch on"></div>
+      Earliest Arrival (34kt)
+    </div>
+
+    <!-- Text products -->
+    <div class="nhc-section-title">Text Products</div>
+    <details style="font-size:12px;color:var(--text-secondary)">
+      <summary style="cursor:pointer;padding:4px 0;color:var(--text-primary)">Public Advisory #14</summary>
+      <pre style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);white-space:pre-wrap;margin-top:4px">
+HURRICANE BERYL ADVISORY NUMBER 14
+NWS NATIONAL HURRICANE CENTER MIAMI FL
+500 PM AST MON JUL 22 2026
+
+...MAJOR HURRICANE BERYL CONTINUES WEST-NORTHWESTWARD...
+
+SUMMARY OF 500 PM AST INFORMATION
+LOCATION...18.5N 68.2W
+MAXIMUM SUSTAINED WINDS...120 KT
+PRESENT MOVEMENT...WNW OR 295 DEGREES AT 16 KT
+MINIMUM CENTRAL PRESSURE...938 MB</pre>
+    </details>
+    <details style="font-size:12px;color:var(--text-secondary)">
+      <summary style="cursor:pointer;padding:4px 0;color:var(--text-primary)">Forecast Discussion</summary>
+      <pre style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);white-space:pre-wrap;margin-top:4px">
+HURRICANE BERYL DISCUSSION NUMBER 14...
+[forecast discussion content]</pre>
+    </details>
+  </div>
+</div>
+
+<!-- ── Color Legend ────────────────────────────────── -->
+<div class="legend">
+  <div class="legend-swatches" id="legendSwatches"></div>
+  <span class="legend-label">dBZ</span>
+</div>
+
+<!-- ── Bottom Status Strip ────────────────────────── -->
+<div class="status-strip">
+  <div class="status-left">
+    <span class="status-dot"></span>
+    <span>Scan: 2026-07-22 21:00 UTC (17:00 EDT)</span>
+    <span>KJGX — Robins AFB, GA</span>
+    <span>0.5° elevation</span>
+  </div>
+  <div class="status-right">
+    <span>Pan: (0, 0) km</span>
+    <span>Zoom: 1.0×</span>
+    <span>R: Reflectivity | V: Velocity | 0: Reset | ←→: Site</span>
+  </div>
+</div>
+
+<!-- ── Settings Backdrop + Panel ───────────────────── -->
+<div class="settings-backdrop" id="settingsBackdrop" onclick="toggleSettings()"></div>
+<div class="settings-panel glass" id="settingsPanel">
+  <h2>⚙ Settings</h2>
+  <div class="settings-row">
+    <label>Default Site</label>
+    <span style="font-family:var(--font-mono);font-size:12px">KJGX</span>
+  </div>
+  <div class="settings-row">
+    <label>Poll Interval</label>
+    <span style="font-family:var(--font-mono);font-size:12px">120s</span>
+  </div>
+  <div class="settings-row">
+    <label>NHC Refresh</label>
+    <span style="font-family:var(--font-mono);font-size:12px">300s</span>
+  </div>
+  <div class="settings-row">
+    <label>Show Borders</label>
+    <div class="toggle-switch on"></div>
+  </div>
+  <div class="settings-row">
+    <label>Show Cities</label>
+    <div class="toggle-switch on"></div>
+  </div>
+  <div class="settings-row">
+    <label>Show Alerts</label>
+    <div class="toggle-switch on"></div>
+  </div>
+  <div class="settings-row">
+    <label>Animation Level</label>
+    <span style="font-family:var(--font-mono);font-size:12px;color:var(--accent)">Full</span>
+  </div>
+</div>
+
+<script>
+// ── Radar Scope Canvas ──────────────────────────────
+const canvas = document.getElementById('scope-canvas');
+const ctx = canvas.getContext('2d');
+let panX = 0, panY = 0, zoom = 1.0;
+let mouseDown = false, lastMouseX = 0, lastMouseY = 0;
+
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// Generate synthetic radar data
+function generateRadarData() {
+  const size = 1024;
+  const data = new Uint8ClampedArray(size * size * 4);
+  const center = size / 2;
+  const maxRange = size / 2;
+
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const dx = x - center, dy = y - center;
+      const range = Math.sqrt(dx*dx + dy*dy);
+      const idx = (y * size + x) * 4;
+
+      if (range < 8 || range > maxRange) {
+        data[idx+3] = 0;
+        continue;
+      }
+
+      const azimuth = Math.atan2(dx, -dy) * 180 / Math.PI;
+      const angle = (azimuth + range * 2.0) * Math.PI / 180;
+      let value = 30 + 20 * Math.sin(angle);
+
+      // Storm cell 1
+      if (Math.abs(azimuth - 90) < 15 && Math.abs(range - 180) < 40) value += 25;
+      // Storm cell 2
+      if (Math.abs(azimuth - 270) < 10 && Math.abs(range - 260) < 30) value += 30;
+
+      const [r, g, b] = dbzColor(value);
+      data[idx] = r;
+      data[idx+1] = g;
+      data[idx+2] = b;
+      data[idx+3] = value > 5 ? 255 : 0;
+    }
+  }
+  return data;
+}
+
+function dbzColor(dbz) {
+  const legend = [
+    [5, 0x04,0xe9,0xe7], [10,0x01,0x9f,0xf4], [15,0x03,0x00,0xf4],
+    [20,0x02,0xfd,0x02], [25,0x01,0xc5,0x01], [30,0x00,0x8e,0x00],
+    [35,0xfd,0xf8,0x02], [40,0xe5,0xbc,0x00], [45,0xfd,0x95,0x00],
+    [50,0xfd,0x00,0x00], [55,0xd4,0x00,0x00], [60,0xbc,0x00,0x00],
+    [65,0xf8,0x00,0xfd], [70,0x98,0x54,0xc6], [75,0xfd,0xfd,0xfd]
+  ];
+  let color = [0,0,0];
+  for (const [t, r, g, b] of legend) {
+    if (dbz >= t) color = [r, g, b];
+  }
+  return color;
+}
+
+// Build legend swatches
+const legendSwatches = document.getElementById('legendSwatches');
+const legendColors = [
+  '#04e9e7','#019ff4','#0300f4','#02fd02','#01c501','#008e00',
+  '#fdf802','#e5bc00','#fd9500','#fd0000','#d40000','#bc0000',
+  '#f800fd','#9854c6','#fdfdfd'
+];
+legendColors.forEach(c => {
+  const div = document.createElement('div');
+  div.className = 'legend-swatch';
+  div.style.background = c;
+  legendSwatches.appendChild(div);
+});
+
+// Pre-render radar to offscreen canvas
+const radarCanvas = document.createElement('canvas');
+radarCanvas.width = radarCanvas.height = 1024;
+const radarCtx = radarCanvas.getContext('2d');
+const imageData = radarCtx.createImageData(1024, 1024);
+imageData.data.set(generateRadarData());
+radarCtx.putImageData(imageData, 0, 0);
+
+// Draw scope
+function drawScope() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  const side = Math.min(canvas.width, canvas.height);
+  const pxPerKm = (side / 2) / 230 * zoom;
+  const cx = canvas.width / 2 + panX;
+  const cy = canvas.height / 2 + panY;
+
+  // Radar texture
+  const texSize = side * zoom;
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, texSize/2, 0, Math.PI*2);
+  ctx.clip();
+  ctx.drawImage(radarCanvas, cx - texSize/2, cy - texSize/2, texSize, texSize);
+  ctx.restore();
+
+  // Range rings
+  ctx.strokeStyle = 'rgba(42, 58, 47, 0.6)';
+  ctx.lineWidth = 1;
+  ctx.fillStyle = 'rgba(95, 138, 106, 0.8)';
+  ctx.font = '11px "JetBrains Mono", monospace';
+  for (let r = 50; r <= 230; r += 50) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * pxPerKm, 0, Math.PI*2);
+    ctx.stroke();
+    ctx.fillText(r + ' km', cx + 4, cy - r * pxPerKm);
+  }
+
+  // Cardinal spokes
+  const dirs = [[0,'N'],[90,'E'],[180,'S'],[270,'W']];
+  for (const [az, label] of dirs) {
+    const rad = az * Math.PI / 180;
+    const dx = Math.sin(rad) * 230 * pxPerKm;
+    const dy = -Math.cos(rad) * 230 * pxPerKm;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + dx, cy + dy);
+    ctx.stroke();
+
+    const lx = Math.sin(rad) * 220 * pxPerKm;
+    const ly = -Math.cos(rad) * 220 * pxPerKm;
+    ctx.fillText(label, cx + lx - 8, cy + ly + 4);
+  }
+
+  // Station marker
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.arc(cx, cy, 3, 0, Math.PI*2);
+  ctx.fill();
+  ctx.fillText('KJGX', cx + 6, cy + 16);
+
+  // City markers (sample)
+  const cities = [
+    ['Atlanta', 33.749, -84.388], ['Macon', 32.8407, -83.6324],
+    ['Savannah', 32.0809, -81.0912], ['Jacksonville', 30.3322, -81.6557],
+    ['Charleston', 32.7765, -79.9311], ['Charlotte', 35.2271, -80.8431],
+    ['Birmingham', 33.5186, -86.8104], ['Nashville', 36.1627, -86.7816]
+  ];
+  const siteLat = 32.6755, siteLon = -83.3509; // KJGX
+
+  ctx.fillStyle = 'rgba(221, 221, 170, 0.7)';
+  ctx.strokeStyle = 'rgba(221, 221, 170, 0.5)';
+  ctx.font = '10px "JetBrains Mono", monospace';
+  for (const [name, lat, lon] of cities) {
+    const [range, bearing] = rangeBearing(siteLat, siteLon, lat, lon);
+    if (range > 230) continue;
+    const rad = bearing * Math.PI / 180;
+    const dx = Math.sin(rad) * range * pxPerKm;
+    const dy = -Math.cos(rad) * range * pxPerKm;
+    ctx.beginPath();
+    ctx.arc(cx + dx, cy + dy, 3.5, 0, Math.PI*2);
+    ctx.stroke();
+    ctx.fillText(name, cx + dx + 6, cy + dy - 6);
+  }
+
+  // Simulated NHC cone overlay
+  ctx.strokeStyle = 'rgba(230, 40, 40, 0.7)';
+  ctx.lineWidth = 1.8;
+  ctx.setLineDash([6, 4]);
+  ctx.beginPath();
+  const coneLat = 18.5, coneLon = -68.2;
+  const [coneR, coneB] = rangeBearing(siteLat, siteLon, coneLat, coneLon);
+  if (coneR < 500) {
+    const rad = coneB * Math.PI / 180;
+    const dx = Math.sin(rad) * coneR * pxPerKm;
+    const dy = -Math.cos(rad) * coneR * pxPerKm;
+    ctx.arc(cx + dx, cy + dy, 40 * pxPerKm, 0, Math.PI*2);
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.font = '11px "JetBrains Mono", monospace';
+    ctx.fillText('BERYL HU', cx + dx + 8, cy + dy - 18);
+  }
+  ctx.setLineDash([]);
+
+  // Simulated alert polygon
+  ctx.strokeStyle = 'rgba(255, 165, 0, 0.6)';
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  const alertPts = [[32.8,-83.8],[33.2,-83.2],[32.9,-82.5],[32.3,-82.8],[32.8,-83.8]];
+  ctx.moveTo(cx + (alertPts[0][1]-siteLon)*111*Math.cos(siteLat*Math.PI/180)*pxPerKm,
+             cy - (alertPts[0][0]-siteLat)*111*pxPerKm);
+  for (let i = 1; i < alertPts.length; i++) {
+    ctx.lineTo(cx + (alertPts[i][1]-siteLon)*111*Math.cos(siteLat*Math.PI/180)*pxPerKm,
+               cy - (alertPts[i][0]-siteLat)*111*pxPerKm);
+  }
+  ctx.stroke();
+  ctx.fillStyle = '#fff';
+  ctx.font = '10px "JetBrains Mono", monospace';
+  ctx.fillText('Severe T-Storm Warning', cx + (alertPts[2][1]-siteLon)*111*Math.cos(siteLat*Math.PI/180)*pxPerKm - 40,
+               cy - (alertPts[2][0]-siteLat)*111*pxPerKm - 4);
+}
+
+function rangeBearing(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  const range = R * c;
+  const y = Math.sin(dLon) * Math.cos(lat2*Math.PI/180);
+  const x = Math.cos(lat1*Math.PI/180)*Math.sin(lat2*Math.PI/180) - Math.sin(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.cos(dLon);
+  let bearing = Math.atan2(y, x) * 180 / Math.PI;
+  bearing = ((bearing % 360) + 360) % 360;
+  return [range, bearing];
+}
+
+// Mouse/touch interaction
+canvas.addEventListener('mousedown', e => { mouseDown = true; lastMouseX = e.clientX; lastMouseY = e.clientY; });
+canvas.addEventListener('mousemove', e => {
+  if (mouseDown) { panX += e.clientX - lastMouseX; panY += e.clientY - lastMouseY; lastMouseX = e.clientX; lastMouseY = e.clientY; }
+});
+canvas.addEventListener('mouseup', () => { mouseDown = false; });
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  zoom = Math.max(0.05, Math.min(4.0, zoom * (1 + e.deltaY * -0.001)));
+});
+
+// Touch
+canvas.addEventListener('touchstart', e => {
+  if (e.touches.length === 1) { mouseDown = true; lastMouseX = e.touches[0].clientX; lastMouseY = e.touches[0].clientY; }
+});
+canvas.addEventListener('touchmove', e => {
+  if (mouseDown && e.touches.length === 1) {
+    panX += e.touches[0].clientX - lastMouseX;
+    panY += e.touches[0].clientY - lastMouseY;
+    lastMouseX = e.touches[0].clientX;
+    lastMouseY = e.touches[0].clientY;
+  }
+});
+canvas.addEventListener('touchend', () => { mouseDown = false; });
+
+// ── UI Interactions ────────────────────────────────
+function toggleDropdown(id) {
+  const dd = document.getElementById(id);
+  const wasOpen = dd.classList.contains('open');
+  // Close all
+  document.querySelectorAll('.dropdown').forEach(d => d.classList.remove('open'));
+  if (!wasOpen) dd.classList.add('open');
+}
+
+function selectSite(id) {
+  document.querySelectorAll('#siteDropdown .dropdown-item').forEach(el => el.classList.remove('selected'));
+  event.target.classList.add('selected');
+  document.querySelector('#siteDropdown .ctrl-btn').innerHTML = id + ' <span class="arrow">▾</span>';
+  document.getElementById('siteDropdown').classList.remove('open');
+}
+
+function filterSites(query) {
+  const items = document.querySelectorAll('#siteDropdown .dropdown-item');
+  const q = query.toLowerCase();
+  items.forEach(item => {
+    item.style.display = item.textContent.toLowerCase().includes(q) ? '' : 'none';
+  });
+}
+
+function setProduct(p) {
+  document.getElementById('btnRefl').classList.toggle('active', p === 'refl');
+  document.getElementById('btnVel').classList.toggle('active', p === 'vel');
+}
+
+function toggleNHC() {
+  document.getElementById('nhcPanel').classList.toggle('open');
+  document.getElementById('btnNHC').classList.toggle('active');
+}
+
+function toggleSettings() {
+  document.getElementById('settingsPanel').classList.toggle('open');
+  document.getElementById('settingsBackdrop').classList.toggle('open');
+}
+
+// Auto-hide control bar
+let hideTimeout;
+function resetHideTimer() {
+  const bar = document.getElementById('controlBar');
+  bar.classList.remove('hidden');
+  clearTimeout(hideTimeout);
+  hideTimeout = setTimeout(() => bar.classList.add('hidden'), 3000);
+}
+document.addEventListener('mousemove', resetHideTimer);
+document.addEventListener('touchstart', resetHideTimer);
+resetHideTimer();
+
+// Close dropdowns on outside click
+document.addEventListener('click', e => {
+  if (!e.target.closest('.dropdown')) {
+    document.querySelectorAll('.dropdown').forEach(d => d.classList.remove('open'));
+  }
+});
+
+// Animation loop
+function animate() {
+  drawScope();
+  requestAnimationFrame(animate);
+}
+animate();
+</script>
+</body>
+</html>

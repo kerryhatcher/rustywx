@@ -1,0 +1,26 @@
+# Gitleaks configuration for rustywx
+# Docs: https://github.com/gitleaks/gitleaks
+
+title = "rustywx gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Global allowlist"
+paths = [
+    # Exclude test fixtures and generated files
+    '''ply-spike/target/''',
+    '''target/''',
+    '''Cargo.lock''',
+    '''.*\.lock$''',
+    '''.*\.svg$''',
+    '''.*\.png$''',
+    '''.*\.jpg$''',
+    '''.*\.ttf$''',
+    '''.*\.wasm$''',
+]
+regexes = [
+    # Example hex strings that look like secrets
+    '''^[0-9a-fA-F]{8}$''',
+]
