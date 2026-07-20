@@ -63,6 +63,53 @@ const STORM_DROPDOWN: DropdownConfig = DropdownConfig {
     searchable: true,
 };
 
+const NHC_MODAL_LINE_HEIGHT: f32 = 14.0;
+const NHC_MODAL_TEXT_COLUMNS: usize = 82;
+
+fn wrap_modal_text(content: &str) -> Vec<String> {
+    let mut output = Vec::new();
+    for source_line in content.lines() {
+        if source_line.is_empty() {
+            output.push(String::new());
+            continue;
+        }
+
+        let mut remaining = source_line;
+        while remaining.chars().count() > NHC_MODAL_TEXT_COLUMNS {
+            let byte_limit = remaining
+                .char_indices()
+                .nth(NHC_MODAL_TEXT_COLUMNS)
+                .map(|(index, _)| index)
+                .unwrap_or(remaining.len());
+            let candidate = &remaining[..byte_limit];
+            let split = candidate
+                .rfind(char::is_whitespace)
+                .filter(|&index| index > 0)
+                .unwrap_or(byte_limit);
+            output.push(remaining[..split].trim_end().to_string());
+            remaining = remaining[split..].trim_start();
+        }
+        output.push(remaining.to_string());
+    }
+    output
+}
+
+fn nhc_modal_text_metrics(state: &AppState) -> Option<(usize, usize, f32)> {
+    let NhcModal::Text { content, .. } = &state.nhc_modal else {
+        return None;
+    };
+    let modal_h = screen_height() * 0.7;
+    let content_h = modal_h - 36.0 - 40.0 - 24.0;
+    let lines = wrap_modal_text(content);
+    let visible = (content_h / NHC_MODAL_LINE_HEIGHT).floor().max(1.0) as usize;
+    let max_first = lines.len().saturating_sub(visible);
+    Some((
+        lines.len(),
+        visible,
+        max_first as f32 * NHC_MODAL_LINE_HEIGHT,
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // Synthetic radar data (fallback until real data arrives)
 // ---------------------------------------------------------------------------
@@ -997,27 +1044,24 @@ async fn main() {
                                 .children(|ui| {
                                     match &state.nhc_modal {
                                         NhcModal::Text { content, .. } => {
-                                            // Scrollable text window via Ply ui.text()
-                                            let line_h = 14.0;
-                                            let scroll = state.nhc_modal_scroll.max(0.0);
-                                            let lines: Vec<&str> = content.lines().collect();
-                                            let visible_count =
-                                                (content_h / line_h).ceil() as usize + 1;
-                                            let first = (scroll / line_h).floor() as usize;
+                                            let lines = wrap_modal_text(content);
+                                            let visible_count = (content_h / NHC_MODAL_LINE_HEIGHT)
+                                                .floor()
+                                                .max(1.0)
+                                                as usize;
+                                            let max_first =
+                                                lines.len().saturating_sub(visible_count);
+                                            let first = (state.nhc_modal_scroll
+                                                / NHC_MODAL_LINE_HEIGHT)
+                                                .floor()
+                                                as usize;
+                                            let first = first.min(max_first);
                                             let last = (first + visible_count).min(lines.len());
-                                            let max_scroll =
-                                                (lines.len() as f32 * line_h - content_h).max(0.0);
-                                            state.nhc_modal_scroll = scroll.min(max_scroll);
-                                            let window: String = lines
-                                                .get(first..last)
-                                                .unwrap_or(&[])
-                                                .iter()
-                                                .map(|l| format!("{l}\n"))
-                                                .collect();
-                                            ui.text(window.trim_end(), |t| {
+                                            let window = lines[first..last].join("\n");
+                                            ui.text(&window, |t| {
                                                 t.font_size(11)
                                                     .color(0x9E9590)
-                                                    .line_height(14)
+                                                    .line_height(NHC_MODAL_LINE_HEIGHT as u16)
                                                     .wrap_mode(ply_engine::text::WrapMode::Newline)
                                             });
                                         }
@@ -1199,8 +1243,9 @@ fn handle_input(
     }
 
     let dropdown_open = state.site_dropdown.is_open() || state.tilt_dropdown.is_open();
+    let modal_open = !matches!(state.nhc_modal, NhcModal::None);
 
-    if !dropdown_open && is_mouse_button_down(MouseButton::Left) {
+    if !dropdown_open && !modal_open && is_mouse_button_down(MouseButton::Left) {
         let (mx, my) = mouse_position();
         if let Some((lx, ly)) = state.last_mouse_pos {
             let dx = mx - lx;
@@ -1216,7 +1261,7 @@ fn handle_input(
         state.last_mouse_pos = None;
     }
 
-    if !dropdown_open {
+    if !dropdown_open && !modal_open {
         let scroll = mouse_wheel().1;
         if scroll != 0.0 {
             // 0.05 per unit = ~5-25% per wheel notch (vs old 0.001 = 0.1-0.5%)
@@ -1224,7 +1269,7 @@ fn handle_input(
         }
     }
 
-    if !dropdown_open {
+    if !dropdown_open && !modal_open {
         if is_key_pressed(KeyCode::R) {
             select_product(state, Product::Reflectivity);
         }
@@ -1329,10 +1374,38 @@ fn handle_input(
         state.nhc_overlays.show_most_likely_arrival = !state.nhc_overlays.show_most_likely_arrival;
     }
 
-    // ── NHC modal close / browser buttons ─────────────────────────
-    if !matches!(state.nhc_modal, NhcModal::None) {
+    // ── NHC modal scrolling / close / browser buttons ─────────────
+    if modal_open {
+        if let Some((_, visible_lines, max_scroll)) = nhc_modal_text_metrics(state) {
+            let page = visible_lines.saturating_sub(2).max(1) as f32 * NHC_MODAL_LINE_HEIGHT;
+            let wheel = mouse_wheel().1;
+            if wheel != 0.0 {
+                state.nhc_modal_scroll -= wheel * NHC_MODAL_LINE_HEIGHT * 3.0;
+            }
+            if is_key_pressed(KeyCode::Down) {
+                state.nhc_modal_scroll += NHC_MODAL_LINE_HEIGHT;
+            }
+            if is_key_pressed(KeyCode::Up) {
+                state.nhc_modal_scroll -= NHC_MODAL_LINE_HEIGHT;
+            }
+            if is_key_pressed(KeyCode::PageDown) {
+                state.nhc_modal_scroll += page;
+            }
+            if is_key_pressed(KeyCode::PageUp) {
+                state.nhc_modal_scroll -= page;
+            }
+            if is_key_pressed(KeyCode::Home) {
+                state.nhc_modal_scroll = 0.0;
+            }
+            if is_key_pressed(KeyCode::End) {
+                state.nhc_modal_scroll = max_scroll;
+            }
+            state.nhc_modal_scroll = state.nhc_modal_scroll.clamp(0.0, max_scroll);
+        }
+
         if ply.is_just_pressed("nhc-modal-close") || ply.is_just_pressed("nhc-modal-backdrop") {
             state.nhc_modal = NhcModal::None;
+            state.nhc_modal_scroll = 0.0;
         }
         if ply.is_just_pressed("nhc-modal-browser") {
             let url = match &state.nhc_modal {
