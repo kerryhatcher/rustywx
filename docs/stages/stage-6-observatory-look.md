@@ -1,6 +1,6 @@
 # Stage 6: "Observatory Look" — Visual Design
 
-**Status:** ✅ Complete
+**Status:** ✅ Complete (tagged `v0.4.0-stage6`)
 **Tag:** `v0.4.0-stage6`
 
 ## Goal
@@ -276,4 +276,4 @@ App matches the `observatory-mockup.html` look and feel.
 - [x] Empty states show helpful messages
 - [x] Spline-based color tables produce smooth gradients (no visible banding)
 - [x] Bilinear range interpolation eliminates gate-aligned blockiness in scope
-- [ ] `git push` → CI passes → `git tag v0.4.0-stage6` → `git push --tags`  *(pending)*
+- [x] `git push` → CI passes → `git tag v0.4.0-stage6` → `git push --tags`  ✅
