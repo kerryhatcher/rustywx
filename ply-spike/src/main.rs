@@ -639,6 +639,7 @@ async fn main() {
                     let panel_w = 320.0;
                     let panel_h = screen_height() - 60.0;
                     ui.element()
+                        .id("nhc-panel")
                         .width(fixed!(panel_w))
                         .height(fixed!(panel_h))
                         .background_color(0x12161e)
@@ -1230,8 +1231,9 @@ fn handle_input(
 
     let dropdown_open = state.site_dropdown.is_open() || state.tilt_dropdown.is_open();
     let modal_open = !matches!(state.nhc_modal, NhcModal::None);
+    let over_nhc_panel = state.nhc_show_panel && ply.pointer_over("nhc-panel");
 
-    if !dropdown_open && !modal_open && is_mouse_button_down(MouseButton::Left) {
+    if !dropdown_open && !modal_open && !over_nhc_panel && is_mouse_button_down(MouseButton::Left) {
         let (mx, my) = mouse_position();
         if let Some((lx, ly)) = state.last_mouse_pos {
             let dx = mx - lx;
@@ -1247,7 +1249,7 @@ fn handle_input(
         state.last_mouse_pos = None;
     }
 
-    if !dropdown_open && !modal_open {
+    if !dropdown_open && !modal_open && !over_nhc_panel {
         let scroll = mouse_wheel().1;
         if scroll != 0.0 {
             // 0.05 per unit = ~5-25% per wheel notch (vs old 0.001 = 0.1-0.5%)
