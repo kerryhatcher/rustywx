@@ -1,6 +1,6 @@
 # Stage 3: "Custom Widgets" — Dropdown, Toggle, Collapsing
 
-**Status:** 🟡 Implementation complete; pushed; CI green; tag pending
+**Status:** ✅ Complete
 
 **Implementation commit:** `05e4fb7` (`feat(ui): implement Stage 3 custom widgets`)
 
@@ -132,7 +132,7 @@ with `xdotool`, with screenshots captured in `/tmp` during local validation.
 - [x] Desktop interaction validated with the running release binary.
 - [x] Commit `05e4fb7` pushed to `origin/port/ply-engine`.
 - [x] GitHub Actions run `29716438284` for `05e4fb7` completed successfully.
-- [ ] Create and push `v0.2.0-stage3` after CI is green.
+- [x] Create and push `v0.2.0-stage3` after CI is green.
 
 ## Follow-ups / Deferred Polish
 

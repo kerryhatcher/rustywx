@@ -33,6 +33,12 @@ typography, responsive layout.
   - Mobile (<900px): bottom control bar, full-screen NHC panel, larger touch targets
 - Loading skeleton while data loads
 - Empty states ("No active storms", "No alerts", etc.)
+- **Spline-based color tables** — replace the current step-based color lookup
+  in `colors.rs` with cubic Hermite spline (Cardinal Spline) interpolation for
+  smoother, more professional-looking color ramps. The thesis by Yi Ru (2007)
+  uses this approach for interactive transfer functions; the same technique
+  applies to static NWS-style color tables. See
+  `docs/post-v1-multi-site-animation.md` for the thesis reference.
 
 ## Notes from Spike S1
 
@@ -68,4 +74,5 @@ App matches the `observatory-mockup.html` look and feel.
 - [ ] Touch targets ≥44px on mobile
 - [ ] Loading state shows skeleton/spinner
 - [ ] Empty states show helpful messages
+- [ ] Spline-based color tables produce smooth gradients (no visible banding)
 - [ ] `git push` → CI passes → `git tag v0.4.0-stage6` → `git push --tags`

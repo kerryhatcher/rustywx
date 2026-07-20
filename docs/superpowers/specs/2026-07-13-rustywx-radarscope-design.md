@@ -38,6 +38,18 @@ Out of scope for v1: pan/zoom, animation loops of historical frames, multiple
 radar sites, real-time chunk feed (`unidata-nexrad-level2-chunks`), storm
 tracking products.
 
+## Post-v1
+
+Two features deferred past v1.0.0 are tracked in a dedicated planning document:
+[`docs/post-v1-multi-site-animation.md`](../../post-v1-multi-site-animation.md).
+
+- **Multi-site integration** — combining data from multiple NEXRAD sites into a
+  single unified view (CAPPI at a fixed altitude rather than a single sweep).
+  Informed by Yi Ru (2007), *Volumetric Visualization of NEXRAD Level II Doppler
+  Weather Data from Multiple Sites*.
+- **Temporal animation** — playing back a sequence of historical volume scans
+  as a smooth animation with temporal interpolation between frames.
+
 ## Architecture
 
 Two threads:

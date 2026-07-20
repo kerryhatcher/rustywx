@@ -27,6 +27,13 @@ Settings panel, keyboard shortcuts, edge cases, cleanup.
   replaced as each module was ported; this stage is the final sweep.
   (`store.rs` was already removed in Stage 2 when Ply `storage` took over.)
 - Update documentation (`README.md`, `USER_GUIDE.md`)
+- **RLE compression for radar cache** — add a compressed cache format in
+  `cache.rs` using the modified Run Length Encoding algorithm from Yi Ru (2007).
+  The thesis achieves 99%+ compression (8 MB → 54 KB for 256×256×128 volumes)
+  using a simple scheme: 8-bit byte with the first bit as a repetition flag,
+  followed by a 32-bit unsigned integer run count. This enables storing
+  hundreds of historical frames locally for animation playback without disk
+  bloat. See `docs/post-v1-multi-site-animation.md` for the full algorithm.
 
 ## Notes from Stage 1
 
@@ -49,4 +56,5 @@ Polished, configurable app.
 - [ ] Network errors show user-friendly message, not crash
 - [ ] Corrupt cache is handled gracefully
 - [ ] No egui imports remain in codebase
+- [ ] RLE compression achieves ≥90% space savings on cached radar volumes
 - [ ] `git push` → CI passes → `git tag v0.5.0-stage7` → `git push --tags`

@@ -11,12 +11,13 @@ future-stage polish — every one stands on its own as a working app.
 |---|---|---|---|---|
 | 1 | Hello Radar | ✅ Complete | `v0.2.0-stage1` | [stage-1-hello-radar.md](stages/stage-1-hello-radar.md) |
 | 2 | Live Data | ✅ Complete | `v0.2.0-stage2` | [stage-2-live-data.md](stages/stage-2-live-data.md) |
-| 3 | Custom Widgets | 🟡 Complete; CI green; tag pending | `v0.2.0-stage3` | [stage-3-custom-widgets.md](stages/stage-3-custom-widgets.md) |
-| 4 | Borders & Alerts | 🔲 Not started | `v0.2.0-stage4` | [stage-4-borders-alerts.md](stages/stage-4-borders-alerts.md) |
+| 3 | Custom Widgets | ✅ Complete | `v0.2.0-stage3` | [stage-3-custom-widgets.md](stages/stage-3-custom-widgets.md) |
+| 4 | Borders & Alerts | 🟡 Complete; CI pending; tag pending | `v0.2.0-stage4` | [stage-4-borders-alerts.md](stages/stage-4-borders-alerts.md) |
 | 5 | Tropical | 🔲 Not started | `v0.3.0-stage5` | [stage-5-tropical.md](stages/stage-5-tropical.md) |
 | 6 | Observatory Look | 🔲 Not started | `v0.4.0-stage6` | [stage-6-observatory-look.md](stages/stage-6-observatory-look.md) |
 | 7 | Settings & Polish | 🔲 Not started | `v0.5.0-stage7` | [stage-7-settings-polish.md](stages/stage-7-settings-polish.md) |
 | 8 | Linux Polish | 🔲 Not started | `v1.0.0-stage8` | [stage-8-linux-polish.md](stages/stage-8-linux-polish.md) |
+| — | **Post-v1** | 📝 Planned | — | [post-v1-multi-site-animation.md](post-v1-multi-site-animation.md) |
 
 ## Pre-Flight: Research Findings
 
@@ -156,13 +157,22 @@ rustywx/
 | 1 | Hello Radar | 1 ✅ | Synthetic scope, pan/zoom |
 | 2 | Live Data | 1–2 ✅ | Real NEXRAD via nexrad-data + thread |
 | 3 | Custom Widgets | 1 ✅ local | Searchable site/tilt dropdowns, product toggle, collapsing |
-| 4 | Borders & Alerts | 1 | State lines, NWS warnings via Ply net |
+| 4 | Borders & Alerts | 1 ✅ | State lines, NWS warnings via Ply net |
 | 5 | Tropical | 2 | NHC data, GIS overlays, panel via Ply net |
 | 6 | Observatory Look | 2–3 | Visual design, custom blur shader, animations, responsive |
 | 7 | Settings & Polish | 1 | Settings via Ply storage, shortcuts, error handling |
 | 8 | Linux Polish | 2 | HiDPI, Wayland, perf, a11y |
 
 **Total: ~11–13 days** of stage work. Pre-flight spikes (S1–S8) are complete.
+
+## Post-v1
+
+Features deferred past v1.0.0 are tracked in [post-v1-multi-site-animation.md](post-v1-multi-site-animation.md):
+
+- **Multi-site integration** — combining data from multiple NEXRAD sites into a single unified view. The thesis by Yi Ru (2007) provides a complete blueprint: spherical→geographic coordinate conversion, temporal synchronization, overlap averaging, and a semi-regular 3D grid structure.
+- **Temporal animation** — playing back a sequence of historical volume scans as a smooth animation. The thesis's modified RLE compression (99%+) makes storing hundreds of frames feasible (~15 MB for 288 frames at 256×256×128).
+
+Both features are informed by the thesis analysis in `docs/post-v1-multi-site-animation.md`.
 
 ### Key risk items
 
