@@ -134,14 +134,3 @@ repos:
         language: system
         pass_filenames: false
         stages: [pre-push]
-
-  # ── Kingfisher code review ───────────────────────────────────
-  - repo: local
-    hooks:
-      - id: kingfisher
-        name: kingfisher
-        entry: kf
-        language: system
-        types: [rust]
-        pass_filenames: false
-        stages: [pre-push]

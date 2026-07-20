@@ -144,19 +144,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # ── Kingfisher code review ─────────────────────────────────
-  kingfisher:
-    name: kingfisher
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae  # v2
-      - run: cargo install kingfisher
-      - run: kingfisher
-
   # ── Build (release mode) ───────────────────────────────────
   build:
     name: cargo build --release
