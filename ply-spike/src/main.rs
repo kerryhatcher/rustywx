@@ -203,6 +203,7 @@ async fn main() {
         nhc_image_textures: HashMap::new(),
         nhc_overlays: scope::NhcOverlayState::default(),
         nhc_modal: NhcModal::None,
+        nhc_modal_scroll: 0.0,
         last_mouse_pos: None,
     };
 
@@ -871,18 +872,19 @@ async fn main() {
                                         bundle.text_products.iter().find(|(id, _)| *id == meta.id)
                                     {
                                         for product in texts {
+                                            // Entire preview is one clickable element
                                             ui.element()
+                                                .id(("btn-nhc-text", product.title.len() as u32))
                                                 .width(grow!())
                                                 .height(fit!())
                                                 .background_color(0x171A1F)
                                                 .corner_radius(4.0)
-                                                .layout(|layout| layout.direction(TopToBottom))
+                                                .layout(|layout| {
+                                                    layout.direction(TopToBottom).gap(2)
+                                                })
                                                 .children(|ui| {
+                                                    // Title bar
                                                     ui.element()
-                                                        .id((
-                                                            "btn-nhc-text",
-                                                            product.title.len() as u32,
-                                                        ))
                                                         .width(grow!())
                                                         .height(fixed!(24.0))
                                                         .background_color(0x1E1B1B)
@@ -893,20 +895,14 @@ async fn main() {
                                                                 .align(Left, CenterY)
                                                         })
                                                         .children(|ui| {
-                                                            let arrow =
-                                                                if false { '▾' } else { '▸' };
-                                                            ui.text(
-                                                                &format!(
-                                                                    "{arrow} {}",
-                                                                    product.title
-                                                                ),
-                                                                |t| t.font_size(11).color(0xE8E0DC),
-                                                            );
+                                                            ui.text(&product.title, |t| {
+                                                                t.font_size(11).color(0xE8E0DC)
+                                                            });
                                                         });
-                                                    // Show truncated content
+                                                    // Truncated content preview
                                                     ui.element()
                                                         .width(grow!())
-                                                        .height(fixed!(100.0))
+                                                        .height(fixed!(80.0))
                                                         .background_color(0x12161e)
                                                         .corner_radius(3.0)
                                                         .layout(|layout| layout.padding(6))
@@ -919,25 +915,6 @@ async fn main() {
                                                                 };
                                                             ui.text(truncated, |t| {
                                                                 t.font_size(9).color(0x9E9590)
-                                                            });
-                                                        });
-                                                    ui.element()
-                                                        .id((
-                                                            "btn-nhc-open",
-                                                            product.title.len() as u32,
-                                                        ))
-                                                        .width(fit!())
-                                                        .height(fixed!(20.0))
-                                                        .background_color(0x2a2a2a)
-                                                        .corner_radius(3.0)
-                                                        .layout(|layout| {
-                                                            layout
-                                                                .padding((0, 4, 0, 4))
-                                                                .align(CenterX, CenterY)
-                                                        })
-                                                        .children(|ui| {
-                                                            ui.text("🔗 Open in browser", |t| {
-                                                                t.font_size(9).color(0x4a90d9)
                                                             });
                                                         });
                                                 });
@@ -1101,42 +1078,79 @@ async fn main() {
 
         ui.show(|_| {}).await;
 
-        // ── Draw NHC modal image (if showing an image product) ──────
-        if let NhcModal::Image { title, .. } = &state.nhc_modal
-            && let Some(ref bundle) = state.nhc_bundle
-            && let Some(meta) = bundle.metas.get(state.nhc_selected_storm)
-        {
-            let key = format!("{}:{}", meta.id, title);
-            if let Some(tex) = state.nhc_image_textures.get(&key) {
-                let modal_w = 640.0;
-                let modal_h = screen_height() * 0.7;
-                let modal_x = (screen_width() - modal_w) / 2.0;
-                let modal_y = (screen_height() - modal_h) / 2.0;
-                // Content area: below title bar (36px) with 12px padding
-                let content_x = modal_x + 12.0;
-                let content_y = modal_y + 36.0 + 12.0;
-                let content_w = modal_w - 24.0;
-                let content_h = modal_h - 36.0 - 40.0 - 24.0;
+        // ── Draw NHC modal content (image or scrolled text) ─────────
+        if !matches!(state.nhc_modal, NhcModal::None) {
+            let modal_w = 640.0;
+            let modal_h = screen_height() * 0.7;
+            let modal_x = (screen_width() - modal_w) / 2.0;
+            let modal_y = (screen_height() - modal_h) / 2.0;
+            let content_x = modal_x + 12.0;
+            let content_y = modal_y + 36.0 + 12.0;
+            let content_w = modal_w - 24.0;
+            let content_h = modal_h - 36.0 - 40.0 - 24.0;
 
-                let tex_w = tex.width();
-                let tex_h = tex.height();
-                // Scale to fit content area, preserving aspect ratio
-                let scale = (content_w / tex_w).min(content_h / tex_h).min(1.0);
-                let draw_w = tex_w * scale;
-                let draw_h = tex_h * scale;
-                let draw_x = content_x + (content_w - draw_w) / 2.0;
-                let draw_y = content_y + (content_h - draw_h) / 2.0;
+            match &state.nhc_modal {
+                NhcModal::Image { title, .. } => {
+                    if let Some(ref bundle) = state.nhc_bundle
+                        && let Some(meta) = bundle.metas.get(state.nhc_selected_storm)
+                    {
+                        let key = format!("{}:{}", meta.id, title);
+                        if let Some(tex) = state.nhc_image_textures.get(&key) {
+                            let tex_w = tex.width();
+                            let tex_h = tex.height();
+                            let scale = (content_w / tex_w).min(content_h / tex_h).min(1.0);
+                            let draw_w = tex_w * scale;
+                            let draw_h = tex_h * scale;
+                            let draw_x = content_x + (content_w - draw_w) / 2.0;
+                            let draw_y = content_y + (content_h - draw_h) / 2.0;
+                            draw_texture_ex(
+                                tex,
+                                draw_x,
+                                draw_y,
+                                WHITE,
+                                DrawTextureParams {
+                                    dest_size: Some(Vec2::new(draw_w, draw_h)),
+                                    ..Default::default()
+                                },
+                            );
+                        } else {
+                            // No texture — show placeholder text
+                            draw_text(
+                                "Image not yet downloaded",
+                                content_x,
+                                content_y + 20.0,
+                                14.0,
+                                MacroquadColor::from_rgba(0x9E, 0x95, 0x90, 255),
+                            );
+                        }
+                    }
+                }
+                NhcModal::Text { content, .. } => {
+                    // Draw text with scrolling, line by line, clipped to content area
+                    let font_size = 11.0;
+                    let line_h = font_size + 3.0;
+                    let scroll = state.nhc_modal_scroll.max(0.0);
+                    let lines: Vec<&str> = content.lines().collect();
+                    let total_h = lines.len() as f32 * line_h;
+                    let max_scroll = (total_h - content_h).max(0.0);
+                    state.nhc_modal_scroll = scroll.min(max_scroll);
 
-                draw_texture_ex(
-                    tex,
-                    draw_x,
-                    draw_y,
-                    WHITE,
-                    DrawTextureParams {
-                        dest_size: Some(Vec2::new(draw_w, draw_h)),
-                        ..Default::default()
-                    },
-                );
+                    let first_visible = (scroll / line_h).floor() as usize;
+                    let last_visible = ((scroll + content_h) / line_h).ceil() as usize + 1;
+                    let text_color = MacroquadColor::from_rgba(0x9E, 0x95, 0x90, 255);
+
+                    for (i, line) in lines.iter().enumerate() {
+                        if i < first_visible || i > last_visible {
+                            continue;
+                        }
+                        let y = content_y + (i as f32 * line_h) - scroll;
+                        if y + line_h < content_y || y > content_y + content_h {
+                            continue;
+                        }
+                        draw_text(line, content_x, y, font_size, text_color);
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -1358,6 +1372,7 @@ fn handle_input(
         }
         if is_key_pressed(KeyCode::Escape) {
             state.nhc_modal = NhcModal::None;
+            state.nhc_modal_scroll = 0.0;
         }
     }
 
@@ -1380,17 +1395,19 @@ fn handle_input(
                     title: img.title.clone(),
                     url: img.url.clone(),
                 };
+                state.nhc_modal_scroll = 0.0;
             }
         }
         if let Some((_, texts)) = bundle.text_products.iter().find(|(id, _)| *id == meta.id) {
             for product in texts {
-                let id = ("btn-nhc-open", product.title.len() as u32);
+                let id = ("btn-nhc-text", product.title.len() as u32);
                 if ply.is_just_pressed(id) {
                     state.nhc_modal = NhcModal::Text {
                         title: product.title.clone(),
                         content: product.content.clone(),
                         url: product.url.clone(),
                     };
+                    state.nhc_modal_scroll = 0.0;
                 }
             }
         }

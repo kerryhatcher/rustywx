@@ -111,6 +111,8 @@ pub struct AppState {
     pub nhc_overlays: crate::scope::NhcOverlayState,
     /// Currently displayed NHC product modal.
     pub nhc_modal: NhcModal,
+    /// Scroll offset (pixels) for NHC modal text content.
+    pub nhc_modal_scroll: f32,
 
     /// Last mouse position for manual pan delta calculation.
     pub last_mouse_pos: Option<(f32, f32)>,
