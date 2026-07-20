@@ -369,6 +369,25 @@ fn angular_distance(a: f32, b: f32) -> f32 {
 // Overlay drawing (uses macroquad directly — called inside render_to_texture)
 // ---------------------------------------------------------------------------
 
+/// Project a radar site's lat/lon to screen pixel coordinates, given the
+/// center site, pan offset, and zoom. Uses the same azimuthal-equidistant
+/// projection as the scope overlays. Used both for drawing site markers and
+/// for double-click hit-testing in the input handler.
+pub fn project_site(
+    target_lat: f64,
+    target_lon: f64,
+    center: &RadarSite,
+    pan_km: (f32, f32),
+    zoom: f32,
+) -> (f32, f32) {
+    let side = screen_width().min(screen_height());
+    let px_per_km = (side / 2.0) / MAX_RANGE_KM * zoom;
+    let center_x = screen_width() / 2.0 + pan_km.0 * px_per_km;
+    let center_y = screen_height() / 2.0 + pan_km.1 * px_per_km;
+    let km = geo::point_to_km_offset(center.lat, center.lon, (target_lat, target_lon));
+    (center_x + km.x * px_per_km, center_y + km.y * px_per_km)
+}
+
 /// Draw the full radar scope. Called directly to screen (avoids
 /// render_to_texture coordinate flip — see Stage 1 lesson).
 ///
@@ -466,6 +485,32 @@ pub fn draw_scope_to_texture(
             16.0,
             city_color,
         );
+    }
+
+    // ── Radar site markers (double-click to select) ─────────────
+    let sw = screen_width();
+    let sh = screen_height();
+    let site_marker_color = MacroquadColor::from_rgba(0x0d, 0xc5, 0xb8, 220);
+    let site_label_color = MacroquadColor::from_rgba(0x0d, 0xc5, 0xb8, 255);
+    let margin = 60.0;
+    for other in geo::RADAR_SITES.iter() {
+        if other.id == site.id {
+            continue; // the active site is already marked at center
+        }
+        let (sx, sy) = project_site(other.lat, other.lon, site, pan_km, zoom);
+        // Cull off-screen markers.
+        if sx < -margin || sx > sw + margin || sy < -margin || sy > sh + margin {
+            continue;
+        }
+        draw_circle(sx, sy, 5.0, site_marker_color);
+        draw_circle_lines(
+            sx,
+            sy,
+            5.0,
+            1.5,
+            MacroquadColor::from_rgba(0xff, 0xff, 0xff, 180),
+        );
+        draw_text(other.id, sx + 8.0, sy - 6.0, 14.0, site_label_color);
     }
 
     // ── Border overlays (Stage 4) ────────────────────────────────

@@ -132,4 +132,10 @@ pub struct AppState {
     pub sweep_angle: f32,
     /// Previous-frame hovered element IDs (for hover-glow styling).
     pub hovered_ids: Vec<ply_engine::prelude::Id>,
+
+    // ── Double-click radar site selection ─────────────────────────
+    /// Wall-clock time of the last single mouse click (for double-click).
+    pub last_click_time: f64,
+    /// Screen position of the last single mouse click.
+    pub last_click_pos: (f32, f32),
 }

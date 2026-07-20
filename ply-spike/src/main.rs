@@ -351,6 +351,8 @@ async fn main() {
         pulse_time: 0.0,
         sweep_angle: 0.0,
         hovered_ids: Vec::new(),
+        last_click_time: 0.0,
+        last_click_pos: (0.0, 0.0),
     };
 
     loop {
@@ -1424,6 +1426,41 @@ fn handle_input(
         if scroll != 0.0 {
             // 0.05 per unit = ~5-25% per wheel notch (vs old 0.001 = 0.1-0.5%)
             state.zoom = (state.zoom * (1.0 + scroll * 0.05)).clamp(0.05, 8.0);
+        }
+
+        // ── Double-click on a radar site marker to select it ──────
+        if is_mouse_button_pressed(MouseButton::Left) {
+            let (mx, my) = mouse_position();
+            let now = get_time();
+            let dt = now - state.last_click_time;
+            let (lx, ly) = state.last_click_pos;
+            let moved = (mx - lx).abs() + (my - ly).abs();
+            // Double-click: second press within 400ms and 10px of the first.
+            if dt < 0.4 && moved < 10.0 {
+                let center = &geo::RADAR_SITES[state.site_index];
+                // Hit-test all radar site markers (12px radius).
+                let hit_radius = 14.0;
+                let mut best: Option<(usize, f32)> = None;
+                for (i, other) in geo::RADAR_SITES.iter().enumerate() {
+                    if i == state.site_index {
+                        continue;
+                    }
+                    let (sx, sy) =
+                        scope::project_site(other.lat, other.lon, center, state.pan_km, state.zoom);
+                    let dist = ((mx - sx).powi(2) + (my - sy).powi(2)).sqrt();
+                    if dist < hit_radius && best.is_none_or(|(_, d)| dist < d) {
+                        best = Some((i, dist));
+                    }
+                }
+                if let Some((index, _)) = best {
+                    select_site(state, index);
+                }
+                // Reset so a third click doesn't re-trigger.
+                state.last_click_time = 0.0;
+            } else {
+                state.last_click_time = now;
+                state.last_click_pos = (mx, my);
+            }
         }
     }
 
