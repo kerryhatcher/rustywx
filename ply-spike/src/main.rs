@@ -1091,79 +1091,40 @@ async fn main() {
 
         ui.show(|_| {}).await;
 
-        // ── Draw NHC modal content (image or scrolled text) ─────────
-        if !matches!(state.nhc_modal, NhcModal::None) {
-            let modal_w = 640.0;
-            let modal_h = screen_height() * 0.7;
-            let modal_x = (screen_width() - modal_w) / 2.0;
-            let modal_y = (screen_height() - modal_h) / 2.0;
-            let content_x = modal_x + 12.0;
-            let content_y = modal_y + 36.0 + 12.0;
-            let content_w = modal_w - 24.0;
-            let content_h = modal_h - 36.0 - 40.0 - 24.0;
-
-            match &state.nhc_modal {
-                NhcModal::Image { title, .. } => {
-                    if let Some(ref bundle) = state.nhc_bundle
-                        && let Some(meta) = bundle.metas.get(state.nhc_selected_storm)
-                    {
-                        let key = format!("{}:{}", meta.id, title);
-                        if let Some(tex) = state.nhc_image_textures.get(&key) {
-                            let tex_w = tex.width();
-                            let tex_h = tex.height();
-                            let scale = (content_w / tex_w).min(content_h / tex_h).min(1.0);
-                            let draw_w = tex_w * scale;
-                            let draw_h = tex_h * scale;
-                            let draw_x = content_x + (content_w - draw_w) / 2.0;
-                            let draw_y = content_y + (content_h - draw_h) / 2.0;
-                            draw_texture_ex(
-                                tex,
-                                draw_x,
-                                draw_y,
-                                WHITE,
-                                DrawTextureParams {
-                                    dest_size: Some(Vec2::new(draw_w, draw_h)),
-                                    ..Default::default()
-                                },
-                            );
-                        } else {
-                            // No texture — show placeholder text
-                            draw_text(
-                                "Image not yet downloaded",
-                                content_x,
-                                content_y + 20.0,
-                                14.0,
-                                MacroquadColor::from_rgba(0x9E, 0x95, 0x90, 255),
-                            );
-                        }
-                    }
-                }
-                NhcModal::Text { content, .. } => {
-                    // Draw text with scrolling, line by line, clipped to content area
-                    let font_size = 11.0;
-                    let line_h = font_size + 3.0;
-                    let scroll = state.nhc_modal_scroll.max(0.0);
-                    let lines: Vec<&str> = content.lines().collect();
-                    let total_h = lines.len() as f32 * line_h;
-                    let max_scroll = (total_h - content_h).max(0.0);
-                    state.nhc_modal_scroll = scroll.min(max_scroll);
-
-                    let first_visible = (scroll / line_h).floor() as usize;
-                    let last_visible = ((scroll + content_h) / line_h).ceil() as usize + 1;
-                    let text_color = MacroquadColor::from_rgba(0x9E, 0x95, 0x90, 255);
-
-                    for (i, line) in lines.iter().enumerate() {
-                        if i < first_visible || i > last_visible {
-                            continue;
-                        }
-                        let y = content_y + (i as f32 * line_h) - scroll;
-                        if y + line_h < content_y || y > content_y + content_h {
-                            continue;
-                        }
-                        draw_text(line, content_x, y, font_size, text_color);
-                    }
-                }
-                _ => {}
+        // ── Draw NHC modal image ───────────────────────────────────
+        // Text products are rendered exclusively by Ply inside the modal.
+        // Rendering them here as well caused every line to appear twice.
+        if let NhcModal::Image { title, .. } = &state.nhc_modal
+            && let Some(ref bundle) = state.nhc_bundle
+            && let Some(meta) = bundle.metas.get(state.nhc_selected_storm)
+        {
+            let key = format!("{}:{}", meta.id, title);
+            if let Some(tex) = state.nhc_image_textures.get(&key) {
+                let modal_w = 640.0;
+                let modal_h = screen_height() * 0.7;
+                let modal_x = (screen_width() - modal_w) / 2.0;
+                let modal_y = (screen_height() - modal_h) / 2.0;
+                let content_x = modal_x + 12.0;
+                let content_y = modal_y + 36.0 + 12.0;
+                let content_w = modal_w - 24.0;
+                let content_h = modal_h - 36.0 - 40.0 - 24.0;
+                let tex_w = tex.width();
+                let tex_h = tex.height();
+                let scale = (content_w / tex_w).min(content_h / tex_h).min(1.0);
+                let draw_w = tex_w * scale;
+                let draw_h = tex_h * scale;
+                let draw_x = content_x + (content_w - draw_w) / 2.0;
+                let draw_y = content_y + (content_h - draw_h) / 2.0;
+                draw_texture_ex(
+                    tex,
+                    draw_x,
+                    draw_y,
+                    WHITE,
+                    DrawTextureParams {
+                        dest_size: Some(Vec2::new(draw_w, draw_h)),
+                        ..Default::default()
+                    },
+                );
             }
         }
 
