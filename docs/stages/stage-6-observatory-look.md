@@ -39,6 +39,19 @@ typography, responsive layout.
   uses this approach for interactive transfer functions; the same technique
   applies to static NWS-style color tables. See
   `docs/post-v1-multi-site-animation.md` for the thesis reference.
+- **Bilinear range interpolation** — replace the current single-gate range
+  lookup in `scope.rs` rasterization with bilinear interpolation across both
+  azimuth and range. The current code already interpolates between two
+  nearest radials (azimuth axis) but uses a hard gate index for range,
+  producing blocky gate-aligned artifacts. Kvasov et al. show that 4-gate
+  bilinear interpolation (weighted blend of the curvilinear trapezoid
+  formed by 2 adjacent radials × 2 adjacent range gates) gives ~90%
+  improvement over nearest-neighbor, with max error only 4.3–6.7%. The
+  formula is a simple weighted blend:
+  `Z = (1-ξ)(1-η)·Z_ij + (1-ξ)η·Z_i(j+1) + ξ(1-η)·Z_(i+1)j + ξη·Z_(i+1)(j+1)`
+  where ξ = relative azimuth, η = relative range. See
+  `docs/research/Weatherradardatavisualizationusingfirst-orderinterpolation.md`
+  for the full paper.
 
 ## Notes from Spike S1
 
@@ -75,4 +88,5 @@ App matches the `observatory-mockup.html` look and feel.
 - [ ] Loading state shows skeleton/spinner
 - [ ] Empty states show helpful messages
 - [ ] Spline-based color tables produce smooth gradients (no visible banding)
+- [ ] Bilinear range interpolation eliminates gate-aligned blockiness in scope
 - [ ] `git push` → CI passes → `git tag v0.4.0-stage6` → `git push --tags`

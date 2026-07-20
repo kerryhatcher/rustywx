@@ -34,6 +34,35 @@ Settings panel, keyboard shortcuts, edge cases, cleanup.
   followed by a 32-bit unsigned integer run count. This enables storing
   hundreds of historical frames locally for animation playback without disk
   bloat. See `docs/post-v1-multi-site-animation.md` for the full algorithm.
+- **Spectrum Width product** — add Spectrum Width as a third selectable
+  product (alongside Reflectivity and Velocity). Spectrum Width is a base
+  data moment already decoded by `nexrad-model` (it measures velocity
+  dispersion in the sample volume — high values indicate turbulence, shear,
+  or mixed targets). Only needs a new color table in `colors.rs` and a
+  `Product::SpectrumWidth` variant. FMH-11 Part A §4.2.1 defines it as
+  "standard deviation of the mean radial velocity spectrum."
+  See `docs/research/2021_fmh11_parta.md`.
+- **VCP / scan mode display** — show the active Volume Coverage Pattern
+  (e.g., "VCP 12 — Precipitation") and operational mode in the status bar.
+  VCP info is available from the decoded scan metadata. This gives users
+  context about data quality and scan strategy (VCP 12 = 14 elevations
+  in ~4.5 min for severe weather; VCP 31 = 5 elevations in ~10 min for
+  clear air). FMH-11 Part A §4.4–4.5 defines all operational modes and VCPs.
+  See `docs/research/2021_fmh11_parta.md`.
+- **Nyquist velocity display** — show the Nyquist velocity (unambiguous
+  velocity range) for the current tilt in the status bar. This helps users
+  interpret velocity data: values near ±Nyquist are at the edge of the
+  unambiguous range and may be aliased. The Nyquist velocity is derivable
+  from the PRT in the scan metadata: `Va = λ / (4 × PRT)`. Hubbert et al.
+  explain the range-velocity dilemma and why purple haze occurs.
+  See `docs/research/atot-JTECH-D-25-0059.1.md`.
+- **Tunable TDBZ kernel size** — expose the TDBZ clutter filter kernel size
+  as a setting (currently hardcoded to 9×9 in `scope.rs`). Keem et al.
+  tested window sizes from 3×3 to 41×41 and found accuracy improved
+  monotonically from 98.99% to 99.97%. Larger windows are better at removing
+  wind turbine clutter but may suppress weak precipitation at storm edges.
+  Offer presets: "Sensitive" (5×5), "Default" (9×9), "Aggressive" (13×13).
+  See `docs/research/remotesensing-18-00827-with-cover.md`.
 
 ## Notes from Stage 1
 
@@ -57,4 +86,8 @@ Polished, configurable app.
 - [ ] Corrupt cache is handled gracefully
 - [ ] No egui imports remain in codebase
 - [ ] RLE compression achieves ≥90% space savings on cached radar volumes
+- [ ] Spectrum Width product displays with appropriate color table
+- [ ] VCP and scan mode shown in status bar
+- [ ] Nyquist velocity shown for current tilt in status bar
+- [ ] TDBZ kernel size selectable in settings (Sensitive / Default / Aggressive)
 - [ ] `git push` → CI passes → `git tag v0.5.0-stage7` → `git push --tags`
