@@ -13,7 +13,7 @@ Full research in `research/`.
 
 | Crate | Decision | Reason |
 |---|---|---|
-| `ply-engine` | **Add** — `net`, `net-json`, `storage`, `built-in-shaders`, `text-styling` features | Replaces eframe/egui/ureq/rusqlite |
+| `ply-engine` | **Add** — `net`, `net-json`, `storage` up front; `built-in-shaders` + `text-styling` added at Stage 6 (blur shader, fonts) | Replaces eframe/egui/ureq/rusqlite |
 | `nexrad-data` | **Keep** | Handles S3 sigv4 signing, bucket listing, NEXRAD binary decoding — thousands of lines not worth rewriting |
 | `nexrad-model` | **Keep** | Pure data types, no egui dependency |
 | `tokio` | **Keep** | Needed for `nexrad-data` background thread; Ply's `net` handles its own async internally |
@@ -25,7 +25,7 @@ Full research in `research/`.
 | `image` | **Keep** | Decode NHC graphics product thumbnails into RGBA for Ply textures (Stage 5) |
 | `serde`, `serde_json` | **Keep** | JSON parsing for borders, alerts, NHC data |
 | `zip` | **Keep** | Decompress NEXRAD volume files from S3; used directly by the app, not just a transitive dependency |
-| `webbrowser` | **Keep** (bump to 1.2) | Open external links from NHC panel (Stage 5); confirmed WASM-compatible (R4); v1.2 has improved WASM support |
+| `webbrowser` | **Keep** (0.8 sufficient; optionally bump to 1.2) | Open external links from NHC panel (Stage 5); confirmed WASM-compatible (R4). R4 found 0.8.15 works on WASM; 1.2 is an optional bump, not required |
 
 ### Architecture decisions
 
@@ -59,7 +59,7 @@ Full research in `research/`.
 
   1. Commit all changes for the stage
   2. `git push` to GitHub
-  3. Wait for GitHub Actions CI to pass (all 14 jobs green)
+  3. Wait for GitHub Actions CI to pass (all 13 jobs green)
   4. Only then: `git tag` + `git push --tags`
 
   This ensures no broken code ever gets a version tag. The CI runs fmt,
@@ -102,8 +102,10 @@ Full research in `research/`.
 - `state.rs` — `AppState` struct (replaces the egui `app.rs` app struct;
   `app.rs` is removed in this stage)
 - `lib.rs` — updated module tree for Ply (old egui modules removed)
-- `logger.rs` — ported to Ply's logging; if Ply provides equivalent
-  functionality, this module is dropped
+- `logger.rs` — **drop** this module. Ply's engine provides its own logging;
+  the egui-era logger is not ported. (If a thin shim is later needed for
+  module-level `tracing`/`log` bridging, add it then — don't speculatively
+  port.)
 - `main.rs` — window config, game loop, Ply UI shell
 - Basic controls: keyboard R/V for product, arrow keys for site, scroll/drag for pan/zoom, 0 to reset view
 - Top bar: site name, product indicator, zoom/pan readout
@@ -141,8 +143,10 @@ cardinal spokes, station marker, city markers. Drag to pan, scroll to zoom.
   The `tokio` runtime lives on its own thread — Ply's game loop just polls
   `rx.try_recv()` each frame. Validated by Spike S2 before this stage.
 - `cache.rs` — **full rewrite** from SQLite/rusqlite to Ply `storage`
-  (`save_bytes` / `load_bytes` for serialized scan data, or JSON metadata
-  files). The old `cache.rs` uses SQL schema and prepared statements;
+  (`save_bytes().await` / `load_bytes().await` for serialized scan data,
+  or JSON metadata files). Ply's `Storage` API is **async** (Spike S5);
+  calls must be `.await`ed inside the async game loop or an async helper.
+  The old `cache.rs` uses SQL schema and prepared statements;
   Ply `storage` is a key-value API — the data model changes accordingly.
   The old `store.rs` (rusqlite-based settings) is also removed in this
   stage since Ply `storage` handles all persistence.
@@ -328,8 +332,9 @@ typography, responsive layout.
 - `widgets/settings.rs` — settings panel UI (glass modal using Stage 6
   `glass_panel` widget)
 - Settings persistence via Ply `storage`:
-  `storage.save_string("settings.json", &serde_json::to_string(&settings)?)`
-  and `storage.load_string("settings.json")` on startup.
+  `storage.save_string("settings.json", &serde_json::to_string(&settings)?).await`
+  and `storage.load_string("settings.json").await` on startup (both inside
+  the async game loop — Spike S5 confirmed `Storage` is async).
   (Ply `storage` replaced SQLite/rusqlite in Stage 2; this stage adds the
   settings schema and UI on top of it.)
 - Settings: default site, poll interval, NHC refresh, overlay defaults,
@@ -405,6 +410,33 @@ removed entirely.
 Each stage adds or rewrites files under `ply-spike/src/`. The old `src/`
 is never the build target after Stage 1 begins.
 
+### Stage 1 crate swap (explicit steps)
+
+The root `Cargo.toml` and `ply-spike/Cargo.toml` are currently two
+independent crates — there is **no `[workspace]`**, and CI's
+`cargo build --release` / `cargo test` target the root crate (which still
+builds the egui `src/`). For CI to build the Ply app from Stage 1 onward,
+Stage 1 must perform the swap explicitly:
+
+1. Convert the root `Cargo.toml` into a workspace root and make `ply-spike`
+   the sole member: add `[workspace] members = ["ply-spike"]` (or move
+   `ply-spike` to the repo root and drop the inner crate). The root crate's
+   old egui `src/` is no longer built.
+2. Update `.github/workflows/ci.yml`'s build/test jobs to build the
+   workspace (`cargo build --release` / `cargo test` resolve to the
+   `ply-spike` member automatically once it's the only member).
+3. Port the root crate's metadata (license, publish=false, edition 2024)
+   onto `ply-spike/Cargo.toml` so the published/shipped crate identity is
+   preserved.
+4. Verify `just ci-full` and CI both build the Ply app, not the egui app,
+   before tagging `v0.2.0-stage1`.
+
+If instead the choice is to move `ply-spike/src/*` into the root `src/`
+and rewrite the root `Cargo.toml` in place, that is also acceptable — the
+key requirement is that **exactly one** crate is the build target and CI
+builds it. Pick one approach in Stage 1 and document it; don't leave both
+the egui root crate and `ply-spike` buildable.
+
 ## Testing Strategy
 
 - **Unit tests** for pure-data modules (`model.rs`, `colors.rs`, `geo.rs`)
@@ -414,19 +446,23 @@ is never the build target after Stage 1 begins.
   does not have a headless testing mode. Manual validation checklists
   (in each stage) are the primary verification method.
 - **CI** (`just ci-full`) continues to run `cargo test` for all unit tests.
-  The `justfile` (lowercase — `Justfile` with capital J is a symlink on
-  Linux, a separate file on macOS; `justfile` is canonical) needs no
-  changes for Ply-based builds since `cargo build` / `cargo test` work
-  the same way.
+  The CI-parity recipes live in the capital `Justfile` (5358 B, with `ci`,
+  `ci-full`, `fmt`, `lint`, `kingfisher`, etc.). The lowercase `justfile`
+  that previously held only `cargo run --release` is removed in the Stage 1
+  cleanup — having both present makes `just` abort with "Multiple candidate
+  justfiles found." After that removal, `just ci-full` works unchanged for
+  Ply-based builds since `cargo build` / `cargo test` resolve the same way.
 
 ## Toolchain Requirements
 
 - **Rust edition 2024** — requires Rust ≥1.85 (stabilized February 2025).
   CI runners and dev machines must be on a recent stable toolchain.
-- **`nexrad-data` is an RC** (1.0.0-rc.7). Pin with `=` in Cargo.toml to
-  avoid surprise breakage. The main `Cargo.toml` currently uses `^` (caret)
-  — update to `=1.0.0-rc.7` before Stage 2. Monitor upstream for the 1.0
-  stable release.
+- **`nexrad-data` and `nexrad-model` are RCs** (1.0.0-rc.7 and 1.0.0-rc.2).
+  Pin **both** with `=` in Cargo.toml to avoid surprise breakage. The main
+  `Cargo.toml` currently uses `^` (caret) for both — update to
+  `=1.0.0-rc.7` and `=1.0.0-rc.2` before Stage 2. (`ply-spike/Cargo.toml`
+  already pins both with `=`; carry that over.) Monitor upstream for the
+  1.0 stable releases.
 - **`image` crate** (Stage 5): Current features `["png", "jpeg"]` are
   sufficient for NHC graphics products. No additional features needed —
   `image` decodes to RGBA bytes natively with these codecs.
