@@ -1,6 +1,6 @@
 # Stage 2: "Live Data" — Real NEXRAD
 
-**Status:** 🔲 Not started
+**Status:** ✅ Complete
 **Tag:** `v0.2.0-stage2`
 
 ## Goal
