@@ -394,12 +394,10 @@ pub fn draw_scope_to_texture(
     draw_circle(center_x, center_y, 3.0, WHITE);
     draw_text(site.id, center_x + 6.0, center_y + 6.0, 12.0, WHITE);
 
-    // City markers (sample every 50th to keep perf reasonable)
+    // City markers — check all cities within range (~1000 haversine
+    // calculations per frame is trivial).
     let city_color = MacroquadColor::from_rgba(0xdd, 0xdd, 0xaa, 255);
-    for (i, &(name, lat, lon)) in geo::CITIES.iter().enumerate() {
-        if i % 50 != 0 {
-            continue;
-        }
+    for &(name, lat, lon) in geo::CITIES.iter() {
         let (range_km, bearing_deg) = geo::range_bearing(site.lat, site.lon, lat, lon);
         if range_km as f32 > MAX_RANGE_KM {
             continue;

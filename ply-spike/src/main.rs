@@ -8,7 +8,7 @@
 
 use ply_engine::prelude::*;
 use rustywx::colors;
-use rustywx::data::{self, WorkerMessage};
+use rustywx::data::WorkerMessage;
 use rustywx::geo;
 use rustywx::model::{Product, RadialData, SweepData};
 use rustywx::scope;
@@ -87,12 +87,12 @@ async fn main() {
     static DEFAULT_FONT: FontAsset = FontAsset::Path("assets/fonts/DejaVuSansMono.ttf");
     let mut ply = Ply::<()>::new(&DEFAULT_FONT).await;
 
-    let initial_site = &geo::RADAR_SITES[0];
-
-    // Spawn background worker for real NEXRAD data.
+    // Channels for the background data worker (Stage 2 will spawn it).
+    // Stage 1 runs on synthetic data only — real NEXRAD fetch would
+    // replace the synthetic sweep with an often-empty real scan.
     let (worker_tx, worker_rx) = mpsc::channel();
-    let (site_tx, site_rx) = mpsc::channel();
-    data::spawn_worker(worker_tx, initial_site.id.to_string(), site_rx);
+    let (site_tx, _site_rx) = mpsc::channel();
+    let _ = worker_tx; // unused until Stage 2
 
     let mut state = AppState {
         site_index: 0,
@@ -103,7 +103,7 @@ async fn main() {
         needs_reraster: true,
         scan: None,
         tilt_index: 0,
-        status_text: "Starting…".to_string(),
+        status_text: "Synthetic data — Stage 1".to_string(),
         worker_rx,
         site_tx,
         dropdown_open: false,
@@ -464,11 +464,11 @@ fn handle_input(state: &mut AppState, ply: &Ply<()>) {
 
     // Keyboard shortcuts
     if is_key_pressed(KeyCode::R) {
-        state.product = Product::Reflectivity;
+        state.product = Product::Velocity;
         state.needs_reraster = true;
     }
     if is_key_pressed(KeyCode::V) {
-        state.product = Product::Velocity;
+        state.product = Product::Reflectivity;
         state.needs_reraster = true;
     }
     if is_key_pressed(KeyCode::T)
