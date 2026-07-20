@@ -856,59 +856,40 @@ async fn main() {
                                                 .iter()
                                                 .find(|(id, _)| *id == meta.id)
                                             {
-                                                for img in images {
+                                                for (img_idx, img) in images.iter().enumerate() {
                                                     let key = format!("{}:{}", meta.id, img.title);
-                                                    let has_tex =
-                                                        state.nhc_image_textures.contains_key(&key);
                                                     // Skip products that failed to download (404)
-                                                    if !has_tex {
+                                                    if !state.nhc_image_textures.contains_key(&key)
+                                                    {
                                                         continue;
                                                     }
+                                                    let tex =
+                                                        state.nhc_image_textures.get(&key).unwrap();
+                                                    // Clickable row: thumbnail + title
                                                     ui.element()
+                                                        .id(("btn-nhc-img", img_idx as u32))
                                                         .width(grow!())
-                                                        .height(fixed!(28.0))
+                                                        .height(fixed!(56.0))
                                                         .background_color(0x1E1B1B)
                                                         .corner_radius(3.0)
                                                         .layout(|layout| {
                                                             layout
                                                                 .direction(LeftToRight)
-                                                                .padding((0, 6, 0, 6))
-                                                                .gap(6)
+                                                                .padding((4, 6, 4, 6))
+                                                                .gap(8)
                                                                 .align(Left, CenterY)
                                                         })
                                                         .children(|ui| {
-                                                            let status =
-                                                                if has_tex { "✓" } else { "…" };
-                                                            ui.text(status, |t| {
-                                                                t.font_size(11).color(0x9E9590)
-                                                            });
+                                                            // Thumbnail image (75x48, NHC aspect ratio)
+                                                            ui.element()
+                                                                .width(fixed!(75.0))
+                                                                .height(fixed!(48.0))
+                                                                .image(tex.clone())
+                                                                .empty();
+                                                            // Product title
                                                             ui.text(&img.title, |t| {
                                                                 t.font_size(11).color(0xE8E0DC)
                                                             });
-                                                            ui.element()
-                                                                .width(grow!())
-                                                                .height(fixed!(1.0))
-                                                                .empty();
-                                                            ui.element()
-                                                                .id((
-                                                                    "btn-nhc-img",
-                                                                    img.title.len() as u32,
-                                                                ))
-                                                                .width(fit!())
-                                                                .height(fixed!(20.0))
-                                                                .background_color(0x2a2a2a)
-                                                                .corner_radius(3.0)
-                                                                .layout(|layout| {
-                                                                    layout
-                                                                        .padding((0, 4, 0, 4))
-                                                                        .align(CenterX, CenterY)
-                                                                })
-                                                                .children(|ui| {
-                                                                    ui.text("🔗", |t| {
-                                                                        t.font_size(10)
-                                                                            .color(0x4a90d9)
-                                                                    });
-                                                                });
                                                         });
                                                 }
                                             } else {
@@ -1435,8 +1416,8 @@ fn handle_input(
         && let Some(meta) = bundle.metas.get(state.nhc_selected_storm)
         && let Some((_, images)) = bundle.image_products.iter().find(|(id, _)| *id == meta.id)
     {
-        for img in images {
-            let id = ("btn-nhc-img", img.title.len() as u32);
+        for (img_idx, img) in images.iter().enumerate() {
+            let id = ("btn-nhc-img", img_idx as u32);
             if ply.is_just_pressed(id) {
                 state.nhc_modal = NhcModal::Image {
                     title: img.title.clone(),
