@@ -122,11 +122,6 @@ pub struct AppState {
     // ── Stage 6: Observatory Look (animations / auto-hide) ──────────
     /// Wall-clock time at app start (for staggered entrance animation).
     pub start_time: f64,
-    /// Wall-clock time of the last pointer/keyboard activity (control-bar
-    /// auto-hide). Controls fade out after 3s of inactivity.
-    pub last_activity: f64,
-    /// Whether the control bar is currently visible (auto-hide state).
-    pub controls_visible: bool,
     /// NHC panel open/close animation start time (0 = not animating).
     pub nhc_anim_start: f64,
     /// NHC panel animation progress at animation start (for easing).

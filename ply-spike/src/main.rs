@@ -346,8 +346,6 @@ async fn main() {
         nhc_modal_scroll: 0.0,
         last_mouse_pos: None,
         start_time: get_time(),
-        last_activity: get_time(),
-        controls_visible: true,
         nhc_anim_start: 0.0,
         nhc_anim_from: 0.0,
         pulse_time: 0.0,
@@ -361,41 +359,8 @@ async fn main() {
         let now = get_time();
         let entrance = ease_out_cubic(((now - state.start_time) / 0.6).clamp(0.0, 1.0) as f32);
 
-        // Stage 6: animation timing + auto-hide + hover tracking.
+        // Stage 6: animation timing + hover tracking.
         state.sweep_angle = (state.sweep_angle + 0.6) % 360.0;
-
-        let mouse_moved = {
-            let (mx, my) = mouse_position();
-            if let Some((lx, ly)) = state.last_mouse_pos {
-                (mx - lx).abs() > 0.5 || (my - ly).abs() > 0.5
-            } else {
-                false
-            }
-        };
-        if mouse_moved || is_mouse_button_down(MouseButton::Left) {
-            state.last_activity = now;
-        }
-        for &code in &[
-            KeyCode::R,
-            KeyCode::V,
-            KeyCode::T,
-            KeyCode::N,
-            KeyCode::B,
-            KeyCode::A,
-            KeyCode::Key0,
-            KeyCode::Left,
-            KeyCode::Right,
-        ] {
-            if is_key_pressed(code) {
-                state.last_activity = now;
-            }
-        }
-        // Auto-hide: hide after 4s idle, but always reveal when the pointer
-        // moves near the top edge (standard auto-hide UX like a dock).
-        let (_, mouse_y) = mouse_position();
-        let near_top = mouse_y < 50.0;
-        let idle = now - state.last_activity;
-        state.controls_visible = near_top || idle < 4.0;
 
         state.hovered_ids = ply.pointer_over_ids();
 
@@ -669,149 +634,147 @@ async fn main() {
             .height(grow!())
             .layout(|layout| layout.direction(TopToBottom))
             .children(|ui| {
-                // ── Controls bar (auto-hiding, frosted glass) ────────
-                if state.controls_visible {
-                    glass_panel::glass(ui.element().width(grow!()).height(fixed!(if is_mobile {
-                        48.0
-                    } else {
-                        36.0
-                    })))
-                    .layout(|layout| {
-                        layout
-                            .direction(LeftToRight)
-                            .padding(8)
-                            .gap(12)
-                            .align(Left, CenterY)
-                    })
-                    .children(|ui| {
-                        state.site_dropdown.draw(
-                            ui,
-                            SITE_DROPDOWN,
-                            site.id,
-                            &site_options,
-                            Some(state.site_index),
-                        );
+                // ── Controls bar (frosted glass) ────────────────────
+                glass_panel::glass(ui.element().width(grow!()).height(fixed!(if is_mobile {
+                    48.0
+                } else {
+                    36.0
+                })))
+                .layout(|layout| {
+                    layout
+                        .direction(LeftToRight)
+                        .padding(8)
+                        .gap(12)
+                        .align(Left, CenterY)
+                })
+                .children(|ui| {
+                    state.site_dropdown.draw(
+                        ui,
+                        SITE_DROPDOWN,
+                        site.id,
+                        &site_options,
+                        Some(state.site_index),
+                    );
 
-                        ui.text(&format!("— {}", site.name), |text| {
-                            text.font_size(14).color(0xE8E0DC)
+                    ui.text(&format!("— {}", site.name), |text| {
+                        text.font_size(14).color(0xE8E0DC)
+                    });
+
+                    toggle::draw(ui, state.product, &PRODUCT_OPTIONS);
+
+                    state.tilt_dropdown.draw(
+                        ui,
+                        TILT_DROPDOWN,
+                        tilt_label,
+                        &tilt_options,
+                        tilt_options
+                            .get(state.tilt_index)
+                            .map(|option| option.source_index),
+                    );
+
+                    ui.text(
+                        &format!(
+                            "Zoom: {:.1}x  Pan: ({:.0}, {:.0}) km",
+                            state.zoom, state.pan_km.0, state.pan_km.1
+                        ),
+                        |text| text.font_size(11).font(&MONO_FONT).color(0x9E9590),
+                    );
+
+                    // ── Overlay toggles (Stage 4) ──────────────────
+                    let borders_active = state.show_borders;
+                    let borders_bg = if borders_active { 0x0dc5b8 } else { 0x1E1B1B };
+                    let borders_label = if borders_active {
+                        "Borders ✓"
+                    } else {
+                        "Borders"
+                    };
+                    ui.element()
+                        .id("btn-borders")
+                        .width(fit!())
+                        .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                        .background_color(borders_bg)
+                        .corner_radius(4.0)
+                        .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
+                        .children(|ui| {
+                            ui.text(borders_label, |text| text.font_size(12).color(0xE8E0DC));
                         });
 
-                        toggle::draw(ui, state.product, &PRODUCT_OPTIONS);
-
-                        state.tilt_dropdown.draw(
-                            ui,
-                            TILT_DROPDOWN,
-                            tilt_label,
-                            &tilt_options,
-                            tilt_options
-                                .get(state.tilt_index)
-                                .map(|option| option.source_index),
-                        );
-
-                        ui.text(
-                            &format!(
-                                "Zoom: {:.1}x  Pan: ({:.0}, {:.0}) km",
-                                state.zoom, state.pan_km.0, state.pan_km.1
-                            ),
-                            |text| text.font_size(11).font(&MONO_FONT).color(0x9E9590),
-                        );
-
-                        // ── Overlay toggles (Stage 4) ──────────────────
-                        let borders_active = state.show_borders;
-                        let borders_bg = if borders_active { 0x0dc5b8 } else { 0x1E1B1B };
-                        let borders_label = if borders_active {
-                            "Borders ✓"
+                    let alerts_bg = hover_tint(
+                        &state.hovered_ids,
+                        "btn-alerts",
+                        if state.show_alerts {
+                            0x0dc5b8
                         } else {
-                            "Borders"
-                        };
-                        ui.element()
-                            .id("btn-borders")
-                            .width(fit!())
-                            .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
-                            .background_color(borders_bg)
-                            .corner_radius(4.0)
-                            .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
-                            .children(|ui| {
-                                ui.text(borders_label, |text| text.font_size(12).color(0xE8E0DC));
+                            0x1E1B1B
+                        },
+                        0x1E1B1B,
+                    );
+                    let alerts_label = if state.show_alerts {
+                        "Alerts ✓"
+                    } else {
+                        "Alerts"
+                    };
+                    let alerts_count = if state.alerts_loaded {
+                        format!(" ({})", state.alerts.len())
+                    } else if state.alerts_fetch_fired {
+                        " (…)".to_string()
+                    } else {
+                        String::new()
+                    };
+                    ui.element()
+                        .id("btn-alerts")
+                        .width(fit!())
+                        .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                        .background_color(alerts_bg)
+                        .corner_radius(4.0)
+                        .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
+                        .children(|ui| {
+                            ui.text(&format!("{alerts_label}{alerts_count}"), |text| {
+                                text.font_size(12).color(0xE8E0DC)
                             });
+                        });
 
-                        let alerts_bg = hover_tint(
-                            &state.hovered_ids,
-                            "btn-alerts",
-                            if state.show_alerts {
-                                0x0dc5b8
-                            } else {
-                                0x1E1B1B
-                            },
-                            0x1E1B1B,
-                        );
-                        let alerts_label = if state.show_alerts {
-                            "Alerts ✓"
+                    // ── NHC toggle button (Stage 5) ──────────────────
+                    let nhc_bg = hover_tint(
+                        &state.hovered_ids,
+                        "btn-nhc",
+                        if state.nhc_show_panel {
+                            0x0dc5b8
                         } else {
-                            "Alerts"
-                        };
-                        let alerts_count = if state.alerts_loaded {
-                            format!(" ({})", state.alerts.len())
-                        } else if state.alerts_fetch_fired {
-                            " (…)".to_string()
-                        } else {
-                            String::new()
-                        };
-                        ui.element()
-                            .id("btn-alerts")
-                            .width(fit!())
-                            .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
-                            .background_color(alerts_bg)
-                            .corner_radius(4.0)
-                            .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
-                            .children(|ui| {
-                                ui.text(&format!("{alerts_label}{alerts_count}"), |text| {
-                                    text.font_size(12).color(0xE8E0DC)
-                                });
+                            0x1E1B1B
+                        },
+                        0x1E1B1B,
+                    );
+                    let nhc_label = if state.nhc_show_panel {
+                        "Tropical ✓"
+                    } else {
+                        "Tropical"
+                    };
+                    let storm_count = state
+                        .nhc_bundle
+                        .as_ref()
+                        .map(|b| b.metas.len())
+                        .unwrap_or(0);
+                    let nhc_badge = if storm_count > 0 {
+                        format!(" ({storm_count})")
+                    } else if state.nhc_fetch_fired {
+                        " (…)".to_string()
+                    } else {
+                        String::new()
+                    };
+                    ui.element()
+                        .id("btn-nhc")
+                        .width(fit!())
+                        .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                        .background_color(nhc_bg)
+                        .corner_radius(4.0)
+                        .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
+                        .children(|ui| {
+                            ui.text(&format!("{nhc_label}{nhc_badge}"), |text| {
+                                text.font_size(12).color(0xE8E0DC)
                             });
-
-                        // ── NHC toggle button (Stage 5) ──────────────────
-                        let nhc_bg = hover_tint(
-                            &state.hovered_ids,
-                            "btn-nhc",
-                            if state.nhc_show_panel {
-                                0x0dc5b8
-                            } else {
-                                0x1E1B1B
-                            },
-                            0x1E1B1B,
-                        );
-                        let nhc_label = if state.nhc_show_panel {
-                            "Tropical ✓"
-                        } else {
-                            "Tropical"
-                        };
-                        let storm_count = state
-                            .nhc_bundle
-                            .as_ref()
-                            .map(|b| b.metas.len())
-                            .unwrap_or(0);
-                        let nhc_badge = if storm_count > 0 {
-                            format!(" ({storm_count})")
-                        } else if state.nhc_fetch_fired {
-                            " (…)".to_string()
-                        } else {
-                            String::new()
-                        };
-                        ui.element()
-                            .id("btn-nhc")
-                            .width(fit!())
-                            .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
-                            .background_color(nhc_bg)
-                            .corner_radius(4.0)
-                            .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
-                            .children(|ui| {
-                                ui.text(&format!("{nhc_label}{nhc_badge}"), |text| {
-                                    text.font_size(12).color(0xE8E0DC)
-                                });
-                            });
-                    });
-                } // end controls_visible
+                        });
+                });
 
                 // ── NHC slide-in panel (Stage 5) ────────────────────────
                 if state.nhc_show_panel {
