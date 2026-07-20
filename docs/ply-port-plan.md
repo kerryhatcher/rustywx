@@ -155,7 +155,7 @@ cardinal spokes, station marker, city markers. Drag to pan, scroll to zoom.
 - Tilt selector (keyboard: T key cycles tilts)
 - Status bar shows scan timestamp, site, elevation
 - Loading state while fetching first scan
-- Error state if fetch fails
+- Error state if fetch fails (Recoverable: status bar alert; Fatal: full-screen error modal)
 
 **Deliverable:** `cargo run` → real radar data from KJGX (or any site),
 auto-refreshes every 2 minutes, cached on disk.
@@ -403,6 +403,12 @@ removed entirely.
 Each stage adds or rewrites files under `ply-spike/src/`. The old `src/`
 is never the build target after Stage 1 begins.
 
+### Asset Structure
+Assets are stored relative to the crate root in `assets/`:
+- `assets/fonts/`: TTF files (Inter, JetBrains Mono)
+- `assets/shaders/`: Custom GLSL ES 1.00 fragment shaders
+- `assets/textures/`: Static textures, noise maps, and backgrounds
+
 ### Stage 1 crate swap (explicit steps)
 
 The root `Cargo.toml` and `ply-spike/Cargo.toml` are currently two
@@ -445,6 +451,7 @@ the egui root crate and `ply-spike` buildable.
   cleanup — having both present makes `just` abort with "Multiple candidate
   justfiles found." After that removal, `just ci-full` works unchanged for
   Ply-based builds since `cargo build` / `cargo test` resolve the same way.
+- **Data Pipeline Integration**: While UI testing is manual, the data pipeline (Fetch $\rightarrow$ Decode $\rightarrow$ Cache) will be verified via integration tests in CI using mock responses to ensure data integrity without needing a GPU.
 
 ## Toolchain Requirements
 
@@ -478,7 +485,7 @@ the egui root crate and `ply-spike` buildable.
 | 5 | Tropical | 2 | NHC data, GIS overlays, panel via Ply net |
 | 6 | Observatory Look | 2–3 | Visual design, custom blur shader, animations, responsive |
 | 7 | Settings & Polish | 1 | Settings via Ply storage, shortcuts, error handling |
-| 8 | Cross-Platform | 2 | WASM relay proxy, Android, perf, a11y |
+| 8 | Linux Polish | 2 | HiDPI, Wayland, perf, a11y |
 
 **Total: ~11–13 days** of stage work, plus **~5–8 hours** of pre-stage spikes
 (S1–S6 in `de-risking-report.md`) to de-risk the blur shader, nexrad-data
