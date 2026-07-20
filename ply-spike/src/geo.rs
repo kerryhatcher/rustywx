@@ -1,6 +1,13 @@
 //! Geographic utilities — no egui dependency. Copied from rustywx.
 
+use ply_engine::prelude::Vec2;
+
+/// KJGX (Robins AFB, GA) antenna location — kept for backward compat.
+pub const KJGX_LAT: f64 = 32.6755;
+pub const KJGX_LON: f64 = -83.3511;
+
 /// A NEXRAD radar site.
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct RadarSite {
     pub id: &'static str,
     pub name: &'static str,
@@ -9,6 +16,7 @@ pub struct RadarSite {
 }
 
 pub const RADAR_SITES: &[RadarSite] = &[
+    // ... (keep existing sites) ...
     RadarSite {
         id: "KABR",
         name: "Aberdeen, SD",
@@ -2089,6 +2097,72 @@ pub fn polar_to_offset(bearing_deg: f32, range_km: f32, px_per_km: f32) -> (f32,
     (dx, dy)
 }
 
+/// Convert a lat/lon point to a km-scale planar offset from an origin
+/// (typically a radar site) using the same azimuthal-equidistant
+/// convention as `polar_to_offset` with `px_per_km = 1.0`.
+pub fn point_to_km_offset(origin_lat: f64, origin_lon: f64, (lat, lon): (f64, f64)) -> Vec2 {
+    let (range_km, bearing_deg) = range_bearing(origin_lat, origin_lon, lat, lon);
+    let theta = bearing_deg.to_radians();
+    Vec2::new(
+        (range_km * theta.sin()) as f32,
+        (-range_km * theta.cos()) as f32,
+    )
+}
+
+/// Return the portions of the segment `a` -> `b` that lie inside or on a
+/// circle centered at the origin with radius `r`. This lets large alert or
+/// border polygons that only clip through the scope still draw their visible
+/// chord.
+pub fn circle_subsegments(a: Vec2, b: Vec2, r: f32) -> Vec<(Vec2, Vec2)> {
+    let d = b - a;
+    let aa = d.length_squared();
+    const EPS: f32 = 1e-5;
+
+    // Degenerate segment; treat as inside if the point is within the circle.
+    if aa < EPS {
+        if a.length_squared() <= r * r + EPS {
+            return vec![(a, b)];
+        }
+        return Vec::new();
+    }
+
+    let mut ts = Vec::new();
+    if a.length_squared() <= r * r + EPS {
+        ts.push(0.0);
+    }
+    if b.length_squared() <= r * r + EPS {
+        ts.push(1.0);
+    }
+
+    // Solve |a + t*d|^2 = r^2 for t.
+    let ad = a.dot(d);
+    let c = a.length_squared() - r * r;
+    let disc_sq = ad * ad - aa * c;
+    if disc_sq >= 0.0 {
+        let disc = disc_sq.sqrt();
+        let t1 = (-ad - disc) / aa;
+        let t2 = (-ad + disc) / aa;
+        if (0.0..=1.0).contains(&t1) {
+            ts.push(t1);
+        }
+        if (0.0..=1.0).contains(&t2) {
+            ts.push(t2);
+        }
+    }
+
+    ts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut out = Vec::new();
+    for window in ts.windows(2) {
+        let t_mid = (window[0] + window[1]) * 0.5;
+        let mid = a + d * t_mid;
+        if mid.length_squared() <= r * r + EPS {
+            out.push((a + d * window[0], a + d * window[1]));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2125,5 +2199,42 @@ mod tests {
         // South: +y (screen y grows downward).
         let (x, y) = polar_to_offset(180.0, 10.0, 2.0);
         assert!(x.abs() < 1e-3 && (y - 20.0).abs() < 1e-3, "south ({x},{y})");
+    }
+
+    #[test]
+    fn keeps_both_endpoints_inside_circle() {
+        let a = Vec2::new(0.0, 0.0);
+        let b = Vec2::new(10.0, 0.0);
+        let segs = circle_subsegments(a, b, 20.0);
+        assert_eq!(segs.len(), 1);
+        assert!((segs[0].0 - a).length() < 1e-4);
+        assert!((segs[0].1 - b).length() < 1e-4);
+    }
+
+    #[test]
+    fn clips_outside_endpoint_to_circle() {
+        let a = Vec2::new(0.0, 0.0);
+        let b = Vec2::new(30.0, 0.0);
+        let segs = circle_subsegments(a, b, 20.0);
+        assert_eq!(segs.len(), 1);
+        assert!((segs[0].0 - a).length() < 1e-4);
+        assert!((segs[0].1 - Vec2::new(20.0, 0.0)).length() < 1e-4);
+    }
+
+    #[test]
+    fn both_outside_but_crossing_produces_chord() {
+        let a = Vec2::new(-30.0, 0.0);
+        let b = Vec2::new(30.0, 0.0);
+        let segs = circle_subsegments(a, b, 20.0);
+        assert_eq!(segs.len(), 1);
+        assert!((segs[0].0 - Vec2::new(-20.0, 0.0)).length() < 1e-4);
+        assert!((segs[0].1 - Vec2::new(20.0, 0.0)).length() < 1e-4);
+    }
+
+    #[test]
+    fn fully_outside_segment_yields_empty() {
+        let a = Vec2::new(30.0, 0.0);
+        let b = Vec2::new(40.0, 0.0);
+        assert!(circle_subsegments(a, b, 20.0).is_empty());
     }
 }

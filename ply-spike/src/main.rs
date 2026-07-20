@@ -5,6 +5,8 @@
 //! pan/zoom and keyboard controls.
 
 use ply_engine::prelude::*;
+use rustywx::alerts;
+use rustywx::borders;
 use rustywx::cache::Cache;
 use rustywx::colors;
 use rustywx::data::{self, WorkerMessage};
@@ -143,6 +145,17 @@ async fn main() {
     // network fetch completes.
     let pending_load = Some(cache.load_scan(&initial_site));
 
+    // ── Load cached borders (if any) ───────────────────────────
+    let mut pending_borders = {
+        let storage = cache.storage();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let result = borders::load_cached(&storage).await;
+            let _ = tx.send(result);
+        });
+        rx
+    };
+
     let mut state = AppState {
         site_index: 0,
         product: Product::Reflectivity,
@@ -159,6 +172,16 @@ async fn main() {
         pending_load,
         site_dropdown: DropdownState::default(),
         tilt_dropdown: DropdownState::default(),
+        borders: Vec::new(),
+        borders_loaded: false,
+        borders_fetch_fired: false,
+        alerts: Vec::new(),
+        alerts_loaded: false,
+        alerts_fetch_fired: false,
+        last_alert_poll: 0.0,
+        show_borders: true,
+        show_alerts: true,
+        last_mouse_pos: None,
     };
 
     loop {
@@ -210,6 +233,75 @@ async fn main() {
             }
         }
 
+        // ── Poll cached borders load ──────────────────────────────
+        if let Ok(result) = pending_borders.try_recv() {
+            match result {
+                Ok(Some(rings)) => {
+                    state.borders = rings;
+                    state.borders_loaded = true;
+                }
+                Ok(None) => {
+                    // No cache — will fetch from network
+                }
+                Err(e) => {
+                    eprintln!("Warning: failed to load cached borders: {e}");
+                }
+            }
+        }
+
+        // ── Fire border fetch if not yet started and no cache ─────
+        if !state.borders_loaded && !state.borders_fetch_fired {
+            borders::fire_fetch_all();
+            state.borders_fetch_fired = true;
+        }
+
+        // ── Poll borders net responses ────────────────────────────
+        if state.borders_fetch_fired
+            && !state.borders_loaded
+            && let Some(result) = borders::poll_and_merge()
+        {
+            state.borders_fetch_fired = false;
+            match result {
+                Ok(rings) => {
+                    // Save to cache
+                    borders::save_cached(&state.cache.storage(), &rings);
+                    state.borders = rings;
+                    state.borders_loaded = true;
+                }
+                Err(e) => {
+                    eprintln!("Warning: border fetch failed: {e}");
+                    // Will retry on next frame (borders_fetch_fired is false)
+                }
+            }
+        }
+
+        // ── Fire alerts fetch if not yet started ──────────────────
+        let now = get_time();
+        if !state.alerts_fetch_fired
+            && (!state.alerts_loaded
+                || now - state.last_alert_poll > alerts::POLL_INTERVAL.as_secs() as f64)
+        {
+            alerts::fire_fetch();
+            state.alerts_fetch_fired = true;
+            state.last_alert_poll = now;
+        }
+
+        // ── Poll alerts net response ──────────────────────────────
+        if state.alerts_fetch_fired
+            && let Some(result) = alerts::poll_response()
+        {
+            state.alerts_fetch_fired = false;
+            match result {
+                Ok(alerts_list) => {
+                    state.alerts = alerts_list;
+                    state.alerts_loaded = true;
+                }
+                Err(e) => {
+                    eprintln!("Warning: alert fetch failed: {e}");
+                }
+            }
+        }
+
         // ── Get current sweep ─────────────────────────────────────
         let sweep: SweepData = if let Some(ref scan) = state.scan {
             let sweeps = scan.sweeps(state.product);
@@ -245,7 +337,14 @@ async fn main() {
         // Draw scope + overlays directly to screen (avoids render_to_texture
         // coordinate flip — framebuffer bottom-left origin + Ply .image() display
         // causes a 180° rotation of the content).
-        scope::draw_scope_to_texture(state.radar_texture.as_ref(), site, state.pan_km, state.zoom);
+        scope::draw_scope_to_texture(
+            state.radar_texture.as_ref(),
+            site,
+            state.pan_km,
+            state.zoom,
+            Some((&state.borders, state.show_borders)),
+            Some((&state.alerts, state.show_alerts)),
+        );
 
         // Build frame-local control options before borrowing Ply for layout.
         let site_options: Vec<DropdownOption> = geo::RADAR_SITES
@@ -329,6 +428,58 @@ async fn main() {
                             ),
                             |text| text.font_size(11).color(0x9E9590),
                         );
+
+                        // ── Overlay toggles (Stage 4) ──────────────────
+                        let borders_bg = if state.show_borders {
+                            0x3F684A
+                        } else {
+                            0x1E1B1B
+                        };
+                        let borders_label = if state.show_borders {
+                            "Borders ✓"
+                        } else {
+                            "Borders"
+                        };
+                        ui.element()
+                            .id("btn-borders")
+                            .width(fit!())
+                            .height(fixed!(24.0))
+                            .background_color(borders_bg)
+                            .corner_radius(4.0)
+                            .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
+                            .children(|ui| {
+                                ui.text(borders_label, |text| text.font_size(12).color(0xE8E0DC));
+                            });
+
+                        let alerts_bg = if state.show_alerts {
+                            0x3F684A
+                        } else {
+                            0x1E1B1B
+                        };
+                        let alerts_label = if state.show_alerts {
+                            "Alerts ✓"
+                        } else {
+                            "Alerts"
+                        };
+                        let alerts_count = if state.alerts_loaded {
+                            format!(" ({})", state.alerts.len())
+                        } else if state.alerts_fetch_fired {
+                            " (…)".to_string()
+                        } else {
+                            String::new()
+                        };
+                        ui.element()
+                            .id("btn-alerts")
+                            .width(fit!())
+                            .height(fixed!(24.0))
+                            .background_color(alerts_bg)
+                            .corner_radius(4.0)
+                            .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
+                            .children(|ui| {
+                                ui.text(&format!("{alerts_label}{alerts_count}"), |text| {
+                                    text.font_size(12).color(0xE8E0DC)
+                                });
+                            });
                     });
 
                 // ── Radar scope (transparent — drawn directly to screen) ──
@@ -414,17 +565,26 @@ fn handle_input(
     let dropdown_open = state.site_dropdown.is_open() || state.tilt_dropdown.is_open();
 
     if !dropdown_open && is_mouse_button_down(MouseButton::Left) {
-        let delta = mouse_delta_position();
-        let side = screen_width().min(screen_height());
-        let px_per_km = (side / 2.0) / scope::MAX_RANGE_KM * state.zoom;
-        state.pan_km.0 += delta.x / px_per_km;
-        state.pan_km.1 += delta.y / px_per_km;
+        let (mx, my) = mouse_position();
+        if let Some((lx, ly)) = state.last_mouse_pos {
+            let dx = mx - lx;
+            let dy = my - ly;
+            let side = screen_width().min(screen_height());
+            let px_per_km = (side / 2.0) / scope::MAX_RANGE_KM * state.zoom;
+            // Drag right moves content right; drag down moves content down.
+            state.pan_km.0 += dx / px_per_km;
+            state.pan_km.1 += dy / px_per_km;
+        }
+        state.last_mouse_pos = Some((mx, my));
+    } else {
+        state.last_mouse_pos = None;
     }
 
     if !dropdown_open {
         let scroll = mouse_wheel().1;
         if scroll != 0.0 {
-            state.zoom = (state.zoom * (1.0 + scroll * 0.001)).clamp(0.05, 4.0);
+            // 0.05 per unit = ~5-25% per wheel notch (vs old 0.001 = 0.1-0.5%)
+            state.zoom = (state.zoom * (1.0 + scroll * 0.05)).clamp(0.05, 8.0);
         }
     }
 
@@ -458,10 +618,24 @@ fn handle_input(
                 (state.site_index + geo::RADAR_SITES.len() - 1) % geo::RADAR_SITES.len(),
             );
         }
+        if is_key_pressed(KeyCode::B) {
+            state.show_borders = !state.show_borders;
+        }
+        if is_key_pressed(KeyCode::A) {
+            state.show_alerts = !state.show_alerts;
+        }
     }
 
     if let Some(product) = toggle::pressed(ply, &PRODUCT_OPTIONS) {
         select_product(state, product);
+    }
+
+    // ── Overlay toggle button presses (Stage 4) ──────────────────
+    if ply.is_just_pressed("btn-borders") {
+        state.show_borders = !state.show_borders;
+    }
+    if ply.is_just_pressed("btn-alerts") {
+        state.show_alerts = !state.show_alerts;
     }
 }
 

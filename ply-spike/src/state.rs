@@ -3,6 +3,8 @@
 //! Held across frames in `main.rs`; mutated by input handling and worker
 //! messages, read by the rendering closure.
 
+use crate::alerts::Alert;
+use crate::borders::Ring;
 use crate::cache::Cache;
 use crate::data::WorkerMessage;
 use crate::model::{Product, ScanData};
@@ -51,4 +53,27 @@ pub struct AppState {
     pub site_dropdown: DropdownState,
     /// Available-elevation selector state.
     pub tilt_dropdown: DropdownState,
+
+    // ── Borders & Alerts (Stage 4) ────────────────────────────────
+    /// Cached state-boundary + coastline rings.
+    pub borders: Vec<Ring>,
+    /// Whether borders have been loaded (from cache or network).
+    pub borders_loaded: bool,
+    /// Whether the borders net requests have been fired.
+    pub borders_fetch_fired: bool,
+    /// Active NWS warnings/watches relevant to the current site.
+    pub alerts: Vec<Alert>,
+    /// Whether alerts have been fetched at least once.
+    pub alerts_loaded: bool,
+    /// Whether the alerts net request has been fired.
+    pub alerts_fetch_fired: bool,
+    /// Wall-clock time (seconds) of the last alerts refresh.
+    pub last_alert_poll: f64,
+    /// Toggle: show state borders on the scope.
+    pub show_borders: bool,
+    /// Toggle: show NWS alert polygons on the scope.
+    pub show_alerts: bool,
+
+    /// Last mouse position for manual pan delta calculation.
+    pub last_mouse_pos: Option<(f32, f32)>,
 }

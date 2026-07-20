@@ -2,9 +2,12 @@
 //! Uses render_to_texture for the radar sweep and macroquad draw calls
 //! for overlays (range rings, borders, markers, etc.).
 
+use crate::alerts::Alert;
+use crate::borders::Ring;
 use crate::colors;
 use crate::geo::{self, RadarSite};
 use crate::model::{Product, SweepData};
+use macroquad::math::Vec2;
 use ply_engine::prelude::*;
 
 /// Level II super-res gate geometry.
@@ -322,12 +325,17 @@ fn angular_distance(a: f32, b: f32) -> f32 {
 // Overlay drawing (uses macroquad directly — called inside render_to_texture)
 // ---------------------------------------------------------------------------
 
-/// Draw the full radar scope. Called inside a `render_to_texture` closure.
+/// Draw the full radar scope. Called directly to screen (avoids
+/// render_to_texture coordinate flip — see Stage 1 lesson).
+///
+/// Stage 4 adds optional border and alert overlay drawing.
 pub fn draw_scope_to_texture(
     radar_texture: Option<&Texture2D>,
     site: &RadarSite,
     pan_km: (f32, f32),
     zoom: f32,
+    borders: Option<(&[Ring], bool)>,
+    alerts: Option<(&[Alert], bool)>,
 ) {
     let side = screen_width().min(screen_height());
     let px_per_km = (side / 2.0) / MAX_RANGE_KM * zoom;
@@ -411,5 +419,125 @@ pub fn draw_scope_to_texture(
             16.0,
             city_color,
         );
+    }
+
+    // ── Border overlays (Stage 4) ────────────────────────────────
+    if let Some((rings, show)) = borders
+        && show
+    {
+        draw_borders(rings, site, center_x, center_y, px_per_km);
+    }
+
+    // ── Alert overlays (Stage 4) ─────────────────────────────────
+    if let Some((alerts, show)) = alerts
+        && show
+    {
+        draw_alerts(alerts, site, center_x, center_y, px_per_km);
+    }
+}
+
+/// Draw state-border and coastline line segments on the scope, extending
+/// to the full window rather than clipping to the radar circle.
+fn draw_borders(rings: &[Ring], site: &RadarSite, center_x: f32, center_y: f32, px_per_km: f32) {
+    let border_color = MacroquadColor::from_rgba(0x8b, 0x73, 0x55, 180);
+    let sw = screen_width();
+    let sh = screen_height();
+    // Margin for on-screen culling (pixels)
+    let margin = 50.0;
+
+    for ring in rings {
+        if ring.len() < 2 {
+            continue;
+        }
+        for pair in ring.windows(2) {
+            let a_km = geo::point_to_km_offset(site.lat, site.lon, pair[0]);
+            let b_km = geo::point_to_km_offset(site.lat, site.lon, pair[1]);
+
+            let ax = center_x + a_km.x * px_per_km;
+            let ay = center_y + a_km.y * px_per_km;
+            let bx = center_x + b_km.x * px_per_km;
+            let by = center_y + b_km.y * px_per_km;
+
+            // Cull segments entirely off-screen
+            if (ax < -margin && bx < -margin)
+                || (ax > sw + margin && bx > sw + margin)
+                || (ay < -margin && by < -margin)
+                || (ay > sh + margin && by > sh + margin)
+            {
+                continue;
+            }
+
+            draw_line(ax, ay, bx, by, 1.0, border_color);
+        }
+    }
+}
+
+/// Draw active NWS warning/watch polygons across the full screen.
+/// Each alert gets its NWS color and a label near the polygon centroid.
+fn draw_alerts(alerts: &[Alert], site: &RadarSite, center_x: f32, center_y: f32, px_per_km: f32) {
+    let sw = screen_width();
+    let sh = screen_height();
+    let margin = 50.0;
+
+    for alert in alerts {
+        let line_color =
+            MacroquadColor::from_rgba(alert.color[0], alert.color[1], alert.color[2], 255);
+        let label_color =
+            MacroquadColor::from_rgba(alert.color[0], alert.color[1], alert.color[2], 255);
+
+        let mut sum_x = 0.0f32;
+        let mut sum_y = 0.0f32;
+        let mut point_count = 0u32;
+
+        for ring in &alert.rings {
+            if ring.len() < 3 {
+                continue;
+            }
+
+            // Convert all points to screen-space pixel coordinates
+            let pts_px: Vec<(f32, f32)> = ring
+                .iter()
+                .map(|&(lat, lon)| {
+                    let km = geo::point_to_km_offset(site.lat, site.lon, (lat, lon));
+                    (center_x + km.x * px_per_km, center_y + km.y * px_per_km)
+                })
+                .collect();
+
+            // Draw the polygon outline, culling fully off-screen segments
+            for i in 0..pts_px.len() {
+                let (ax, ay) = pts_px[i];
+                let (bx, by) = pts_px[(i + 1) % pts_px.len()];
+
+                if (ax < -margin && bx < -margin)
+                    || (ax > sw + margin && bx > sw + margin)
+                    || (ay < -margin && by < -margin)
+                    || (ay > sh + margin && by > sh + margin)
+                {
+                    continue;
+                }
+                draw_line(ax, ay, bx, by, 2.0, line_color);
+            }
+
+            // Accumulate centroid from on-screen points
+            for &(px, py) in &pts_px {
+                if px >= 0.0 && px <= sw && py >= 0.0 && py <= sh {
+                    sum_x += px;
+                    sum_y += py;
+                    point_count += 1;
+                }
+            }
+        }
+
+        // Draw a short label near the polygon centroid
+        if point_count > 0 {
+            let cx = sum_x / point_count as f32;
+            let cy = sum_y / point_count as f32;
+            let label = if alert.event.len() > 30 {
+                &alert.event[..30]
+            } else {
+                &alert.event
+            };
+            draw_text(label, cx, cy, 14.0, label_color);
+        }
     }
 }

@@ -92,4 +92,9 @@ impl Cache {
     pub async fn remove_scan(&self, site: &str) -> Result<(), String> {
         self.storage.remove(&Self::scan_key(site)).await
     }
+
+    /// Get a reference to the underlying Ply storage handle.
+    pub fn storage(&self) -> Storage {
+        self.storage.clone()
+    }
 }
