@@ -20,7 +20,12 @@ Full research in `research/`.
 | `eframe` / `egui` | **Remove** | Replaced by `ply-engine` |
 | `ureq` | **Remove** | Replaced by Ply `net` for simple HTTP; `nexrad-data` uses `reqwest` internally |
 | `rusqlite` | **Remove** | Replaced by Ply `storage` |
-| `anyhow`, `chrono`, `image`, `serde`, `serde_json`, `zip`, `webbrowser` | **Keep** | No egui dependency, still needed |
+| `anyhow` | **Keep** | Error handling throughout |
+| `chrono` | **Keep** | Timestamp parsing, display formatting |
+| `image` | **Keep** | Decode NHC graphics product thumbnails into RGBA for Ply textures (Stage 5) |
+| `serde`, `serde_json` | **Keep** | JSON parsing for borders, alerts, NHC data |
+| `zip` | **Keep** | Decompress NEXRAD volume files from S3 (used by nexrad-data internally) |
+| `webbrowser` | **Keep** | Open external links from NHC panel (Stage 5); confirmed WASM-compatible (R4) |
 
 ### Architecture decisions
 
@@ -123,7 +128,9 @@ cardinal spokes, station marker, city markers. Drag to pan, scroll to zoom.
 - `data.rs` — port the existing background-worker pattern: spawn a thread with
   a tokio runtime, run `nexrad_data::aws::archive::list_files` +
   `download_file`, decode via `nexrad_model`, send `WorkerMessage`s over
-  `mpsc::channel`. Same architecture as the egui app, adapted for macroquad.
+  `mpsc::channel`. Same architecture as the egui app, adapted for Ply.
+  The `tokio` runtime lives on its own thread — Ply's game loop just polls
+  `rx.try_recv()` each frame. Validated by Spike S2 before this stage.
 - `cache.rs` — disk cache using Ply `storage` (`save_bytes` / `load_bytes`
   for serialized scan data, or JSON metadata files)
 - Wire up real NEXRAD data flow: fetch → decode → rasterize → display
@@ -158,6 +165,7 @@ auto-refreshes every 2 minutes, cached on disk.
 - `widgets/toggle.rs` — product toggle (Reflectivity ⇄ Velocity)
 - `widgets/collapsing.rs` — collapsible section (for NHC text later)
 - Wire widgets into control bar
+  (Note: `glass_panel.rs` lives in Stage 6 — it's not needed until visual theming.)
 - Site dropdown with search/filter for 160+ sites
 - Tilt dropdown populated from actual sweep data
 
@@ -258,8 +266,7 @@ panel with all products.
 typography, responsive layout.
 
 **Scope:**
-- `widgets/glass_panel.rs` — reusable frosted glass panel wrapper (moved here
-  from Stage 3 since it's not needed until visual theming)
+- `widgets/glass_panel.rs` — reusable frosted glass panel wrapper
 - Frosted glass styling on all panels. Ply's `built-in-shaders` has GLOW but
   no Gaussian blur — **author a custom GLSL ES 1.00 fragment shader** for the
   blur effect. Apply via `.shader(&BLUR_SHADER, |s| s.uniform("u_radius", 8.0))`.
@@ -370,6 +377,21 @@ typography, responsive layout.
 - [ ] `git push` → CI passes → `git tag v1.0.0-stage8` → `git push --tags`
 
 ---
+
+## Toolchain Requirements
+
+- **Rust edition 2024** — requires Rust ≥1.85 (stabilized February 2025).
+  CI runners and dev machines must be on a recent stable toolchain.
+- **`nexrad-data` is an RC** (1.0.0-rc.7). Pin with `=` in Cargo.toml to
+  avoid surprise breakage. Monitor upstream for the 1.0 stable release.
+- **Fonts** (Stage 6): Inter and JetBrains Mono are both SIL OFL licensed.
+  Download from Google Fonts or GitHub releases, place in `assets/fonts/`,
+  and commit to the repo. On Android, Ply's asset bundling handles paths;
+  on WASM, fonts are bundled into the build by `plyx web`.
+- **`plyx init` vs manual scaffold:** Stage 1 uses a manual scaffold
+  (matching the existing `ply-spike/` structure). `plyx web` and `plyx apk`
+  in Stage 8 have been tested against this structure (R3) — they work as
+  long as `wasm32-unknown-unknown` is installed.
 
 ## Summary
 
