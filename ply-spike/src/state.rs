@@ -15,6 +15,20 @@ use std::collections::HashMap;
 use std::sync::mpsc;
 use tokio::sync::oneshot;
 
+/// What's shown in the NHC product modal popup.
+#[derive(Clone)]
+pub enum NhcModal {
+    /// No modal visible.
+    None,
+    /// Showing a text product (advisory, discussion, etc.).
+    Text {
+        title: String,
+        content: String,
+        url: String,
+    },
+    /// Showing a graphic product (image texture).
+    Image { title: String, url: String },
+}
 /// Top-level state shared between the game loop, input handler, and worker.
 pub struct AppState {
     /// Index into `geo::RADAR_SITES`.
@@ -95,6 +109,8 @@ pub struct AppState {
     pub nhc_image_textures: HashMap<String, Texture2D>,
     /// NHC overlay toggle state.
     pub nhc_overlays: crate::scope::NhcOverlayState,
+    /// Currently displayed NHC product modal.
+    pub nhc_modal: NhcModal,
 
     /// Last mouse position for manual pan delta calculation.
     pub last_mouse_pos: Option<(f32, f32)>,

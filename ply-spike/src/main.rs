@@ -14,7 +14,7 @@ use rustywx::geo;
 use rustywx::model::{Product, RadialData, SweepData};
 use rustywx::nhc;
 use rustywx::scope;
-use rustywx::state::AppState;
+use rustywx::state::{AppState, NhcModal};
 use rustywx::widgets::dropdown::{DropdownConfig, DropdownOption, DropdownState};
 use rustywx::widgets::toggle::{self, ToggleOption};
 use std::collections::HashMap;
@@ -202,6 +202,7 @@ async fn main() {
         nhc_storm_dropdown: DropdownState::default(),
         nhc_image_textures: HashMap::new(),
         nhc_overlays: scope::NhcOverlayState::default(),
+        nhc_modal: NhcModal::None,
         last_mouse_pos: None,
     };
 
@@ -947,6 +948,122 @@ async fn main() {
                         });
                 }
 
+                // ── NHC product modal (Stage 5) ────────────────────────────
+                if !matches!(state.nhc_modal, NhcModal::None) {
+                    let modal_w = 640.0;
+                    let modal_h = screen_height() * 0.7;
+                    let modal_x = (screen_width() - modal_w) / 2.0;
+                    let modal_y = (screen_height() - modal_h) / 2.0;
+
+                    // Semi-transparent backdrop (click to close)
+                    ui.element()
+                        .id("nhc-modal-backdrop")
+                        .width(fixed!(screen_width()))
+                        .height(fixed!(screen_height()))
+                        .background_color(0x00000080)
+                        .floating(|f| f.offset((0.0, 0.0)).z_index(200).attach_root())
+                        .empty();
+
+                    // Modal panel
+                    ui.element()
+                        .width(fixed!(modal_w))
+                        .height(fixed!(modal_h))
+                        .background_color(0x12161e)
+                        .corner_radius(8.0)
+                        .floating(|f| f.offset((modal_x, modal_y)).z_index(201).attach_root())
+                        .layout(|l| l.direction(TopToBottom).padding(0).gap(0))
+                        .children(|ui| {
+                            // Title bar
+                            ui.element()
+                                .width(grow!())
+                                .height(fixed!(36.0))
+                                .background_color(0x1E1B1B)
+                                .corner_radius(8.0)
+                                .layout(|l| {
+                                    l.direction(LeftToRight)
+                                        .padding((0, 12, 0, 12))
+                                        .gap(8)
+                                        .align(Left, CenterY)
+                                })
+                                .children(|ui| {
+                                    let title = match &state.nhc_modal {
+                                        NhcModal::Text { title, .. } => title.clone(),
+                                        NhcModal::Image { title, .. } => format!("🌐 {title}"),
+                                        _ => String::new(),
+                                    };
+                                    ui.text(&title, |t| t.font_size(14).color(0xE8E0DC));
+                                    ui.element().width(grow!()).height(fixed!(1.0)).empty();
+                                    // Close button
+                                    ui.element()
+                                        .id("nhc-modal-close")
+                                        .width(fixed!(28.0))
+                                        .height(fixed!(28.0))
+                                        .background_color(0x3a1a1a)
+                                        .corner_radius(4.0)
+                                        .layout(|l| l.align(CenterX, CenterY))
+                                        .children(|ui| {
+                                            ui.text("✕", |t| t.font_size(14).color(0xE8E0DC));
+                                        });
+                                });
+
+                            // Content area
+                            ui.element()
+                                .width(grow!())
+                                .height(grow!())
+                                .background_color(0x0a0d12)
+                                .layout(|l| l.padding(12).gap(8).direction(TopToBottom))
+                                .children(|ui| {
+                                    match &state.nhc_modal {
+                                        NhcModal::Text { content, .. } => {
+                                            // Show text content (truncated to fit)
+                                            let display = if content.len() > 4000 {
+                                                &content[..4000]
+                                            } else {
+                                                content.as_str()
+                                            };
+                                            ui.text(display, |t| t.font_size(11).color(0x9E9590));
+                                            if content.len() > 4000 {
+                                                ui.text("… (truncated)", |t| {
+                                                    t.font_size(10).color(0x5a5050)
+                                                });
+                                            }
+                                        }
+                                        NhcModal::Image { .. } => {
+                                            // Image is drawn via macroquad after ui.show()
+                                            ui.text("[image rendered below]", |t| {
+                                                t.font_size(11).color(0x3a3530)
+                                            });
+                                        }
+                                        _ => {}
+                                    }
+                                });
+
+                            // Bottom bar with "Open in browser" button
+                            ui.element()
+                                .width(grow!())
+                                .height(fixed!(40.0))
+                                .background_color(0x1E1B1B)
+                                .corner_radius(8.0)
+                                .layout(|l| l.padding((0, 12, 0, 12)).align(Right, CenterY))
+                                .children(|ui| {
+                                    ui.element()
+                                        .id("nhc-modal-browser")
+                                        .width(fit!())
+                                        .height(fixed!(28.0))
+                                        .background_color(0x2a3a5a)
+                                        .corner_radius(4.0)
+                                        .layout(|l| {
+                                            l.padding((0, 12, 0, 12)).align(CenterX, CenterY)
+                                        })
+                                        .children(|ui| {
+                                            ui.text("🔗 Open in browser", |t| {
+                                                t.font_size(12).color(0x88aaff)
+                                            });
+                                        });
+                                });
+                        });
+                }
+
                 // ── Radar scope (transparent — drawn directly to screen) ──
                 ui.element().width(grow!()).height(grow!()).empty();
 
@@ -983,6 +1100,45 @@ async fn main() {
             });
 
         ui.show(|_| {}).await;
+
+        // ── Draw NHC modal image (if showing an image product) ──────
+        if let NhcModal::Image { title, .. } = &state.nhc_modal
+            && let Some(ref bundle) = state.nhc_bundle
+            && let Some(meta) = bundle.metas.get(state.nhc_selected_storm)
+        {
+            let key = format!("{}:{}", meta.id, title);
+            if let Some(tex) = state.nhc_image_textures.get(&key) {
+                let modal_w = 640.0;
+                let modal_h = screen_height() * 0.7;
+                let modal_x = (screen_width() - modal_w) / 2.0;
+                let modal_y = (screen_height() - modal_h) / 2.0;
+                // Content area: below title bar (36px) with 12px padding
+                let content_x = modal_x + 12.0;
+                let content_y = modal_y + 36.0 + 12.0;
+                let content_w = modal_w - 24.0;
+                let content_h = modal_h - 36.0 - 40.0 - 24.0;
+
+                let tex_w = tex.width();
+                let tex_h = tex.height();
+                // Scale to fit content area, preserving aspect ratio
+                let scale = (content_w / tex_w).min(content_h / tex_h).min(1.0);
+                let draw_w = tex_w * scale;
+                let draw_h = tex_h * scale;
+                let draw_x = content_x + (content_w - draw_w) / 2.0;
+                let draw_y = content_y + (content_h - draw_h) / 2.0;
+
+                draw_texture_ex(
+                    tex,
+                    draw_x,
+                    draw_y,
+                    WHITE,
+                    DrawTextureParams {
+                        dest_size: Some(Vec2::new(draw_w, draw_h)),
+                        ..Default::default()
+                    },
+                );
+            }
+        }
 
         // ── Input handling ─────────────────────────────────────────
         handle_input(&mut state, &ply, &site_options, &tilt_options);
@@ -1185,6 +1341,26 @@ fn handle_input(
         state.nhc_overlays.show_most_likely_arrival = !state.nhc_overlays.show_most_likely_arrival;
     }
 
+    // ── NHC modal close / browser buttons ─────────────────────────
+    if !matches!(state.nhc_modal, NhcModal::None) {
+        if ply.is_just_pressed("nhc-modal-close") || ply.is_just_pressed("nhc-modal-backdrop") {
+            state.nhc_modal = NhcModal::None;
+        }
+        if ply.is_just_pressed("nhc-modal-browser") {
+            let url = match &state.nhc_modal {
+                NhcModal::Text { url, .. } => url.clone(),
+                NhcModal::Image { url, .. } => url.clone(),
+                _ => String::new(),
+            };
+            if !url.is_empty() {
+                let _ = webbrowser::open(&url);
+            }
+        }
+        if is_key_pressed(KeyCode::Escape) {
+            state.nhc_modal = NhcModal::None;
+        }
+    }
+
     // ── NHC external link buttons ────────────────────────────────
     if ply.is_just_pressed("btn-nhc-graphics")
         && let Some(ref bundle) = state.nhc_bundle
@@ -1200,14 +1376,21 @@ fn handle_input(
         for img in images {
             let id = ("btn-nhc-img", img.title.len() as u32);
             if ply.is_just_pressed(id) {
-                let _ = webbrowser::open(&img.url);
+                state.nhc_modal = NhcModal::Image {
+                    title: img.title.clone(),
+                    url: img.url.clone(),
+                };
             }
         }
         if let Some((_, texts)) = bundle.text_products.iter().find(|(id, _)| *id == meta.id) {
             for product in texts {
                 let id = ("btn-nhc-open", product.title.len() as u32);
                 if ply.is_just_pressed(id) {
-                    let _ = webbrowser::open(&product.url);
+                    state.nhc_modal = NhcModal::Text {
+                        title: product.title.clone(),
+                        content: product.content.clone(),
+                        url: product.url.clone(),
+                    };
                 }
             }
         }

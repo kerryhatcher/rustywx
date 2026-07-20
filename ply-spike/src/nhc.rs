@@ -385,7 +385,11 @@ pub fn construct_image_products(meta: &StormMeta) -> Vec<ImageProduct> {
     let mut products = Vec::new();
 
     let storm_id = meta.id.to_uppercase();
-    let bin = format_bin(&meta.bin_number);
+    // The NHC storm_graphics URL uses the basin + zero-padded storm number
+    // from the storm ID (e.g. "EP06" from "ep062026"), NOT the binNumber
+    // field (which is "EP1").  The first 4 chars of the uppercased ID give
+    // us the correct bin.
+    let bin = &storm_id[..4.min(storm_id.len())];
     let ts = &meta.graphics_issuance;
 
     if ts.is_empty() {
@@ -432,7 +436,14 @@ pub fn construct_image_products(meta: &StormMeta) -> Vec<ImageProduct> {
         data: None,
     });
 
-    let short_id = &storm_id[..storm_id.len().min(6)];
+    // WPC QPF uses a shortened storm ID: basin + 2-digit storm num + 2-digit year
+    // e.g. "AL022026" → "AL0226"
+    let short_id = format!(
+        "{}{}{}",
+        &storm_id[..2],
+        &storm_id[2..4],
+        &storm_id[6..8.min(storm_id.len())]
+    );
     products.push(ImageProduct {
         title: "Rainfall".to_string(),
         url: format!(
@@ -445,6 +456,7 @@ pub fn construct_image_products(meta: &StormMeta) -> Vec<ImageProduct> {
 }
 
 /// Format a bin number like "AT2" to "AT02" (with leading zero).
+#[allow(dead_code)]
 fn format_bin(bin: &str) -> String {
     if bin.len() >= 4 {
         return bin.to_string();
@@ -1431,7 +1443,7 @@ mod tests {
         };
         let products = construct_image_products(&meta);
         assert!(!products.is_empty());
-        assert!(products[0].url.contains("AT02"));
+        assert!(products[0].url.contains("AL02"));
         assert!(products[0].url.contains("192344"));
     }
 
