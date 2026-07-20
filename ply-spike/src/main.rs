@@ -154,10 +154,16 @@ async fn main() {
         // ── Poll worker messages ──────────────────────────────────
         while let Ok(msg) = state.worker_rx.try_recv() {
             match msg {
-                WorkerMessage::NewScan(scan) => {
+                WorkerMessage::NewScan { site, scan } => {
+                    let current_site = geo::RADAR_SITES[state.site_index].id.to_string();
+
+                    // Discard scans that arrived after the user switched sites.
+                    if site != current_site {
+                        continue;
+                    }
+
                     // Persist to disk cache (fire-and-forget).
-                    let site_id = geo::RADAR_SITES[state.site_index].id.to_string();
-                    state.cache.save_scan(&site_id, &scan);
+                    state.cache.save_scan(&current_site, &scan);
 
                     state.scan = Some(*scan);
                     state.tilt_index = 0;
@@ -166,7 +172,7 @@ async fn main() {
                         state.status_text = format!(
                             "{} — {} — {} tilt(s)",
                             s.timestamp.format("%Y-%m-%d %H:%M UTC"),
-                            geo::RADAR_SITES[state.site_index].id,
+                            current_site,
                             s.sweeps(state.product).len(),
                         );
                     }
@@ -486,8 +492,9 @@ fn handle_input(state: &mut AppState, ply: &Ply<()>) {
         }
     }
 
-    // Mouse drag for panning
-    if is_mouse_button_down(MouseButton::Left) {
+    // Mouse drag for panning (disabled while dropdown is open to
+    // avoid scope drift when interacting with the site selector).
+    if !state.dropdown_open && is_mouse_button_down(MouseButton::Left) {
         let delta = mouse_delta_position();
         let side = screen_width().min(screen_height());
         let px_per_km = (side / 2.0) / scope::MAX_RANGE_KM * state.zoom;

@@ -14,7 +14,7 @@ pub const POLL_INTERVAL: Duration = Duration::from_secs(120);
 
 /// Messages the worker sends to the UI thread.
 pub enum WorkerMessage {
-    NewScan(Box<ScanData>),
+    NewScan { site: String, scan: Box<ScanData> },
     Status(String),
     Error(String),
 }
@@ -132,7 +132,10 @@ pub fn spawn_worker(tx: Sender<WorkerMessage>, initial_site: String, site_rx: Re
                 Ok(Some(scan)) => {
                     consecutive_errors = 0;
                     last_timestamp = Some(scan.timestamp);
-                    let _ = tx.send(WorkerMessage::NewScan(Box::new(scan)));
+                    let _ = tx.send(WorkerMessage::NewScan {
+                        site: site.clone(),
+                        scan: Box::new(scan),
+                    });
                     retry_delay(consecutive_errors)
                 }
                 Ok(None) => {
