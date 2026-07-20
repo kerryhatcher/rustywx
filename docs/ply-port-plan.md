@@ -8,6 +8,16 @@ future-stage polish — every one stands on its own as a working app.
 - **Commit often** — at minimum after each logical change (a new module, a
   working widget, a data source wired up). Small, focused commits make
   bisecting and reviewing straightforward.
+- **Push and verify before tagging** — each stage follows this sequence:
+
+  1. Commit all changes for the stage
+  2. `git push` to GitHub
+  3. Wait for GitHub Actions CI to pass (all 14 jobs green)
+  4. Only then: `git tag` + `git push --tags`
+
+  This ensures no broken code ever gets a version tag. The CI runs fmt,
+  clippy, check, test, doc-test, audit, deny, gitleaks, trivy, typos,
+  lychee, kingfisher, and build — the same checks as `just ci-full` locally.
 - **Semver tag after each stage** — the app version tracks port progress:
 
 | Stage | Tag |
@@ -59,7 +69,7 @@ cardinal spokes, station marker, city markers. Drag to pan, scroll to zoom.
 - [ ] V key switches back to Reflectivity
 - [ ] Arrow keys cycle through sites
 - [ ] 0 key resets pan/zoom
-- [ ] `git commit` + `git tag v0.2.0-stage1`
+- [ ] `git push` → CI passes → `git tag v0.2.0-stage1` → `git push --tags`
 
 ---
 
@@ -89,7 +99,7 @@ auto-refreshes every 2 minutes, cached on disk.
 - [ ] Data cached — restart app, data loads instantly
 - [ ] Error shown if network unavailable (graceful)
 - [ ] Auto-refresh picks up new scans
-- [ ] `git commit` + `git tag v0.2.0-stage2`
+- [ ] `git push` → CI passes → `git tag v0.2.0-stage2` → `git push --tags`
 
 ---
 
@@ -117,7 +127,7 @@ buttons, working tilt dropdown.
 - [ ] Tilt dropdown shows available elevations from current scan
 - [ ] All controls work with mouse and keyboard
 - [ ] Dropdowns close on outside click
-- [ ] `git commit` + `git tag v0.2.0-stage3`
+- [ ] `git push` → CI passes → `git tag v0.2.0-stage3` → `git push --tags`
 
 ---
 
@@ -144,7 +154,7 @@ on the radar scope.
 - [ ] Alerts refresh every 2 minutes
 - [ ] Overlays cached to disk
 - [ ] No overlays when none are active (graceful empty state)
-- [ ] `git commit` + `git tag v0.2.0-stage4`
+- [ ] `git push` → CI passes → `git tag v0.2.0-stage4` → `git push --tags`
 
 ---
 
@@ -180,7 +190,7 @@ panel with all products.
 - [ ] Wind probability contours render as colored lines
 - [ ] "No active storms" state when season is quiet
 - [ ] Data refreshes every 5 minutes
-- [ ] `git commit` + `git tag v0.3.0-stage5`
+- [ ] `git push` → CI passes → `git tag v0.3.0-stage5` → `git push --tags`
 
 ---
 
@@ -220,7 +230,7 @@ typography, responsive layout.
 - [ ] Touch targets ≥44px on mobile
 - [ ] Loading state shows skeleton/spinner
 - [ ] Empty states show helpful messages
-- [ ] `git commit` + `git tag v0.4.0-stage6`
+- [ ] `git push` → CI passes → `git tag v0.4.0-stage6` → `git push --tags`
 
 ---
 
@@ -248,7 +258,7 @@ typography, responsive layout.
 - [ ] Network errors show user-friendly message, not crash
 - [ ] Corrupt cache is handled gracefully
 - [ ] No egui imports remain in codebase
-- [ ] `git commit` + `git tag v0.5.0-stage7`
+- [ ] `git push` → CI passes → `git tag v0.5.0-stage7` → `git push --tags`
 
 ---
 
@@ -275,7 +285,7 @@ typography, responsive layout.
 - [ ] Screen reader announces controls correctly
 - [ ] Tab navigation works through all interactive elements
 - [ ] Release build runs without debug overhead
-- [ ] `git commit` + `git tag v1.0.0-stage8`
+- [ ] `git push` → CI passes → `git tag v1.0.0-stage8` → `git push --tags`
 
 ---
 
