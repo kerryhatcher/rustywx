@@ -75,24 +75,31 @@ fn parse_geojson(source: &str) -> Result<Vec<City>, serde_json::Error> {
 /// Compute the population threshold for a given zoom level.
 ///
 /// Progressive disclosure: as zoom increases (zoom in), the threshold
-/// decreases, revealing progressively smaller cities. The curve is
-/// `threshold = BASE / zoom`, clamped so that at extreme zoom-out only
-/// megacities show and at extreme zoom-in even small towns appear.
+/// decreases in discrete steps, revealing progressively smaller cities.
+/// The default zoom (1.0) shows cities with population ≥ 75K.
 ///
-/// | zoom | radius (km) | min pop |
-/// |------|-------------|---------|
-/// | 0.25 | ~920        | 1.2M    |
-/// | 0.5  | ~460        | 600K    |
-/// | 1.0  | ~230        | 300K    |
-/// | 2.0  | ~115        | 150K    |
-/// | 4.0  | ~57         | 75K     |
-/// | 8.0  | ~29         | ~1K (floor) |
+/// | zoom range      | radius (km) | min pop |
+/// |-----------------|-------------|---------|
+/// | < 0.3           | ~770+       | 1M      |
+/// | 0.3 – 0.5       | ~460–770    | 400K    |
+/// | 0.5 – 0.8       | ~290–460    | 100K    |
+/// | 0.8 – 1.5       | ~155–290    | 75K     |
+/// | 1.5 – 3.0       | ~77–155     | 25K     |
+/// | ≥ 3.0           | < 77        | 1K      |
 pub fn min_population_for_zoom(zoom: f32) -> i64 {
-    const BASE: f32 = 300_000.0;
-    const FLOOR: f32 = 1_000.0;
-    const CEILING: f32 = 5_000_000.0;
-    let threshold = (BASE / zoom).clamp(FLOOR, CEILING);
-    threshold as i64
+    if zoom < 0.3 {
+        1_000_000
+    } else if zoom < 0.5 {
+        400_000
+    } else if zoom < 0.8 {
+        100_000
+    } else if zoom < 1.5 {
+        75_000
+    } else if zoom < 3.0 {
+        25_000
+    } else {
+        1_000
+    }
 }
 
 #[cfg(test)]
@@ -125,7 +132,7 @@ mod tests {
     #[test]
     fn min_population_decreases_with_zoom() {
         // Zooming in lowers the threshold (more cities show).
-        let low = min_population_for_zoom(0.5);
+        let low = min_population_for_zoom(0.2);
         let mid = min_population_for_zoom(1.0);
         let high = min_population_for_zoom(4.0);
         assert!(low > mid, "zoomed-out threshold should be higher");
@@ -133,10 +140,13 @@ mod tests {
     }
 
     #[test]
-    fn min_population_is_clamped() {
-        // Extreme zoom-out clamps to the ceiling.
-        assert_eq!(min_population_for_zoom(0.01), 5_000_000);
-        // Extreme zoom-in clamps to the floor (300K / 1000 = 300 < 1000).
-        assert_eq!(min_population_for_zoom(1000.0), 1_000);
+    fn min_population_steps() {
+        // Discrete steps matching the design.
+        assert_eq!(min_population_for_zoom(0.1), 1_000_000); // < 0.3
+        assert_eq!(min_population_for_zoom(0.4), 400_000); // 0.3–0.5
+        assert_eq!(min_population_for_zoom(0.6), 100_000); // 0.5–0.8
+        assert_eq!(min_population_for_zoom(1.0), 75_000); // 0.8–1.5 (default)
+        assert_eq!(min_population_for_zoom(2.0), 25_000); // 1.5–3.0
+        assert_eq!(min_population_for_zoom(4.0), 1_000); // ≥ 3.0 (floor)
     }
 }
