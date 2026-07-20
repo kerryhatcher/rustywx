@@ -362,7 +362,7 @@ pub fn draw_scope_to_texture(
             format!("{ring_km:.0} km"),
             center_x + 4.0,
             center_y - ring_km * px_per_km,
-            12.0,
+            18.0,
             grid_text_color,
         );
         ring_km += 50.0;
@@ -380,19 +380,19 @@ pub fn draw_scope_to_texture(
             grid_color,
         );
         let (lx, ly) = geo::polar_to_offset(azimuth, MAX_RANGE_KM * 0.96, px_per_km);
-        let text_dims = measure_text(label, None, 12, 1.0);
+        let text_dims = measure_text(label, None, 18, 1.0);
         draw_text(
             label,
             center_x + lx - text_dims.width / 2.0,
             center_y + ly - text_dims.height / 2.0,
-            12.0,
+            18.0,
             grid_text_color,
         );
     }
 
     // Station marker at center
-    draw_circle(center_x, center_y, 3.0, WHITE);
-    draw_text(site.id, center_x + 6.0, center_y + 6.0, 12.0, WHITE);
+    draw_circle(center_x, center_y, 4.0, WHITE);
+    draw_text(site.id, center_x + 8.0, center_y + 8.0, 18.0, WHITE);
 
     // City markers — check all cities within range (~1000 haversine
     // calculations per frame is trivial).
@@ -403,12 +403,12 @@ pub fn draw_scope_to_texture(
             continue;
         }
         let (dx, dy) = geo::polar_to_offset(bearing_deg as f32, range_km as f32, px_per_km);
-        draw_circle_lines(center_x + dx, center_y + dy, 3.5, 1.5, city_color);
+        draw_circle_lines(center_x + dx, center_y + dy, 4.0, 2.0, city_color);
         draw_text(
             name,
-            center_x + dx + 6.0,
-            center_y + dy - 6.0,
-            10.0,
+            center_x + dx + 8.0,
+            center_y + dy - 8.0,
+            16.0,
             city_color,
         );
     }
