@@ -85,6 +85,41 @@ impl Cache {
         rx
     }
 
+    // ── Site preference ─────────────────────────────────────────
+
+    /// Key used for the persisted last-selected site ID.
+    const SITE_KEY: &str = "selected_site";
+
+    /// Persist the selected site ID (fire-and-forget).
+    pub fn save_site(&self, site: &str) {
+        let storage = self.storage.clone();
+        let key = Self::SITE_KEY.to_string();
+        let value = site.as_bytes().to_vec();
+        tokio::spawn(async move {
+            let _ = storage.save_bytes(&key, &value).await;
+        });
+    }
+
+    /// Spawn a background task to load the persisted site ID.
+    ///
+    /// Returns a `oneshot::Receiver` that yields `None` when no
+    /// preference has been saved (first launch).
+    pub fn load_site(&self) -> oneshot::Receiver<Option<String>> {
+        let storage = self.storage.clone();
+        let key = Self::SITE_KEY.to_string();
+        let (tx, rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let result = storage
+                .load_bytes(&key)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|bytes| String::from_utf8(bytes).ok());
+            let _ = tx.send(result);
+        });
+        rx
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────
 
     /// Remove the cached scan for `site` (e.g. after a corrupt read).

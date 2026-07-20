@@ -49,6 +49,8 @@ pub struct AppState {
     pub cache: Cache,
     /// Non-blocking load in flight, if any.
     pub pending_load: Option<oneshot::Receiver<Option<ScanData>>>,
+    /// Pending site-preference load (first launch restores last site).
+    pub pending_site_load: Option<oneshot::Receiver<Option<String>>>,
 
     // ── Real data (Stage 2 formalises caching/error states) ──────
     /// Latest decoded volume scan, if one has arrived.

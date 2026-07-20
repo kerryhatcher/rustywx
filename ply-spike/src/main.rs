@@ -276,8 +276,13 @@ async fn main() {
     let (worker_tx, worker_rx) = mpsc::channel();
     let (site_tx, site_rx) = mpsc::channel();
 
-    // Spawn the background NEXRAD data worker.
-    let initial_site = geo::RADAR_SITES[0].id.to_string();
+    // Default to KFFC (Atlanta, GA) on first launch. The persisted
+    // site preference (loaded below) may override this once it arrives.
+    let default_site_index = geo::RADAR_SITES
+        .iter()
+        .position(|s| s.id == "KFFC")
+        .unwrap_or(0);
+    let initial_site = geo::RADAR_SITES[default_site_index].id.to_string();
     data::spawn_worker(worker_tx, initial_site.clone(), site_rx);
 
     // ── Open disk cache ────────────────────────────────────────
@@ -287,6 +292,9 @@ async fn main() {
     // initial site so we have something to show before the first
     // network fetch completes.
     let pending_load = Some(cache.load_scan(&initial_site));
+
+    // Load the persisted site preference (None on very first launch).
+    let pending_site_load = Some(cache.load_site());
 
     // ── Load cached borders (if any) ───────────────────────────
     let mut pending_borders = {
@@ -300,7 +308,7 @@ async fn main() {
     };
 
     let mut state = AppState {
-        site_index: 0,
+        site_index: default_site_index,
         product: Product::Reflectivity,
         pan_km: (0.0, 0.0),
         zoom: 1.0,
@@ -313,6 +321,7 @@ async fn main() {
         site_tx,
         cache,
         pending_load,
+        pending_site_load,
         site_dropdown: DropdownState::default(),
         tilt_dropdown: DropdownState::default(),
         borders: Vec::new(),
@@ -402,6 +411,29 @@ async fn main() {
             } else {
                 state.status_text = "Waiting for data…".to_string();
             }
+        }
+
+        // ── Poll persisted site preference (first launch restore) ──
+        // `.take()` moves the receiver out so there's no borrow conflict
+        // with the later `select_site(&mut state, …)` call. If the data
+        // isn't ready yet, put the receiver back to poll again next frame.
+        let restore_site = if let Some(mut rx) = state.pending_site_load.take() {
+            match rx.try_recv() {
+                Ok(Some(site_id)) => geo::RADAR_SITES
+                    .iter()
+                    .position(|s| s.id == site_id)
+                    .filter(|&i| i != state.site_index),
+                Ok(None) => None,
+                Err(_) => {
+                    state.pending_site_load = Some(rx);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        if let Some(index) = restore_site {
+            select_site(&mut state, index);
         }
 
         // ── Poll worker messages ──────────────────────────────────
@@ -1659,6 +1691,8 @@ fn select_site(state: &mut AppState, index: usize) {
     state.tilt_dropdown.close();
     let site_id = geo::RADAR_SITES[index].id.to_string();
     let _ = state.site_tx.send(site_id.clone());
+    // Persist the selection so the last-chosen site is restored on next launch.
+    state.cache.save_site(&site_id);
     state.scan = None;
     state.needs_reraster = true;
     state.status_text = format!("Switching to {site_id}…");
