@@ -813,6 +813,10 @@ async fn main() {
                                                     let key = format!("{}:{}", meta.id, img.title);
                                                     let has_tex =
                                                         state.nhc_image_textures.contains_key(&key);
+                                                    // Skip products that failed to download (404)
+                                                    if !has_tex {
+                                                        continue;
+                                                    }
                                                     ui.element()
                                                         .width(grow!())
                                                         .height(fixed!(28.0))
@@ -931,6 +935,7 @@ async fn main() {
                     let modal_h = screen_height() * 0.7;
                     let modal_x = (screen_width() - modal_w) / 2.0;
                     let modal_y = (screen_height() - modal_h) / 2.0;
+                    let content_h = modal_h - 36.0 - 40.0 - 24.0;
 
                     // Semi-transparent backdrop (click to close)
                     ui.element()
@@ -992,24 +997,29 @@ async fn main() {
                                 .children(|ui| {
                                     match &state.nhc_modal {
                                         NhcModal::Text { content, .. } => {
-                                            // Show text content (truncated to fit)
-                                            let display = if content.len() > 4000 {
-                                                &content[..4000]
-                                            } else {
-                                                content.as_str()
-                                            };
-                                            ui.text(display, |t| t.font_size(11).color(0x9E9590));
-                                            if content.len() > 4000 {
-                                                ui.text("… (truncated)", |t| {
-                                                    t.font_size(10).color(0x5a5050)
-                                                });
-                                            }
+                                            // Scrollable text window via Ply ui.text()
+                                            let line_h = 14.0;
+                                            let scroll = state.nhc_modal_scroll.max(0.0);
+                                            let lines: Vec<&str> = content.lines().collect();
+                                            let visible_count =
+                                                (content_h / line_h).ceil() as usize + 1;
+                                            let first = (scroll / line_h).floor() as usize;
+                                            let last = (first + visible_count).min(lines.len());
+                                            let max_scroll =
+                                                (lines.len() as f32 * line_h - content_h).max(0.0);
+                                            state.nhc_modal_scroll = scroll.min(max_scroll);
+                                            let window: String = lines
+                                                .get(first..last)
+                                                .unwrap_or(&[])
+                                                .iter()
+                                                .map(|l| format!("{l}\n"))
+                                                .collect();
+                                            ui.text(window.trim_end(), |t| {
+                                                t.font_size(11).color(0x9E9590)
+                                            });
                                         }
                                         NhcModal::Image { .. } => {
-                                            // Image is drawn via macroquad after ui.show()
-                                            ui.text("[image rendered below]", |t| {
-                                                t.font_size(11).color(0x3a3530)
-                                            });
+                                            // Image drawn via macroquad after ui.show()
                                         }
                                         _ => {}
                                     }

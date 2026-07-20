@@ -1215,8 +1215,12 @@ impl NhcFetchState {
                     }
                 }
                 Some(Err(e)) => {
-                    eprintln!("nhc: request {} failed: {e}", req.net_id);
-                    // Drop the request — it failed.
+                    // 404s are expected — not all products exist for every storm
+                    // (e.g. Key Messages and Peak Surge are only for certain storms,
+                    // Rainfall/WPC QPF is only for storms near the US coast).
+                    if !e.contains("404") {
+                        eprintln!("nhc: request {} failed: {e}", req.net_id);
+                    }
                 }
             }
         }
