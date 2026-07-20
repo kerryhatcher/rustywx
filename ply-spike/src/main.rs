@@ -381,7 +381,12 @@ async fn main() {
                 state.last_activity = now;
             }
         }
-        state.controls_visible = now - state.last_activity < 3.0;
+        // Auto-hide: hide after 4s idle, but always reveal when the pointer
+        // moves near the top edge (standard auto-hide UX like a dock).
+        let (_, mouse_y) = mouse_position();
+        let near_top = mouse_y < 50.0;
+        let idle = now - state.last_activity;
+        state.controls_visible = near_top || idle < 4.0;
 
         state.hovered_ids = ply.pointer_over_ids();
 

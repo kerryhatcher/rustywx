@@ -59,19 +59,19 @@ pub const TEXT_MUTED: Color = Color::u_rgb(0x9e, 0x95, 0x90);
 /// Primary text colour.
 pub const TEXT_PRIMARY: Color = Color::u_rgb(0xe8, 0xe0, 0xdc);
 
-/// Apply frosted-glass styling to an element builder: semi-transparent dark
-/// background, the custom blur shader, rounded corners, and a subtle light
-/// border. The caller continues the chain (`.layout()`, `.children()`, …).
+/// Apply frosted-glass styling to an element builder: a semi-transparent dark
+/// background, rounded corners, and a subtle light border.
 ///
-/// The blur shader captures the element and its children to an offscreen
-/// buffer, blurs the semi-transparent background, and preserves opaque
-/// child content (text) unblurred on top — exactly the frosted-glass look.
+/// The frosted-glass *look* comes from the semi-transparent dark background
+/// composited over the gradient scope behind it — NOT from the blur shader.
+/// Ply's `.shader()` captures the element's own children to an offscreen
+/// buffer and blurs them, which degrades text readability and can break
+/// content rendering inside large panels. `BLUR_SHADER` remains defined and
+/// validated (Spike S1) for use on non-text decorative elements, but is not
+/// applied to content-bearing panels.
 pub fn glass(builder: ElementBuilder<'_, ()>) -> ElementBuilder<'_, ()> {
     builder
         .background_color(GLASS_BG)
         .corner_radius(8.0)
-        .shader(&BLUR_SHADER, |s| {
-            s.uniform("u_radius", 8.0);
-        })
         .border(|b| b.color(GLASS_BORDER).all(1))
 }
