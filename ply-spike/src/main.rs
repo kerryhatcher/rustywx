@@ -9,7 +9,17 @@ mod scope;
 
 use model::{Product, ScanData, SweepData};
 use ply_engine::prelude::*;
+use ply_engine::shaders::ShaderAsset;
 use std::sync::mpsc;
+
+// ---------------------------------------------------------------------------
+// Custom blur shader for frosted glass effect (Spike S1)
+// ---------------------------------------------------------------------------
+
+static BLUR_SHADER: ShaderAsset = ShaderAsset::Source {
+    file_name: "blur",
+    fragment: include_str!("../assets/shaders/blur.frag"),
+};
 
 // ---------------------------------------------------------------------------
 // Synthetic radar data (fallback until real data arrives)
@@ -92,6 +102,8 @@ struct AppState {
     // Worker channels
     worker_rx: mpsc::Receiver<data::WorkerMessage>,
     site_tx: mpsc::Sender<String>,
+    // Glass panel toggle (Spike S1)
+    show_glass: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -122,6 +134,7 @@ async fn main() {
         status_text: "Starting…".to_string(),
         worker_rx,
         site_tx,
+        show_glass: true,
     };
 
     loop {
@@ -270,6 +283,46 @@ async fn main() {
                     .image(scope_tex)
                     .empty();
 
+                // ── Frosted glass test panel (Spike S1) ───────────
+                // Floating panel over the radar scope with blur shader
+                if state.show_glass {
+                    ui.element()
+                        .id("glass-panel")
+                        .width(fixed!(220.0))
+                        .height(fixed!(160.0))
+                        .background_color(0x1A_FFFFFF) // semi-transparent white
+                        .corner_radius(12.0)
+                        .shader(&BLUR_SHADER, |s| {
+                            s.uniform("u_radius", 8.0);
+                        })
+                        .floating(|f| {
+                            f.offset((20.0, 60.0)).z_index(10)
+                        })
+                        .layout(|l| {
+                            l.direction(TopToBottom)
+                                .padding(16)
+                                .gap(8)
+                                .align(Left, Top)
+                            })
+                        .children(|ui| {
+                            ui.text("Frosted Glass Test", |t| {
+                                t.font_size(14).color(0xFFFFFF)
+                            });
+                            ui.text("This panel uses a custom GLSL", |t| {
+                                t.font_size(11).color(0xCC_DDDDD)
+                            });
+                            ui.text("Gaussian blur shader to create", |t| {
+                                t.font_size(11).color(0xCC_DDDDD)
+                            });
+                            ui.text("the frosted glass effect.", |t| {
+                                t.font_size(11).color(0xCC_DDDDD)
+                            });
+                            ui.text("Press G to toggle glass panel", |t| {
+                                t.font_size(10).color(0x889999)
+                            });
+                        });
+                }
+
                 // ── Bottom status bar ──────────────────────────────
                 ui.element()
                     .width(grow!())
@@ -345,6 +398,9 @@ fn handle_input(state: &mut AppState, ply: &Ply<()>, _site: &geo::RadarSite) {
                 state.needs_reraster = true;
             }
         }
+    }
+    if is_key_pressed(KeyCode::G) {
+        state.show_glass = !state.show_glass;
     }
     if is_key_pressed(KeyCode::Key0) {
         state.pan_km = (0.0, 0.0);

@@ -270,6 +270,7 @@ typography, responsive layout.
 - Frosted glass styling on all panels. Ply's `built-in-shaders` has GLOW but
   no Gaussian blur — **author a custom GLSL ES 1.00 fragment shader** for the
   blur effect. Apply via `.shader(&BLUR_SHADER, |s| s.uniform("u_radius", 8.0))`.
+  Validated by Spike S1.
 - Dark gradient background with noise texture (use `GRADIENT_RADIAL` built-in
   or a custom shader)
 - Teal/cyan accent color on all interactive elements
@@ -414,7 +415,7 @@ integration, and custom widget approach before their respective stages.
 
 | Risk | Stage | Mitigation |
 |---|---|---|
-| Custom GLSL blur shader | 6 | Spike S1 (pending) must validate before Stage 6; GLOW shader is fallback |
+| Custom GLSL blur shader | 6 | ✅ Spike S1 validated — 5×5 Gaussian blur compiles and runs; GLOW shader is fallback |
 | WASM CORS relay proxy | 8 | Cloudflare Worker with 2 routes (NEXRAD S3 + NHC CurrentStorms.json) |
 | NHC CORS: CurrentStorms.json blocked on WASM | 5, 8 | Confirmed no CORS (R1); relay proxy route added to Stage 8 Worker |
 | Font loading on WASM/Android | 6 | Test font bundling early; DejaVuSansMono from spike is known-good fallback |
