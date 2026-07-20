@@ -89,6 +89,10 @@ ci-full: ci test-doc trivy lychee
 build:
     cargo build --release
 
+# ── Run (release build) ─────────────────────────────────────────
+run:
+    cargo run --release
+
 # ── Clean ───────────────────────────────────────────────────────
 clean:
     cargo clean
