@@ -36,7 +36,9 @@ fn clean_sweep(sweep: &SweepData, product: Product) -> SweepData {
                 } else {
                     5.0
                 };
-                if let Some(v) = *gate && v < floor {
+                if let Some(v) = *gate
+                    && v < floor
+                {
                     *gate = None;
                 }
             }
@@ -49,7 +51,7 @@ fn clean_sweep(sweep: &SweepData, product: Product) -> SweepData {
         let n = radial.gates.len();
         let half = TDBZ_KERNEL / 2;
         let mut tdbz = vec![0.0f32; n];
-        for i in 0..n {
+        for (i, tdbz_slot) in tdbz.iter_mut().enumerate() {
             let start = i.saturating_sub(half);
             let end = (i + half + 1).min(n);
             if end - start < 2 {
@@ -64,7 +66,7 @@ fn clean_sweep(sweep: &SweepData, product: Product) -> SweepData {
                 }
             }
             if count > 0 {
-                tdbz[i] = sum_sq / count as f32;
+                *tdbz_slot = sum_sq / count as f32;
             }
         }
         for (i, &tdbz_val) in tdbz.iter().enumerate() {
@@ -120,8 +122,7 @@ pub fn rasterize(
             }
 
             let azimuth = dx.atan2(-dy).to_degrees().rem_euclid(360.0);
-            let (i1, i2, w1, w2) =
-                nearest_two_radial_indices(&sorted_azimuths, azimuth);
+            let (i1, i2, w1, w2) = nearest_two_radial_indices(&sorted_azimuths, azimuth);
             let radial1 = &sweep.radials[order[i1]];
             let radial2 = &sweep.radials[order[i2]];
 
@@ -256,7 +257,10 @@ fn despeckle(pixels: &mut [u8], size_px: usize, min_neighbors: usize) {
                     }
                     let nx = x + dx;
                     let ny = y + dy;
-                    if nx >= 0 && nx < s && ny >= 0 && ny < s
+                    if nx >= 0
+                        && nx < s
+                        && ny >= 0
+                        && ny < s
                         && original[((ny * s + nx) as usize) * 4 + 3] != 0
                     {
                         neighbors += 1;
@@ -284,7 +288,7 @@ pub(crate) fn nearest_two_radial_indices(
         return (0, 0, 1.0, 0.0);
     }
     match sorted_azimuths.binary_search_by(|a| a.total_cmp(&az)) {
-        Ok(i) => return (i, (i + 1) % n, 1.0, 0.0),
+        Ok(i) => (i, (i + 1) % n, 1.0, 0.0),
         Err(i) => {
             let before = (i + n - 1) % n;
             let after = i % n;
@@ -355,7 +359,7 @@ pub fn draw_scope_to_texture(
     while ring_km <= MAX_RANGE_KM {
         draw_circle_lines(center_x, center_y, ring_km * px_per_km, 1.0, grid_color);
         draw_text(
-            &format!("{ring_km:.0} km"),
+            format!("{ring_km:.0} km"),
             center_x + 4.0,
             center_y - ring_km * px_per_km,
             12.0,
@@ -388,13 +392,7 @@ pub fn draw_scope_to_texture(
 
     // Station marker at center
     draw_circle(center_x, center_y, 3.0, WHITE);
-    draw_text(
-        site.id,
-        center_x + 6.0,
-        center_y + 6.0,
-        12.0,
-        WHITE,
-    );
+    draw_text(site.id, center_x + 6.0, center_y + 6.0, 12.0, WHITE);
 
     // City markers (sample every 50th to keep perf reasonable)
     let city_color = MacroquadColor::from_rgba(0xdd, 0xdd, 0xaa, 255);

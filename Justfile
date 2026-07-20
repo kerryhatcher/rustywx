@@ -36,14 +36,9 @@ test-doc:
 
 # ── Security ────────────────────────────────────────────────────
 audit:
-    # RUSTSEC-2026-0192/0194/0195: quick-xml 0.39 DoS advisories, transitive via
-    # egui/eframe -> winit -> wayland-scanner. No fix available upstream
-    # (wayland-scanner 0.31 pins quick-xml 0.39); egui is removed in Stage 1
-    # of the Ply port, at which point these ignores are deleted.
-    cargo audit \
-        --ignore RUSTSEC-2026-0192 \
-        --ignore RUSTSEC-2026-0194 \
-        --ignore RUSTSEC-2026-0195
+    # RUSTSEC-2026-0192: ttf-parser 0.21.1 unmaintained, transitive via
+    # ply-engine -> macroquad-ply -> fontdue. No upstream fix available.
+    cargo audit --ignore RUSTSEC-2026-0192
 
 deny:
     cargo deny check

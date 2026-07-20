@@ -1,26 +1,19 @@
-//! Ply spike: radar scope rendering with real NEXRAD data.
-//! Falls back to synthetic data until the first real scan arrives.
+//! rustywx — Ply radar scope (Stage 1: Synthetic Scope).
+//!
+//! Boots a window, renders a radar scope with synthetic reflectivity data,
+//! range rings, cardinal spokes, and city markers. Pan/zoom and keyboard
+//! controls work. A background worker fetches real NEXRAD data and replaces
+//! the synthetic sweep when it arrives; full live-data features (caching,
+//! error states, auto-refresh UI) are Stage 2.
 
-mod colors;
-mod data;
-mod geo;
-mod model;
-mod scope;
-
-use model::{Product, ScanData, SweepData};
 use ply_engine::prelude::*;
-use ply_engine::shaders::ShaderAsset;
+use rustywx::colors;
+use rustywx::data::{self, WorkerMessage};
+use rustywx::geo;
+use rustywx::model::{Product, RadialData, SweepData};
+use rustywx::scope;
+use rustywx::state::AppState;
 use std::sync::mpsc;
-use tokio::sync::oneshot;
-
-// ---------------------------------------------------------------------------
-// Custom blur shader for frosted glass effect (Spike S1)
-// ---------------------------------------------------------------------------
-
-static BLUR_SHADER: ShaderAsset = ShaderAsset::Source {
-    file_name: "blur",
-    fragment: include_str!("../assets/shaders/blur.frag"),
-};
 
 // ---------------------------------------------------------------------------
 // Synthetic radar data (fallback until real data arrives)
@@ -50,7 +43,7 @@ fn synthetic_sweep() -> SweepData {
             let value = base + cell1 + cell2;
             gates.push(if value > 5.0 { Some(value) } else { None });
         }
-        radials.push(model::RadialData {
+        radials.push(RadialData {
             azimuth_deg: azimuth,
             gates,
         });
@@ -68,7 +61,7 @@ fn synthetic_sweep() -> SweepData {
 fn window_conf() -> macroquad::conf::Conf {
     macroquad::conf::Conf {
         miniquad_conf: miniquad::conf::Conf {
-            window_title: "rustywx — Ply Radar Scope Spike (Live Data)".to_owned(),
+            window_title: "rustywx — NEXRAD Radar Scope".to_owned(),
             window_width: 900,
             window_height: 960,
             high_dpi: true,
@@ -79,42 +72,10 @@ fn window_conf() -> macroquad::conf::Conf {
             },
             ..Default::default()
         },
-        draw_call_vertex_capacity: 100000,
-        draw_call_index_capacity: 100000,
+        draw_call_vertex_capacity: 100_000,
+        draw_call_index_capacity: 100_000,
         ..Default::default()
     }
-}
-
-// ---------------------------------------------------------------------------
-// App state
-// ---------------------------------------------------------------------------
-
-struct AppState {
-    site_index: usize,
-    product: Product,
-    pan_km: (f32, f32),
-    zoom: f32,
-    radar_texture: Option<Texture2D>,
-    needs_reraster: bool,
-    // Real data
-    scan: Option<ScanData>,
-    tilt_index: usize,
-    status_text: String,
-    // Worker channels
-    worker_rx: mpsc::Receiver<data::WorkerMessage>,
-    site_tx: mpsc::Sender<String>,
-    // Glass panel toggle (Spike S1)
-    show_glass: bool,
-    // Dropdown state (Spike S3)
-    dropdown_open: bool,
-    dropdown_filter: String,
-    dropdown_scroll: usize,
-    // Texture stress test (Spike S4)
-    stress_test: bool,
-    stress_frame_count: u32,
-    // Storage test (Spike S8)
-    storage_test_result: Option<String>,
-    pending_storage_load: Option<oneshot::Receiver<Option<Vec<u8>>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -128,7 +89,7 @@ async fn main() {
 
     let initial_site = &geo::RADAR_SITES[0];
 
-    // Spawn background worker
+    // Spawn background worker for real NEXRAD data.
     let (worker_tx, worker_rx) = mpsc::channel();
     let (site_tx, site_rx) = mpsc::channel();
     data::spawn_worker(worker_tx, initial_site.id.to_string(), site_rx);
@@ -145,14 +106,9 @@ async fn main() {
         status_text: "Starting…".to_string(),
         worker_rx,
         site_tx,
-        show_glass: true,
         dropdown_open: false,
         dropdown_filter: String::new(),
         dropdown_scroll: 0,
-        stress_test: false,
-        stress_frame_count: 0,
-        storage_test_result: None,
-        pending_storage_load: None,
     };
 
     loop {
@@ -161,7 +117,7 @@ async fn main() {
         // ── Poll worker messages ──────────────────────────────────
         while let Ok(msg) = state.worker_rx.try_recv() {
             match msg {
-                data::WorkerMessage::NewScan(scan) => {
+                WorkerMessage::NewScan(scan) => {
                     state.scan = Some(*scan);
                     state.tilt_index = 0;
                     state.needs_reraster = true;
@@ -174,61 +130,11 @@ async fn main() {
                         );
                     }
                 }
-                data::WorkerMessage::Status(s) => {
+                WorkerMessage::Status(s) => {
                     state.status_text = s;
                 }
-                data::WorkerMessage::Error(e) => {
+                WorkerMessage::Error(e) => {
                     state.status_text = format!("Error: {e}");
-                }
-            }
-        }
-
-        // ── Poll net responses (Spike S6) ─────────────────────────
-        for id in ["spike-test-a", "spike-test-b", "spike-test-c"] {
-            if let Some(req) = ply_engine::net::request(id) {
-                match req.response() {
-                    None => { /* still loading */ }
-                    Some(Ok(resp)) => {
-                        let status = resp.status();
-                        if status == 200 {
-                            let body = resp.text();
-                            let preview: String = body.chars().take(60).collect();
-                            state.status_text = format!(
-                                "Net {id}: {status} — {preview}…"
-                            );
-                        } else {
-                            state.status_text = format!("Net {id}: HTTP {status}");
-                        }
-                    }
-                    Some(Err(e)) => {
-                        state.status_text = format!("Net {id}: error — {e:?}");
-                    }
-                }
-            }
-        }
-
-        // ── Poll storage load result (Spike S8) ───────────────────
-        if let Some(rx) = &mut state.pending_storage_load {
-            match rx.try_recv() {
-                Ok(Some(data)) => {
-                    let data_str = String::from_utf8_lossy(&data).into_owned();
-                    state.storage_test_result = Some(format!("Loaded: {}", data_str));
-                    state.status_text = "Storage test: SUCCESS ✓".to_string();
-                    state.pending_storage_load = None;
-                }
-                Ok(None) => {
-                    state.storage_test_result = Some("Load failed".to_string());
-                    state.status_text = "Storage test: FAILED ✗".to_string();
-                    state.pending_storage_load = None;
-                }
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
-                    // Still loading
-                    state.status_text = "Storage test: loading...".to_string();
-                }
-                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                    state.storage_test_result = Some("Channel closed".to_string());
-                    state.status_text = "Storage test: channel closed".to_string();
-                    state.pending_storage_load = None;
                 }
             }
         }
@@ -248,12 +154,9 @@ async fn main() {
 
         let site = &geo::RADAR_SITES[state.site_index];
 
-        // Rasterize when needed (or every frame in stress test)
-        if state.needs_reraster || state.stress_test {
+        // Rasterize when needed
+        if state.needs_reraster {
             state.needs_reraster = false;
-            if state.stress_test {
-                state.stress_frame_count += 1;
-            }
             let rgba = scope::rasterize(
                 &sweep,
                 state.product,
@@ -266,7 +169,6 @@ async fn main() {
                 &rgba,
             );
             state.radar_texture = Some(tex);
-            state.needs_reraster = false;
         }
 
         // Render scope + overlays to texture
@@ -300,7 +202,7 @@ async fn main() {
                             .align(Left, CenterY)
                     })
                     .children(|ui| {
-                        // ── Site selector dropdown button ────────
+                        // Site selector dropdown button
                         ui.element()
                             .id("site-dropdown-btn")
                             .width(fit!())
@@ -309,16 +211,14 @@ async fn main() {
                             .corner_radius(4.0)
                             .layout(|l| l.padding((0, 8, 0, 8)).align(CenterX, CenterY))
                             .children(|ui| {
-                                ui.text(
-                                    &format!("{} ▾", site.id),
-                                    |t| t.font_size(13).color(0xE8E0DC),
-                                );
+                                ui.text(&format!("{} ▾", site.id), |t| {
+                                    t.font_size(13).color(0xE8E0DC)
+                                });
                             });
 
-                        ui.text(
-                            &format!(" — {}", site.name),
-                            |t| t.font_size(14).color(0xE8E0DC),
-                        );
+                        ui.text(&format!(" — {}", site.name), |t| {
+                            t.font_size(14).color(0xE8E0DC)
+                        });
 
                         // Reflectivity button
                         let refl_bg = if state.product == Product::Reflectivity {
@@ -363,9 +263,8 @@ async fn main() {
                         );
                     });
 
-                // ── Site dropdown panel (Spike S3) ────────────
+                // ── Site dropdown panel ─────────────────────────────
                 if state.dropdown_open {
-                    // Build filtered site list
                     let filter = state.dropdown_filter.to_lowercase();
                     let filtered: Vec<(usize, &geo::RadarSite)> = geo::RADAR_SITES
                         .iter()
@@ -388,21 +287,12 @@ async fn main() {
                         .height(fixed!(300.0))
                         .background_color(0xDD1A1D)
                         .corner_radius(6.0)
-                        .floating(|f| {
-                            f.offset((8.0, 44.0)).z_index(100)
-                        })
-                        .layout(|l| {
-                            l.direction(TopToBottom)
-                                .padding(4)
-                                .gap(2)
-                        })
+                        .floating(|f| f.offset((8.0, 44.0)).z_index(100))
+                        .layout(|l| l.direction(TopToBottom).padding(4).gap(2))
                         .children(|ui| {
-                            // Filter hint
-                            ui.text(
-                                &format!("Filter: {}_", state.dropdown_filter),
-                                |t| t.font_size(11).color(0x9E9590),
-                            );
-                            // Site list
+                            ui.text(&format!("Filter: {}_", state.dropdown_filter), |t| {
+                                t.font_size(11).color(0x9E9590)
+                            });
                             for &(idx, site) in visible {
                                 let bg = if idx == state.site_index {
                                     0x3A3533
@@ -417,10 +307,9 @@ async fn main() {
                                     .corner_radius(3.0)
                                     .layout(|l| l.padding((0, 6, 0, 6)).align(Left, CenterY))
                                     .children(|ui| {
-                                        ui.text(
-                                            &format!("{} — {}", site.id, site.name),
-                                            |t| t.font_size(12).color(0xE8E0DC),
-                                        );
+                                        ui.text(&format!("{} — {}", site.id, site.name), |t| {
+                                            t.font_size(12).color(0xE8E0DC)
+                                        });
                                     });
                             }
                             if filtered.len() > visible_count {
@@ -439,46 +328,6 @@ async fn main() {
                     .image(scope_tex)
                     .empty();
 
-                // ── Frosted glass test panel (Spike S1) ───────────
-                // Floating panel over the radar scope with blur shader
-                if state.show_glass {
-                    ui.element()
-                        .id("glass-panel")
-                        .width(fixed!(220.0))
-                        .height(fixed!(160.0))
-                        .background_color(0x1A_FFFFFF) // semi-transparent white
-                        .corner_radius(12.0)
-                        .shader(&BLUR_SHADER, |s| {
-                            s.uniform("u_radius", 8.0);
-                        })
-                        .floating(|f| {
-                            f.offset((20.0, 60.0)).z_index(10)
-                        })
-                        .layout(|l| {
-                            l.direction(TopToBottom)
-                                .padding(16)
-                                .gap(8)
-                                .align(Left, Top)
-                            })
-                        .children(|ui| {
-                            ui.text("Frosted Glass Test", |t| {
-                                t.font_size(14).color(0xFFFFFF)
-                            });
-                            ui.text("This panel uses a custom GLSL", |t| {
-                                t.font_size(11).color(0xCC_DDDDD)
-                            });
-                            ui.text("Gaussian blur shader to create", |t| {
-                                t.font_size(11).color(0xCC_DDDDD)
-                            });
-                            ui.text("the frosted glass effect.", |t| {
-                                t.font_size(11).color(0xCC_DDDDD)
-                            });
-                            ui.text("Press G to toggle glass panel", |t| {
-                                t.font_size(10).color(0x889999)
-                            });
-                        });
-                }
-
                 // ── Bottom status bar ──────────────────────────────
                 ui.element()
                     .width(grow!())
@@ -493,19 +342,12 @@ async fn main() {
                     .children(|ui| {
                         let has_real = state.scan.is_some();
                         let status_color = if has_real { 0x5F8A6A } else { 0x9E9590 };
-                        let stress_info = if state.stress_test {
-                            format!(" [STRESS: {} frames]", state.stress_frame_count)
-                        } else {
-                            String::new()
-                        };
-                        ui.text(
-                            &format!("{}{}", state.status_text, stress_info),
-                            |t| t.font_size(11).color(status_color),
-                        );
+                        ui.text(&state.status_text, |t| t.font_size(11).color(status_color));
                         // Color legend swatches
                         for &(_threshold, color) in colors::DBZ_LEGEND.iter().step_by(2) {
-                            let hex =
-                                (color[0] as u32) << 16 | (color[1] as u32) << 8 | (color[2] as u32);
+                            let hex = (color[0] as u32) << 16
+                                | (color[1] as u32) << 8
+                                | (color[2] as u32);
                             ui.element()
                                 .width(fixed!(14.0))
                                 .height(fixed!(10.0))
@@ -519,40 +361,39 @@ async fn main() {
         ui.show(|_| {}).await;
 
         // ── Input handling ─────────────────────────────────────────
-        handle_input(&mut state, &ply, site);
+        handle_input(&mut state, &ply);
 
         next_frame().await;
     }
 }
 
-fn handle_input(state: &mut AppState, ply: &Ply<()>, _site: &geo::RadarSite) {
+// ---------------------------------------------------------------------------
+// Input handling
+// ---------------------------------------------------------------------------
+
+fn handle_input(state: &mut AppState, ply: &Ply<()>) {
     // ── Dropdown keyboard handling ────────────────────────────
     if state.dropdown_open {
-        // Character input for filter
-        if let Some(c) = get_char_pressed() {
-            if c.is_ascii_alphanumeric() || c == ' ' || c == '-' {
-                state.dropdown_filter.push(c);
-                state.dropdown_scroll = 0;
-            }
+        if let Some(c) = get_char_pressed()
+            && (c.is_ascii_alphanumeric() || c == ' ' || c == '-')
+        {
+            state.dropdown_filter.push(c);
+            state.dropdown_scroll = 0;
         }
-        // Backspace
         if is_key_pressed(KeyCode::Backspace) && !state.dropdown_filter.is_empty() {
             state.dropdown_filter.pop();
             state.dropdown_scroll = 0;
         }
-        // Escape to close
         if is_key_pressed(KeyCode::Escape) {
             state.dropdown_open = false;
             state.dropdown_filter.clear();
         }
-        // Arrow keys for scroll
         if is_key_pressed(KeyCode::Down) {
             state.dropdown_scroll += 1;
         }
         if is_key_pressed(KeyCode::Up) {
             state.dropdown_scroll = state.dropdown_scroll.saturating_sub(1);
         }
-        // Enter to select first visible
         if is_key_pressed(KeyCode::Enter) {
             let filter = state.dropdown_filter.to_lowercase();
             if let Some((idx, _)) = geo::RADAR_SITES.iter().enumerate().find(|(_, s)| {
@@ -569,8 +410,6 @@ fn handle_input(state: &mut AppState, ply: &Ply<()>, _site: &geo::RadarSite) {
             state.dropdown_open = false;
             state.dropdown_filter.clear();
         }
-        // Don't process other input while dropdown is open
-        // (except mouse for clicking options)
     }
 
     // ── Dropdown button click ─────────────────────────────────
@@ -600,7 +439,6 @@ fn handle_input(state: &mut AppState, ply: &Ply<()>, _site: &geo::RadarSite) {
 
     // ── Outside click closes dropdown ─────────────────────────
     if state.dropdown_open && is_mouse_button_pressed(MouseButton::Left) {
-        // Check if click is on the dropdown panel or button
         let panel_pressed = ply.is_just_pressed("site-dropdown-panel");
         let btn_pressed = ply.is_just_pressed("site-dropdown-btn");
         if !panel_pressed && !btn_pressed {
@@ -633,106 +471,36 @@ fn handle_input(state: &mut AppState, ply: &Ply<()>, _site: &geo::RadarSite) {
         state.product = Product::Velocity;
         state.needs_reraster = true;
     }
-    if is_key_pressed(KeyCode::T) {
-        // Cycle tilt
-        if let Some(ref scan) = state.scan {
-            let sweeps = scan.sweeps(state.product);
-            if !sweeps.is_empty() {
-                state.tilt_index = (state.tilt_index + 1) % sweeps.len();
-                state.needs_reraster = true;
-            }
+    if is_key_pressed(KeyCode::T)
+        && let Some(ref scan) = state.scan
+    {
+        let sweeps = scan.sweeps(state.product);
+        if !sweeps.is_empty() {
+            state.tilt_index = (state.tilt_index + 1) % sweeps.len();
+            state.needs_reraster = true;
         }
-    }
-    if is_key_pressed(KeyCode::G) {
-        state.show_glass = !state.show_glass;
-    }
-    // Texture stress test toggle (Spike S4)
-    if is_key_pressed(KeyCode::F5) {
-        state.stress_test = !state.stress_test;
-        state.stress_frame_count = 0;
-        state.needs_reraster = true;
-    }
-    // Storage test (Spike S8) — press F6 to save/load test
-    if is_key_pressed(KeyCode::F6) {
-        // Test Pattern 1: Direct await for small data (settings)
-        // This is acceptable because settings are <2ms
-        state.status_text = "Storage test: saving...".to_string();
-
-        // Spawn a storage task to demonstrate the channel pattern
-        let (tx, rx) = oneshot::channel::<Option<Vec<u8>>>();
-        tokio::spawn(async move {
-            match Storage::new("rustywx-spike/test").await {
-                Ok(storage) => {
-                    // Save test
-                    let test_data = b"test radar scan metadata {\"site\":\"KJGX\",\"time\":\"2025-07-19T12:00:00Z\"}";
-                    match storage.save_bytes("test-scan", test_data).await {
-                        Ok(_) => {
-                            // Load test
-                            match storage.load_bytes("test-scan").await {
-                                Ok(Some(loaded)) => {
-                                    let loaded_str = String::from_utf8_lossy(&loaded).into_owned();
-                                    let _ = tx.send(Some(loaded));
-                                    log::info!("Storage test: saved and loaded: {}", loaded_str);
-                                }
-                                Ok(None) => {
-                                    log::warn!("Storage test: key not found");
-                                    let _ = tx.send(None);
-                                }
-                                Err(e) => {
-                                    log::error!("Storage test load error: {:?}", e);
-                                    let _ = tx.send(None);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            log::error!("Storage test save error: {:?}", e);
-                            let _ = tx.send(None);
-                        }
-                    }
-                }
-                Err(e) => {
-                    log::error!("Storage test init error: {:?}", e);
-                    let _ = tx.send(None);
-                }
-            }
-        });
-        state.pending_storage_load = Some(rx);
-    }
-    // Net concurrent test (Spike S6) — press F7 to fire 3 requests
-    if is_key_pressed(KeyCode::F7) {
-        ply_engine::net::get("spike-test-a", "https://httpbin.org/delay/0", |r| r);
-        ply_engine::net::get("spike-test-b", "https://httpbin.org/delay/1", |r| r);
-        ply_engine::net::get("spike-test-c", "https://httpbin.org/status/404", |r| r);
-        state.status_text = "Net test: fired 3 concurrent requests".to_string();
     }
     if is_key_pressed(KeyCode::Key0) {
         state.pan_km = (0.0, 0.0);
         state.zoom = 1.0;
     }
-    if is_key_pressed(KeyCode::Right) {
+    if is_key_pressed(KeyCode::Right) && !state.dropdown_open {
         state.site_index = (state.site_index + 1) % geo::RADAR_SITES.len();
         let _ = state
             .site_tx
             .send(geo::RADAR_SITES[state.site_index].id.to_string());
         state.scan = None;
         state.needs_reraster = true;
-        state.status_text = format!(
-            "Switching to {}…",
-            geo::RADAR_SITES[state.site_index].id
-        );
+        state.status_text = format!("Switching to {}…", geo::RADAR_SITES[state.site_index].id);
     }
-    if is_key_pressed(KeyCode::Left) {
-        state.site_index =
-            (state.site_index + geo::RADAR_SITES.len() - 1) % geo::RADAR_SITES.len();
+    if is_key_pressed(KeyCode::Left) && !state.dropdown_open {
+        state.site_index = (state.site_index + geo::RADAR_SITES.len() - 1) % geo::RADAR_SITES.len();
         let _ = state
             .site_tx
             .send(geo::RADAR_SITES[state.site_index].id.to_string());
         state.scan = None;
         state.needs_reraster = true;
-        state.status_text = format!(
-            "Switching to {}…",
-            geo::RADAR_SITES[state.site_index].id
-        );
+        state.status_text = format!("Switching to {}…", geo::RADAR_SITES[state.site_index].id);
     }
 
     // Ply button presses

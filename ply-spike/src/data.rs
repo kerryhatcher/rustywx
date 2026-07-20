@@ -86,11 +86,7 @@ pub async fn fetch_latest_scan(
 /// runtime; all communication with the UI is via `tx`.
 /// `site_rx` delivers site-change requests; `recv_timeout` is used so the
 /// worker wakes immediately when the user selects a new radar.
-pub fn spawn_worker(
-    tx: Sender<WorkerMessage>,
-    initial_site: String,
-    site_rx: Receiver<String>,
-) {
+pub fn spawn_worker(tx: Sender<WorkerMessage>, initial_site: String, site_rx: Receiver<String>) {
     std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()

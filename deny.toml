@@ -10,10 +10,10 @@ all-features = true
 
 [advisories]
 ignore = [
-    # Transitive deps of egui/eframe — will be removed in Ply port
+    # ttf-parser 0.21.1 is unmaintained; transitive via ply-engine
+    # → macroquad-ply → fontdue. No fix available upstream until ply-engine
+    # updates its font rendering backend. Pinned in fontdue 0.9.3.
     "RUSTSEC-2026-0192",
-    "RUSTSEC-2026-0194",
-    "RUSTSEC-2026-0195",
 ]
 
 [licenses]
