@@ -11,7 +11,7 @@ future-stage polish — every one stands on its own as a working app.
 |---|---|---|---|---|
 | 1 | Hello Radar | ✅ Complete | `v0.2.0-stage1` | [stage-1-hello-radar.md](stages/stage-1-hello-radar.md) |
 | 2 | Live Data | ✅ Complete | `v0.2.0-stage2` | [stage-2-live-data.md](stages/stage-2-live-data.md) |
-| 3 | Custom Widgets | 🟡 Implemented and locally validated — CI/tag pending | `v0.2.0-stage3` | [stage-3-custom-widgets.md](stages/stage-3-custom-widgets.md) |
+| 3 | Custom Widgets | 🟡 Complete; CI green; tag pending | `v0.2.0-stage3` | [stage-3-custom-widgets.md](stages/stage-3-custom-widgets.md) |
 | 4 | Borders & Alerts | 🔲 Not started | `v0.2.0-stage4` | [stage-4-borders-alerts.md](stages/stage-4-borders-alerts.md) |
 | 5 | Tropical | 🔲 Not started | `v0.3.0-stage5` | [stage-5-tropical.md](stages/stage-5-tropical.md) |
 | 6 | Observatory Look | 🔲 Not started | `v0.4.0-stage6` | [stage-6-observatory-look.md](stages/stage-6-observatory-look.md) |
@@ -60,6 +60,17 @@ Full research in `research/`. De-risking report in `docs/de-risking-report.md`.
   Stage 1 validation.)
 - **Linux desktop:** Native HTTP clients (Ply `net`, `reqwest`) don't require CORS headers.
   All data sources (NEXRAD S3, NHC, NWS alerts, Natural Earth) work directly without proxies.
+- **Composite controls (Stage 3):** Keep widget rendering and event handling in
+  separate phases: declare elements through `Ui`, call `show`, then query
+  presses through `Ply`. Widgets return semantic values/indices; application
+  state transitions remain centralized in `main.rs`.
+- **Dynamic option IDs (Stage 3):** Use Ply's indexed `(&str, u32)` IDs with
+  stable source indices. Filtering and scrolling must not change an option's ID.
+- **Dropdown input isolation (Stage 3):** While a dropdown is open, consume its
+  wheel/keyboard input and suppress radar pan/zoom to avoid double actions.
+- **Text input API update (Stage 3):** Ply 1.1.1 includes text-input and focus
+  APIs. The site filter intentionally retains raw `get_char_pressed()` because
+  it is a compact type-to-filter control without cursor/selection/IME needs.
 
 ## Git Workflow
 
@@ -117,11 +128,12 @@ rustywx/
 
 ## Testing Strategy
 
-- **Unit tests** for pure-data modules (`model.rs`, `colors.rs`, `geo.rs`)
-  — 12 tests ported in Stage 1, all passing in CI.
-- **No new integration tests** for the Ply UI layer — Ply does not have a
-  headless testing mode (see Ply issue #8). Manual validation checklists
-  (in each stage file) are the primary verification method.
+- **Unit tests** cover pure-data modules (`model.rs`, `colors.rs`, `geo.rs`)
+  plus pure widget state/filter logic. After Stage 3 the workspace has 15 tests.
+- **No full headless integration tests** for the Ply UI layer — Ply does not have
+  a convenient end-to-end headless interaction mode (see Ply issue #8).
+  Stage checklists remain primary, supplemented in Stage 3 by driving the real
+  X11 window with `xdotool` and capturing screenshots.
 - **Mandatory smoke test** — `just run` must launch and stay alive for 3+
   seconds before any task is claimed complete (see `AGENTS.md`).
 - **CI** (`just ci-full`) runs `cargo test` for all unit tests plus fmt,
@@ -142,8 +154,8 @@ rustywx/
 | Stage | Name | Days | Ships |
 |---|---|---|---|
 | 1 | Hello Radar | 1 ✅ | Synthetic scope, pan/zoom |
-| 2 | Live Data | 1–2 | Real NEXRAD via nexrad-data + thread |
-| 3 | Custom Widgets | 1 | Dropdown, toggle, collapsing |
+| 2 | Live Data | 1–2 ✅ | Real NEXRAD via nexrad-data + thread |
+| 3 | Custom Widgets | 1 ✅ local | Searchable site/tilt dropdowns, product toggle, collapsing |
 | 4 | Borders & Alerts | 1 | State lines, NWS warnings via Ply net |
 | 5 | Tropical | 2 | NHC data, GIS overlays, panel via Ply net |
 | 6 | Observatory Look | 2–3 | Visual design, custom blur shader, animations, responsive |
@@ -160,17 +172,19 @@ rustywx/
 | Font loading on Linux | 6 | Standard file paths; test early with Inter/JetBrains Mono TTF files | Pending |
 | HiDPI/Wayland compatibility | 8 | Test on target hardware; Ply uses AccessKit for native Linux support | Pending |
 | nexrad-data + Ply integration | 2 | ✅ Spike S2 validated — background-thread + mpsc pattern works | Resolved |
-| Custom dropdown widget | 3 | ✅ Spike S3 validated — Ply-native approach works | Resolved |
+| Custom dropdown widget | 3 | ✅ Reusable implementation complete; 143 sites filtered with only 12 visible rows hit-tested | Resolved |
 | render_to_texture coordinate flip | 1 | Draw directly to screen instead of render_to_texture + .image() | ✅ Resolved |
 
 ## Ply Engine Feedback
 
-12 draft issues in `docs/ply-issues/` cover findings from the spike and
-Stage 1 work. See `docs/ply-issues/README.md` for the priority-ordered
-filing guide. Key items:
+12 draft issues in `docs/ply-issues/` cover findings from the spikes and
+early stage work. Revalidate drafts against the installed Ply version before
+filing; Stage 3 confirmed that issue #3's original “no text input” premise is
+stale in Ply 1.1.1. See `docs/ply-issues/README.md` for the filing guide.
+Key items:
 
 1. **ttf-parser unmaintained** (RUSTSEC-2026-0192) — transitive via ply-engine
 2. **Built-in blur shader** — most common UI effect, currently requires custom GLSL
-3. **Text input widget** — fundamental UI primitive, currently requires raw macroquad
+3. **Text input ergonomics/docs** — Ply 1.1.1 now has a primitive; reassess the stale draft before filing
 4. **GLSL version docs mismatch** — docs say 3.00, engine uses 1.00
-5. **Headless testing mode** — would enable CI-verifiable UI testing
+5. **Headless testing guide/harness** — `new_headless` exists; downstream interaction testing needs a documented path
