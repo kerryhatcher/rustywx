@@ -3,6 +3,42 @@
 Each stage ships a **runnable, validatable** increment. No stage depends on
 future-stage polish — every one stands on its own as a working app.
 
+## Pre-Flight: Research Findings
+
+Before starting Stage 1, these decisions were validated against the
+Ply engine v1.1 API surface, crates.io, and NOAA data source documentation.
+Full research in `research/`.
+
+### Dependencies: What stays, what goes
+
+| Crate | Decision | Reason |
+|---|---|---|
+| `ply-engine` | **Add** — `net`, `net-json`, `storage`, `built-in-shaders`, `text-styling` features | Replaces eframe/egui/ureq/rusqlite |
+| `nexrad-data` | **Keep** | Handles S3 sigv4 signing, bucket listing, NEXRAD binary decoding — thousands of lines not worth rewriting |
+| `nexrad-model` | **Keep** | Pure data types, no egui dependency |
+| `tokio` | **Keep** | Needed for `nexrad-data` background thread; Ply's `net` handles its own async internally |
+| `eframe` / `egui` | **Remove** | Replaced by `ply-engine` |
+| `ureq` | **Remove** | Replaced by Ply `net` for simple HTTP; `nexrad-data` uses `reqwest` internally |
+| `rusqlite` | **Remove** | Replaced by Ply `storage` |
+| `anyhow`, `chrono`, `image`, `serde`, `serde_json`, `zip`, `webbrowser` | **Keep** | No egui dependency, still needed |
+
+### Architecture decisions
+
+- **Radar data:** Keep `nexrad-data` on a background thread with `mpsc` channels
+  (same pattern as existing `data.rs`). Do NOT try to replace it with Ply `net`.
+- **Simple HTTP:** Use Ply's `net` module for borders GeoJSON, NWS alerts,
+  NHC JSON. It's polling-based — fire requests, check `net::request()` each
+  frame. No tokio management needed in app code.
+- **Persistence:** Use Ply's `storage` module (backed by platform-appropriate
+  paths: `~/.local/share` on Linux, OPFS on WASM). Replaces SQLite.
+- **Frosted glass:** Ply's `built-in-shaders` has GLOW but no Gaussian blur.
+  A custom GLSL ES 1.00 fragment shader will be needed for the blur effect.
+- **WASM radar data:** The NEXRAD S3 bucket does NOT serve CORS headers.
+  WASM builds will need a relay proxy for live radar data (see Stage 8).
+- **NWS alerts from WASM:** Works — `api.weather.gov` returns
+  `Access-Control-Allow-Origin: *`. Don't set a custom `User-Agent` header.
+- **NHC data from WASM:** CORS support unverified — test early in Stage 5.
+
 ## Git Workflow
 
 - **Commit often** — at minimum after each logical change (a new module, a
@@ -78,11 +114,15 @@ cardinal spokes, station marker, city markers. Drag to pan, scroll to zoom.
 **Goal:** Real radar data from AWS, site/product/tilt controls.
 
 **Scope:**
-- `net.rs` — radar poller using Ply `net` module (replaces `data.rs` thread)
-- `cache.rs` — disk cache using Ply `storage` or JSON files
+- `data.rs` — port the existing background-worker pattern: spawn a thread with
+  a tokio runtime, run `nexrad_data::aws::archive::list_files` +
+  `download_file`, decode via `nexrad_model`, send `WorkerMessage`s over
+  `mpsc::channel`. Same architecture as the egui app, adapted for macroquad.
+- `cache.rs` — disk cache using Ply `storage` (`save_bytes` / `load_bytes`
+  for serialized scan data, or JSON metadata files)
 - Wire up real NEXRAD data flow: fetch → decode → rasterize → display
-- Site selector (keyboard for now, dropdown in Stage 3)
-- Tilt selector (keyboard for now)
+- Site selector (keyboard: Left/Right arrow keys)
+- Tilt selector (keyboard: T key cycles tilts)
 - Status bar shows scan timestamp, site, elevation
 - Loading state while fetching first scan
 - Error state if fetch fails
@@ -93,9 +133,9 @@ auto-refreshes every 2 minutes, cached on disk.
 **Validation:**
 - [ ] App boots and shows "Loading…" then real radar data
 - [ ] Scan timestamp visible in status bar
-- [ ] Site switching fetches new data (arrow keys)
+- [ ] Site switching fetches new data (Left/Right arrow keys)
 - [ ] Product toggle changes display (R/V keys)
-- [ ] Tilt cycling works (T key or similar)
+- [ ] Tilt cycling works (T key)
 - [ ] Data cached — restart app, data loads instantly
 - [ ] Error shown if network unavailable (graceful)
 - [ ] Auto-refresh picks up new scans
@@ -111,7 +151,6 @@ auto-refreshes every 2 minutes, cached on disk.
 - `widgets/dropdown.rs` — searchable dropdown (site selector, tilt selector)
 - `widgets/toggle.rs` — product toggle (Reflectivity ⇄ Velocity)
 - `widgets/collapsing.rs` — collapsible section (for NHC text later)
-- `widgets/glass_panel.rs` — reusable frosted glass panel wrapper
 - Wire widgets into control bar
 - Site dropdown with search/filter for 160+ sites
 - Tilt dropdown populated from actual sweep data
@@ -136,8 +175,13 @@ buttons, working tilt dropdown.
 **Goal:** State borders and NWS warning/watch polygons on the scope.
 
 **Scope:**
-- `borders.rs` — port fetch + parse (replace `ureq` with Ply `net`)
-- `alerts.rs` — port fetch + parse (replace `ureq`, remove `egui::Color32`)
+- `borders.rs` — port fetch + parse. Replace `ureq` with Ply `net`:
+  `net::get("borders", URL, |r| r)` then poll `net::request("borders")`
+  each frame. Parse GeoJSON with `serde_json`. Cache parsed rings via
+  Ply `storage`.
+- `alerts.rs` — port fetch + parse. Replace `ureq` with Ply `net`.
+  Replace `egui::Color32` with `[u8; 4]` arrays (matching `colors.rs`).
+  Replace custom serde for Color32 with plain `[u8; 4]` serialization.
 - Draw border line segments on scope
 - Draw alert polygons on scope (clipped to radar circle)
 - Alert labels near polygon centers
@@ -152,7 +196,7 @@ on the radar scope.
 - [ ] Active warnings/watches appear as colored polygons
 - [ ] Alert labels visible (e.g. "Severe Thunderstorm Warning")
 - [ ] Alerts refresh every 2 minutes
-- [ ] Overlays cached to disk
+- [ ] Overlays cached to disk via Ply `storage`
 - [ ] No overlays when none are active (graceful empty state)
 - [ ] `git push` → CI passes → `git tag v0.2.0-stage4` → `git push --tags`
 
@@ -163,7 +207,13 @@ on the radar scope.
 **Goal:** NHC tropical cyclone data: GIS overlays on scope + detail panel.
 
 **Scope:**
-- `nhc.rs` — port fetch + parse (replace `ureq` with Ply `net`)
+- `nhc.rs` — port fetch + parse. Replace `ureq` with Ply `net` for
+  `CurrentStorms.json` and GIS MapServer requests. Use `net::get()` with
+  unique IDs per endpoint, poll each frame. Keep `image` crate for
+  decoding graphics product thumbnails into RGBA bytes for Ply textures.
+- **Verify NHC CORS headers early** — test `www.nhc.noaa.gov/CurrentStorms.json`
+  and `mapservices.weather.noaa.gov` from a browser context. If CORS is
+  missing, these will need the same relay proxy as NEXRAD for WASM (Stage 8).
 - Draw NHC GIS overlays on scope: forecast cone, track, points, watches/warnings
 - Draw wind probability contours
 - Draw arrival time contours
@@ -190,6 +240,7 @@ panel with all products.
 - [ ] Wind probability contours render as colored lines
 - [ ] "No active storms" state when season is quiet
 - [ ] Data refreshes every 5 minutes
+- [ ] NHC CORS support verified (or proxy plan documented)
 - [ ] `git push` → CI passes → `git tag v0.3.0-stage5` → `git push --tags`
 
 ---
@@ -200,13 +251,20 @@ panel with all products.
 typography, responsive layout.
 
 **Scope:**
-- Frosted glass styling on all panels (shader-based blur via `built-in-shaders`)
-- Dark gradient background with noise texture
+- `widgets/glass_panel.rs` — reusable frosted glass panel wrapper (moved here
+  from Stage 3 since it's not needed until visual theming)
+- Frosted glass styling on all panels. Ply's `built-in-shaders` has GLOW but
+  no Gaussian blur — **author a custom GLSL ES 1.00 fragment shader** for the
+  blur effect. Apply via `.shader(&BLUR_SHADER, |s| s.uniform("u_radius", 8.0))`.
+- Dark gradient background with noise texture (use `GRADIENT_RADIAL` built-in
+  or a custom shader)
 - Teal/cyan accent color on all interactive elements
-- Inter font for UI chrome, JetBrains Mono for scope/data labels
+- Inter font for UI chrome, JetBrains Mono for scope/data labels.
+  Use `FontAsset::Path("assets/fonts/Inter.ttf")` — verify font loading
+  works on all platforms. Bundle fonts in `assets/fonts/`.
 - Rich animations:
   - Panel slide-in/out with spring physics
-  - Hover glow on buttons and interactive elements
+  - Hover glow on buttons and interactive elements (use `GLOW` built-in shader)
   - Pulse animation on new data arrival
   - Staggered entrance on app launch
   - Radar sweep line (optional visual flourish)
@@ -220,7 +278,7 @@ typography, responsive layout.
 **Deliverable:** App matches the `observatory-mockup.html` look and feel.
 
 **Validation:**
-- [ ] Frosted glass effect visible on panels
+- [ ] Frosted glass effect visible on panels (custom blur shader working)
 - [ ] Control bar auto-hides after 3s, reappears on mouse move
 - [ ] Buttons glow on hover with accent color
 - [ ] NHC panel slides with spring animation
@@ -239,13 +297,21 @@ typography, responsive layout.
 **Goal:** Settings panel, keyboard shortcuts, edge cases, cleanup.
 
 **Scope:**
-- `widgets/settings.rs` — settings panel UI (glass modal)
-- Settings persistence via Ply `storage`
-- Settings: default site, poll interval, NHC refresh, overlay defaults, animation level
+- `widgets/settings.rs` — settings panel UI (glass modal using Stage 6
+  `glass_panel` widget)
+- Settings persistence via Ply `storage`:
+  `storage.save_string("settings.json", &serde_json::to_string(&settings)?)`
+  and `storage.load_string("settings.json")` on startup.
+  Replaces the old `store.rs` + SQLite approach.
+- Settings: default site, poll interval, NHC refresh, overlay defaults,
+  animation level (Full/Subtle/None)
 - Keyboard shortcuts overlay (? key)
 - Error recovery (network failures, corrupt cache)
-- Remove all egui-era dead code
-- Update documentation
+- Remove all egui-era dead code from `src/` — old `app.rs`, old `store.rs`,
+  any remaining `egui::` imports. The old `src/` files should have been
+  incrementally replaced as each module was ported; this stage is the final
+  sweep.
+- Update documentation (`README.md`, `USER_GUIDE.md`)
 
 **Deliverable:** Polished, configurable app.
 
@@ -268,16 +334,24 @@ typography, responsive layout.
 
 **Scope:**
 - WASM build via `plyx web`
+- **WASM relay proxy for radar data.** The NEXRAD S3 bucket does not serve
+  CORS headers, so browser-based WASM cannot fetch radar data directly.
+  Build a simple relay (e.g., Cloudflare Worker) that proxies S3 requests
+  and adds CORS headers. Alternatively, accept WASM as "UI + overlays only"
+  with synthetic or bundled demo data.
+- NWS alerts work directly from WASM (CORS confirmed). NHC data may need
+  the same relay if CORS verification in Stage 5 failed.
 - Android build via `plyx apk`
 - Performance profiling (frame time, texture cache hit rate)
-- Accessibility audit (labels, tab order, screen reader via `a11y` feature)
+- Accessibility audit (labels, tab order, screen reader via Ply's `a11y`
+  feature — AccessKit on desktop, JS bridge on web)
 - Final cleanup and release build
 
 **Deliverable:** App runs on desktop, web, and Android.
 
 **Validation:**
 - [ ] `plyx web` produces working WASM build
-- [ ] WASM build loads real radar data (CORS permitting)
+- [ ] WASM build loads real radar data via relay proxy (or documented limitation)
 - [ ] `plyx apk` produces working Android APK
 - [ ] Frame time <16ms (60fps) on desktop
 - [ ] Frame time <33ms (30fps) on mobile
@@ -291,15 +365,25 @@ typography, responsive layout.
 
 ## Summary
 
-| Stage | Name | Cumulative Days | Ships |
+| Stage | Name | Days | Ships |
 |---|---|---|---|
 | 1 | Hello Radar | 1 | Synthetic scope, pan/zoom |
-| 2 | Live Data | +1 | Real NEXRAD, site/product/tilt |
-| 3 | Custom Widgets | +1 | Dropdown, toggle, collapsing |
-| 4 | Borders & Alerts | +1 | State lines, NWS warnings |
-| 5 | Tropical | +1–2 | NHC data, GIS overlays, panel |
-| 6 | Observatory Look | +1–2 | Visual design, animations, responsive |
-| 7 | Settings & Polish | +1 | Settings, shortcuts, error handling |
-| 8 | Cross-Platform | +1 | WASM, Android, perf, a11y |
+| 2 | Live Data | 1–2 | Real NEXRAD via nexrad-data + thread |
+| 3 | Custom Widgets | 1 | Dropdown, toggle, collapsing |
+| 4 | Borders & Alerts | 1 | State lines, NWS warnings via Ply net |
+| 5 | Tropical | 2 | NHC data, GIS overlays, panel via Ply net |
+| 6 | Observatory Look | 2–3 | Visual design, custom blur shader, animations, responsive |
+| 7 | Settings & Polish | 1 | Settings via Ply storage, shortcuts, error handling |
+| 8 | Cross-Platform | 2 | WASM relay proxy, Android, perf, a11y |
 
-**Total: ~8–10 days** to production-ready on all platforms.
+**Total: ~11–13 days** to production-ready on all platforms.
+
+### Key risk items
+
+| Risk | Stage | Mitigation |
+|---|---|---|
+| Custom GLSL blur shader | 6 | Prototype early; Ply's GLOW shader is a fallback |
+| WASM CORS relay proxy | 8 | Scope a simple Cloudflare Worker; accept synthetic-data mode as fallback |
+| NHC CORS support unknown | 5 | Test on day 1 of Stage 5; fall back to relay proxy |
+| Font loading on WASM/Android | 6 | Test font bundling early; DejaVuSansMono from spike is known-good fallback |
+| `nexrad-data` bucket migration | 2 | Bucket moving to `unidata-nexrad-level2`; verify crate version supports new bucket |
