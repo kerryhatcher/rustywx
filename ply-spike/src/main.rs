@@ -11,6 +11,7 @@ use model::{Product, ScanData, SweepData};
 use ply_engine::prelude::*;
 use ply_engine::shaders::ShaderAsset;
 use std::sync::mpsc;
+use tokio::sync::oneshot;
 
 // ---------------------------------------------------------------------------
 // Custom blur shader for frosted glass effect (Spike S1)
@@ -111,6 +112,9 @@ struct AppState {
     // Texture stress test (Spike S4)
     stress_test: bool,
     stress_frame_count: u32,
+    // Storage test (Spike S8)
+    storage_test_result: Option<String>,
+    pending_storage_load: Option<oneshot::Receiver<Option<Vec<u8>>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +151,8 @@ async fn main() {
         dropdown_scroll: 0,
         stress_test: false,
         stress_frame_count: 0,
+        storage_test_result: None,
+        pending_storage_load: None,
     };
 
     loop {
@@ -197,6 +203,32 @@ async fn main() {
                     Some(Err(e)) => {
                         state.status_text = format!("Net {id}: error — {e:?}");
                     }
+                }
+            }
+        }
+
+        // ── Poll storage load result (Spike S8) ───────────────────
+        if let Some(rx) = &mut state.pending_storage_load {
+            match rx.try_recv() {
+                Ok(Some(data)) => {
+                    let data_str = String::from_utf8_lossy(&data).into_owned();
+                    state.storage_test_result = Some(format!("Loaded: {}", data_str));
+                    state.status_text = "Storage test: SUCCESS ✓".to_string();
+                    state.pending_storage_load = None;
+                }
+                Ok(None) => {
+                    state.storage_test_result = Some("Load failed".to_string());
+                    state.status_text = "Storage test: FAILED ✗".to_string();
+                    state.pending_storage_load = None;
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                    // Still loading
+                    state.status_text = "Storage test: loading...".to_string();
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    state.storage_test_result = Some("Channel closed".to_string());
+                    state.status_text = "Storage test: channel closed".to_string();
+                    state.pending_storage_load = None;
                 }
             }
         }
@@ -620,10 +652,51 @@ fn handle_input(state: &mut AppState, ply: &Ply<()>, _site: &geo::RadarSite) {
         state.stress_frame_count = 0;
         state.needs_reraster = true;
     }
-    // Storage test (Spike S5) — press F6 to save/load test
+    // Storage test (Spike S8) — press F6 to save/load test
     if is_key_pressed(KeyCode::F6) {
-        // Spawn a test via the game loop — just set a flag
-        state.status_text = "Storage test: see console (not implemented in game loop)".to_string();
+        // Test Pattern 1: Direct await for small data (settings)
+        // This is acceptable because settings are <2ms
+        state.status_text = "Storage test: saving...".to_string();
+
+        // Spawn a storage task to demonstrate the channel pattern
+        let (tx, rx) = oneshot::channel::<Option<Vec<u8>>>();
+        tokio::spawn(async move {
+            match Storage::new("rustywx-spike/test").await {
+                Ok(storage) => {
+                    // Save test
+                    let test_data = b"test radar scan metadata {\"site\":\"KJGX\",\"time\":\"2025-07-19T12:00:00Z\"}";
+                    match storage.save_bytes("test-scan", test_data).await {
+                        Ok(_) => {
+                            // Load test
+                            match storage.load_bytes("test-scan").await {
+                                Ok(Some(loaded)) => {
+                                    let loaded_str = String::from_utf8_lossy(&loaded).into_owned();
+                                    let _ = tx.send(Some(loaded));
+                                    log::info!("Storage test: saved and loaded: {}", loaded_str);
+                                }
+                                Ok(None) => {
+                                    log::warn!("Storage test: key not found");
+                                    let _ = tx.send(None);
+                                }
+                                Err(e) => {
+                                    log::error!("Storage test load error: {:?}", e);
+                                    let _ = tx.send(None);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("Storage test save error: {:?}", e);
+                            let _ = tx.send(None);
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::error!("Storage test init error: {:?}", e);
+                    let _ = tx.send(None);
+                }
+            }
+        });
+        state.pending_storage_load = Some(rx);
     }
     // Net concurrent test (Spike S6) — press F7 to fire 3 requests
     if is_key_pressed(KeyCode::F7) {
