@@ -5,4 +5,10 @@ edition = "2024"
 
 [dependencies]
 ply-engine = "1.1"
+nexrad-data = "=1.0.0-rc.7"
+nexrad-model = "=1.0.0-rc.2"
+tokio = { version = "1", features = ["rt", "time"] }
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"

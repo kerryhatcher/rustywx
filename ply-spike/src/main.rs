@@ -1,16 +1,18 @@
-//! Ply spike: radar scope rendering proof-of-concept.
-//! Generates synthetic radar data and renders it with overlays.
+//! Ply spike: radar scope rendering with real NEXRAD data.
+//! Falls back to synthetic data until the first real scan arrives.
 
 mod colors;
+mod data;
 mod geo;
 mod model;
 mod scope;
 
-use model::{Product, RadialData, SweepData};
+use model::{Product, ScanData, SweepData};
 use ply_engine::prelude::*;
+use std::sync::mpsc;
 
 // ---------------------------------------------------------------------------
-// Synthetic radar data
+// Synthetic radar data (fallback until real data arrives)
 // ---------------------------------------------------------------------------
 
 fn synthetic_sweep() -> SweepData {
@@ -24,7 +26,6 @@ fn synthetic_sweep() -> SweepData {
             let range_km = scope::FIRST_GATE_KM + g as f32 * scope::GATE_SPACING_KM;
             let angle = (azimuth + range_km * 2.0).to_radians();
             let base = 30.0 + 20.0 * angle.sin();
-            // Storm cells
             let cell1 = if (azimuth - 90.0).abs() < 15.0 && (range_km - 80.0).abs() < 20.0 {
                 25.0
             } else {
@@ -38,7 +39,7 @@ fn synthetic_sweep() -> SweepData {
             let value = base + cell1 + cell2;
             gates.push(if value > 5.0 { Some(value) } else { None });
         }
-        radials.push(RadialData {
+        radials.push(model::RadialData {
             azimuth_deg: azimuth,
             gates,
         });
@@ -56,7 +57,7 @@ fn synthetic_sweep() -> SweepData {
 fn window_conf() -> macroquad::conf::Conf {
     macroquad::conf::Conf {
         miniquad_conf: miniquad::conf::Conf {
-            window_title: "rustywx — Ply Radar Scope Spike".to_owned(),
+            window_title: "rustywx — Ply Radar Scope Spike (Live Data)".to_owned(),
             window_width: 900,
             window_height: 960,
             high_dpi: true,
@@ -84,6 +85,13 @@ struct AppState {
     zoom: f32,
     radar_texture: Option<Texture2D>,
     needs_reraster: bool,
+    // Real data
+    scan: Option<ScanData>,
+    tilt_index: usize,
+    status_text: String,
+    // Worker channels
+    worker_rx: mpsc::Receiver<data::WorkerMessage>,
+    site_tx: mpsc::Sender<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -95,8 +103,12 @@ async fn main() {
     static DEFAULT_FONT: FontAsset = FontAsset::Path("assets/fonts/DejaVuSansMono.ttf");
     let mut ply = Ply::<()>::new(&DEFAULT_FONT).await;
 
-    let sweep = synthetic_sweep();
-    let site = &geo::RADAR_SITES[0];
+    let initial_site = &geo::RADAR_SITES[0];
+
+    // Spawn background worker
+    let (worker_tx, worker_rx) = mpsc::channel();
+    let (site_tx, site_rx) = mpsc::channel();
+    data::spawn_worker(worker_tx, initial_site.id.to_string(), site_rx);
 
     let mut state = AppState {
         site_index: 0,
@@ -105,10 +117,55 @@ async fn main() {
         zoom: 1.0,
         radar_texture: None,
         needs_reraster: true,
+        scan: None,
+        tilt_index: 0,
+        status_text: "Starting…".to_string(),
+        worker_rx,
+        site_tx,
     };
 
     loop {
         clear_background(BLACK);
+
+        // ── Poll worker messages ──────────────────────────────────
+        while let Ok(msg) = state.worker_rx.try_recv() {
+            match msg {
+                data::WorkerMessage::NewScan(scan) => {
+                    state.scan = Some(*scan);
+                    state.tilt_index = 0;
+                    state.needs_reraster = true;
+                    if let Some(ref s) = state.scan {
+                        state.status_text = format!(
+                            "{} — {} — {} tilt(s)",
+                            s.timestamp.format("%Y-%m-%d %H:%M UTC"),
+                            geo::RADAR_SITES[state.site_index].id,
+                            s.sweeps(state.product).len(),
+                        );
+                    }
+                }
+                data::WorkerMessage::Status(s) => {
+                    state.status_text = s;
+                }
+                data::WorkerMessage::Error(e) => {
+                    state.status_text = format!("Error: {e}");
+                }
+            }
+        }
+
+        // ── Get current sweep ─────────────────────────────────────
+        let sweep: SweepData = if let Some(ref scan) = state.scan {
+            let sweeps = scan.sweeps(state.product);
+            if sweeps.is_empty() {
+                synthetic_sweep()
+            } else {
+                let idx = state.tilt_index.min(sweeps.len() - 1);
+                sweeps[idx].clone()
+            }
+        } else {
+            synthetic_sweep()
+        };
+
+        let site = &geo::RADAR_SITES[state.site_index];
 
         // Rasterize when needed
         if state.needs_reraster {
@@ -225,15 +282,16 @@ async fn main() {
                             .align(Left, CenterY)
                     })
                     .children(|ui| {
+                        let has_real = state.scan.is_some();
+                        let status_color = if has_real { 0x5F8A6A } else { 0x9E9590 };
                         ui.text(
-                            "Synthetic sweep — 0.5° — 360 radials — drag to pan, scroll to zoom",
-                            |t| t.font_size(11).color(0x9E9590),
+                            &state.status_text,
+                            |t| t.font_size(11).color(status_color),
                         );
                         // Color legend swatches
                         for &(_threshold, color) in colors::DBZ_LEGEND.iter().step_by(2) {
-                            let hex = (color[0] as u32) << 16
-                                | (color[1] as u32) << 8
-                                | (color[2] as u32);
+                            let hex =
+                                (color[0] as u32) << 16 | (color[1] as u32) << 8 | (color[2] as u32);
                             ui.element()
                                 .width(fixed!(14.0))
                                 .height(fixed!(10.0))
@@ -278,16 +336,44 @@ fn handle_input(state: &mut AppState, ply: &Ply<()>, _site: &geo::RadarSite) {
         state.product = Product::Velocity;
         state.needs_reraster = true;
     }
+    if is_key_pressed(KeyCode::T) {
+        // Cycle tilt
+        if let Some(ref scan) = state.scan {
+            let sweeps = scan.sweeps(state.product);
+            if !sweeps.is_empty() {
+                state.tilt_index = (state.tilt_index + 1) % sweeps.len();
+                state.needs_reraster = true;
+            }
+        }
+    }
     if is_key_pressed(KeyCode::Key0) {
         state.pan_km = (0.0, 0.0);
         state.zoom = 1.0;
     }
     if is_key_pressed(KeyCode::Right) {
         state.site_index = (state.site_index + 1) % geo::RADAR_SITES.len();
+        let _ = state
+            .site_tx
+            .send(geo::RADAR_SITES[state.site_index].id.to_string());
+        state.scan = None;
+        state.needs_reraster = true;
+        state.status_text = format!(
+            "Switching to {}…",
+            geo::RADAR_SITES[state.site_index].id
+        );
     }
     if is_key_pressed(KeyCode::Left) {
         state.site_index =
             (state.site_index + geo::RADAR_SITES.len() - 1) % geo::RADAR_SITES.len();
+        let _ = state
+            .site_tx
+            .send(geo::RADAR_SITES[state.site_index].id.to_string());
+        state.scan = None;
+        state.needs_reraster = true;
+        state.status_text = format!(
+            "Switching to {}…",
+            geo::RADAR_SITES[state.site_index].id
+        );
     }
 
     // Ply button presses

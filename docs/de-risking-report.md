@@ -143,14 +143,14 @@ The research items are complete. The remaining de-risking work is the six code s
 | Priority | Spike | Effort | Blocks |
 |---|---|---|---|
 | 🔴 **Highest** | S1: Custom GLSL Blur Shader | 2–3h | Stage 6 |
-| 🔴 **High** | S2: nexrad-data + Ply Integration | 1–2h | Stage 2 |
+| 🔴 **High** | S2: nexrad-data + Ply Integration | 1–2h | Stage 2 | ✅ **DONE** — see `research/spike-s2-report.md` |
 | 🟡 **High** | S3: Composite Widget (Dropdown) | 2–3h | Stage 3 |
 | 🟢 **Medium** | S4: Texture Lifecycle & Memory | 30m | Stage 1–2 |
 | 🟢 **Medium** | S5: Storage Async Ergonomics | 30m | Stage 2, 7 |
 | 🟢 **Medium** | S6: Net Concurrent Requests | 30m | Stage 4–5 |
 
 **Recommended execution order** (from the plan):
-1. Session 1: S2 (nexrad-data + Ply) — validates the core data pipeline
+1. Session 1: S2 (nexrad-data + Ply) — ✅ **COMPLETE**
 2. Session 2: S1 (blur shader) — highest technical risk
 3. Session 3: S3 (dropdown widget) — validates custom widget approach
 4. Session 4: S4, S5, S6 — infrastructure validation
