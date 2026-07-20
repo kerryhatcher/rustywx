@@ -81,7 +81,7 @@ Full research in `research/`.
 - Tags let you jump back to any stage's working state for comparison or
   rollback. The minor version bumps at Stage 5 (major feature: NHC) and
   Stage 6 (visual identity), with 1.0.0 at Stage 8 when the port is complete.
-- Branch: `spike/ply-radar-scope` (already exists). All spike research
+- Branch: `port/ply-engine` (renamed from `spike/ply-radar-scope`). All spike research
   code and the implementation live here. Merge to `main` after Stage 8
   is validated.
 
