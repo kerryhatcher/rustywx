@@ -650,6 +650,11 @@ async fn main() {
                                 .attach_root()
                         })
                         .layout(|layout| layout.direction(TopToBottom).padding(8).gap(6))
+                        .overflow(|o| {
+                            o.scroll_y().scrollbar(|s| {
+                                s.width(6.0).thumb_color(0x4a4a4a).track_color(0x1a1a1a)
+                            })
+                        })
                         .children(|ui| {
                             // Panel header
                             ui.element()
