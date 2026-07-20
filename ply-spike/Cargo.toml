@@ -1,0 +1,8 @@
+[package]
+name = "ply-spike"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ply-engine = "1.1"
+serde = { version = "1", features = ["derive"] }
