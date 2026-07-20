@@ -171,15 +171,10 @@ async fn main() {
             state.radar_texture = Some(tex);
         }
 
-        // Render scope + overlays to texture
-        let scope_tex = render_to_texture(screen_width(), screen_height(), || {
-            scope::draw_scope_to_texture(
-                state.radar_texture.as_ref(),
-                site,
-                state.pan_km,
-                state.zoom,
-            );
-        });
+        // Draw scope + overlays directly to screen (avoids render_to_texture
+        // coordinate flip — framebuffer bottom-left origin + Ply .image() display
+        // causes a 180° rotation of the content).
+        scope::draw_scope_to_texture(state.radar_texture.as_ref(), site, state.pan_km, state.zoom);
 
         // ── Ply UI ─────────────────────────────────────────────────
         let mut ui = ply.begin();
@@ -187,7 +182,6 @@ async fn main() {
         ui.element()
             .width(grow!())
             .height(grow!())
-            .background_color(0x06090e)
             .layout(|l| l.direction(TopToBottom))
             .children(|ui| {
                 // ── Top controls bar ───────────────────────────────
@@ -321,12 +315,8 @@ async fn main() {
                         });
                 }
 
-                // ── Radar scope ────────────────────────────────────
-                ui.element()
-                    .width(grow!())
-                    .height(grow!())
-                    .image(scope_tex)
-                    .empty();
+                // ── Radar scope (transparent — drawn directly to screen) ──
+                ui.element().width(grow!()).height(grow!()).empty();
 
                 // ── Bottom status bar ──────────────────────────────
                 ui.element()
