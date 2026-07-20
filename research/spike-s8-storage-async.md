@@ -147,13 +147,25 @@ if let Some(rx) = &mut state.pending_load {
 
 ## Verdict
 
-**Hybrid approach for Stage 2:**
+**✅ VALIDATED — Hybrid approach for Stage 2:**
 
 1. **Settings/metadata:** Direct `.await` in game loop (fast, <2ms)
 2. **Raw scan data:** Spawn task + `oneshot::channel` (avoids frame stalls)
 3. **Cache strategy:**
    - Save: Fire-and-forget spawn after receiving new scan
    - Load: Show "Loading..." UI while async load completes
+
+**Tested in `ply-spike`:** Press F6 to trigger storage test. The pattern:
+```rust
+let (tx, rx) = oneshot::channel::<Option<Vec<u8>>>();
+tokio::spawn(async move {
+    let storage = Storage::new("rustywx-spike/test").await?;
+    storage.save_bytes("test-scan", data).await?;
+    let loaded = storage.load_bytes("test-scan").await?;
+    tx.send(loaded)?;
+});
+// Poll rx.try_recv() in game loop
+```
 
 This pattern keeps the game loop responsive while leveraging Ply's async storage API.
 
@@ -162,8 +174,11 @@ This pattern keeps the game loop responsive while leveraging Ply's async storage
 ## Code Location
 
 - Branch: `port/ply-engine`
-- File: `research/spike-s8-storage-async.md` (this report)
-- Test code: `ply-spike/src/main.rs` (F6 key triggers storage test)
+- Commit: `2045bd8` — "spike: S8 - Storage async integration pattern"
+- Files:
+  - `research/spike-s8-storage-async.md` (this report)
+  - `ply-spike/src/main.rs` (F6 key triggers storage test with channel pattern)
+  - `ply-spike/Cargo.toml` (added `tokio::sync` feature, `log` crate)
 
 ---
 
