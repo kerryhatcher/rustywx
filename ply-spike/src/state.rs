@@ -3,10 +3,12 @@
 //! Held across frames in `main.rs`; mutated by input handling and worker
 //! messages, read by the rendering closure.
 
+use crate::cache::Cache;
 use crate::data::WorkerMessage;
 use crate::model::{Product, ScanData};
 use ply_engine::prelude::Texture2D;
 use std::sync::mpsc;
+use tokio::sync::oneshot;
 
 /// Top-level state shared between the game loop, input handler, and worker.
 pub struct AppState {
@@ -22,6 +24,12 @@ pub struct AppState {
     pub radar_texture: Option<Texture2D>,
     /// Dirty flag — re-rasterise the sweep on the next frame.
     pub needs_reraster: bool,
+
+    // ── Persistence ────────────────────────────────────────────
+    /// Ply storage cache handle (Clone — cheap to share).
+    pub cache: Cache,
+    /// Non-blocking load in flight, if any.
+    pub pending_load: Option<oneshot::Receiver<Option<ScanData>>>,
 
     // ── Real data (Stage 2 formalises caching/error states) ──────
     /// Latest decoded volume scan, if one has arrived.

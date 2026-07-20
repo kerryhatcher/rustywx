@@ -1,14 +1,13 @@
-//! rustywx — Ply radar scope (Stage 1: Synthetic Scope).
+//! rustywx — Ply radar scope (Stage 2: Live Data).
 //!
-//! Boots a window, renders a radar scope with synthetic reflectivity data,
-//! range rings, cardinal spokes, and city markers. Pan/zoom and keyboard
-//! controls work. A background worker fetches real NEXRAD data and replaces
-//! the synthetic sweep when it arrives; full live-data features (caching,
-//! error states, auto-refresh UI) are Stage 2.
+//! Boots a window, fetches real NEXRAD radar data via a background worker,
+//! caches scans to disk with Ply storage, and renders the scope with
+//! pan/zoom and keyboard controls.
 
 use ply_engine::prelude::*;
+use rustywx::cache::Cache;
 use rustywx::colors;
-use rustywx::data::WorkerMessage;
+use rustywx::data::{self, WorkerMessage};
 use rustywx::geo;
 use rustywx::model::{Product, RadialData, SweepData};
 use rustywx::scope;
@@ -84,15 +83,30 @@ fn window_conf() -> macroquad::conf::Conf {
 
 #[macroquad::main(window_conf)]
 async fn main() {
+    // Tokio runtime for cache I/O and other async background work.
+    // The game loop is driven by macroquad's async executor; this
+    // runtime lives alongside it so `tokio::spawn` works everywhere.
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let _rt_guard = rt.enter();
+
     static DEFAULT_FONT: FontAsset = FontAsset::Path("assets/fonts/DejaVuSansMono.ttf");
     let mut ply = Ply::<()>::new(&DEFAULT_FONT).await;
 
-    // Channels for the background data worker (Stage 2 will spawn it).
-    // Stage 1 runs on synthetic data only — real NEXRAD fetch would
-    // replace the synthetic sweep with an often-empty real scan.
+    // ── Channels for the background data worker ───────────────
     let (worker_tx, worker_rx) = mpsc::channel();
-    let (site_tx, _site_rx) = mpsc::channel();
-    let _ = worker_tx; // unused until Stage 2
+    let (site_tx, site_rx) = mpsc::channel();
+
+    // Spawn the background NEXRAD data worker.
+    let initial_site = geo::RADAR_SITES[0].id.to_string();
+    data::spawn_worker(worker_tx, initial_site.clone(), site_rx);
+
+    // ── Open disk cache ────────────────────────────────────────
+    let cache = Cache::new().await.expect("Ply storage initialisation");
+
+    // Kick off a non-blocking load of the last-cached scan for the
+    // initial site so we have something to show before the first
+    // network fetch completes.
+    let pending_load = Some(cache.load_scan(&initial_site));
 
     let mut state = AppState {
         site_index: 0,
@@ -103,9 +117,11 @@ async fn main() {
         needs_reraster: true,
         scan: None,
         tilt_index: 0,
-        status_text: "Synthetic data — Stage 1".to_string(),
+        status_text: "Loading cached data…".to_string(),
         worker_rx,
         site_tx,
+        cache,
+        pending_load,
         dropdown_open: false,
         dropdown_filter: String::new(),
         dropdown_scroll: 0,
@@ -114,10 +130,35 @@ async fn main() {
     loop {
         clear_background(BLACK);
 
+        // ── Poll cache load ────────────────────────────────────
+        if let Some(ref mut rx) = state.pending_load
+            && let Ok(cached) = rx.try_recv()
+        {
+            state.pending_load = None;
+            if let Some(scan) = cached {
+                state.scan = Some(scan);
+                state.needs_reraster = true;
+                if let Some(ref s) = state.scan {
+                    state.status_text = format!(
+                        "{} — {} — {} tilt(s) [cached]",
+                        s.timestamp.format("%Y-%m-%d %H:%M UTC"),
+                        geo::RADAR_SITES[state.site_index].id,
+                        s.sweeps(state.product).len(),
+                    );
+                }
+            } else {
+                state.status_text = "Waiting for data…".to_string();
+            }
+        }
+
         // ── Poll worker messages ──────────────────────────────────
         while let Ok(msg) = state.worker_rx.try_recv() {
             match msg {
                 WorkerMessage::NewScan(scan) => {
+                    // Persist to disk cache (fire-and-forget).
+                    let site_id = geo::RADAR_SITES[state.site_index].id.to_string();
+                    state.cache.save_scan(&site_id, &scan);
+
                     state.scan = Some(*scan);
                     state.tilt_index = 0;
                     state.needs_reraster = true;
@@ -131,7 +172,11 @@ async fn main() {
                     }
                 }
                 WorkerMessage::Status(s) => {
-                    state.status_text = s;
+                    // Don't overwrite a real scan status with transient
+                    // "Checking…" messages.
+                    if state.scan.is_none() {
+                        state.status_text = s;
+                    }
                 }
                 WorkerMessage::Error(e) => {
                     state.status_text = format!("Error: {e}");
@@ -392,10 +437,12 @@ fn handle_input(state: &mut AppState, ply: &Ply<()>) {
                     || s.name.to_lowercase().contains(&filter)
             }) {
                 state.site_index = idx;
-                let _ = state.site_tx.send(geo::RADAR_SITES[idx].id.to_string());
+                let site_id = geo::RADAR_SITES[idx].id.to_string();
+                let _ = state.site_tx.send(site_id.clone());
                 state.scan = None;
                 state.needs_reraster = true;
-                state.status_text = format!("Switching to {}…", geo::RADAR_SITES[idx].id);
+                state.status_text = format!("Switching to {}…", site_id);
+                state.pending_load = Some(state.cache.load_scan(&site_id));
             }
             state.dropdown_open = false;
             state.dropdown_filter.clear();
@@ -416,10 +463,12 @@ fn handle_input(state: &mut AppState, ply: &Ply<()>) {
         for (idx, _site) in geo::RADAR_SITES.iter().enumerate() {
             if ply.is_just_pressed(("site-opt", idx as u32)) {
                 state.site_index = idx;
-                let _ = state.site_tx.send(geo::RADAR_SITES[idx].id.to_string());
+                let site_id = geo::RADAR_SITES[idx].id.to_string();
+                let _ = state.site_tx.send(site_id.clone());
                 state.scan = None;
                 state.needs_reraster = true;
-                state.status_text = format!("Switching to {}…", geo::RADAR_SITES[idx].id);
+                state.status_text = format!("Switching to {}…", site_id);
+                state.pending_load = Some(state.cache.load_scan(&site_id));
                 state.dropdown_open = false;
                 state.dropdown_filter.clear();
                 break;
@@ -476,21 +525,21 @@ fn handle_input(state: &mut AppState, ply: &Ply<()>) {
     }
     if is_key_pressed(KeyCode::Right) && !state.dropdown_open {
         state.site_index = (state.site_index + 1) % geo::RADAR_SITES.len();
-        let _ = state
-            .site_tx
-            .send(geo::RADAR_SITES[state.site_index].id.to_string());
+        let site_id = geo::RADAR_SITES[state.site_index].id.to_string();
+        let _ = state.site_tx.send(site_id.clone());
         state.scan = None;
         state.needs_reraster = true;
-        state.status_text = format!("Switching to {}…", geo::RADAR_SITES[state.site_index].id);
+        state.status_text = format!("Switching to {}…", site_id);
+        state.pending_load = Some(state.cache.load_scan(&site_id));
     }
     if is_key_pressed(KeyCode::Left) && !state.dropdown_open {
         state.site_index = (state.site_index + geo::RADAR_SITES.len() - 1) % geo::RADAR_SITES.len();
-        let _ = state
-            .site_tx
-            .send(geo::RADAR_SITES[state.site_index].id.to_string());
+        let site_id = geo::RADAR_SITES[state.site_index].id.to_string();
+        let _ = state.site_tx.send(site_id.clone());
         state.scan = None;
         state.needs_reraster = true;
-        state.status_text = format!("Switching to {}…", geo::RADAR_SITES[state.site_index].id);
+        state.status_text = format!("Switching to {}…", site_id);
+        state.pending_load = Some(state.cache.load_scan(&site_id));
     }
 
     // Ply button presses

@@ -2,6 +2,7 @@
 //!
 //! Stage 1: synthetic scope with pan/zoom and keyboard controls.
 
+pub mod cache;
 pub mod colors;
 pub mod data;
 pub mod geo;
