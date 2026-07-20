@@ -937,7 +937,7 @@ async fn main() {
                         .id("nhc-modal-backdrop")
                         .width(fixed!(screen_width()))
                         .height(fixed!(screen_height()))
-                        .background_color(0x00000080)
+                        .background_color((0.0f32, 0.0f32, 0.0f32, 180.0f32))
                         .floating(|f| f.offset((0.0, 0.0)).z_index(200).attach_root())
                         .empty();
 

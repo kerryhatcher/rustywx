@@ -385,11 +385,17 @@ pub fn construct_image_products(meta: &StormMeta) -> Vec<ImageProduct> {
     let mut products = Vec::new();
 
     let storm_id = meta.id.to_uppercase();
-    // The NHC storm_graphics URL uses the basin + zero-padded storm number
-    // from the storm ID (e.g. "EP06" from "ep062026"), NOT the binNumber
-    // field (which is "EP1").  The first 4 chars of the uppercased ID give
-    // us the correct bin.
-    let bin = &storm_id[..4.min(storm_id.len())];
+    // The NHC storm_graphics URL uses a basin prefix that differs from the
+    // storm ID prefix for the Atlantic: storm ID "AL" → graphics bin "AT".
+    // EP and CP map directly.  The storm number (chars 2–3 of the ID) is
+    // already zero-padded to 2 digits.
+    let graphics_basin = match storm_id.get(..2) {
+        Some("AL") => "AT",
+        Some("EP") => "EP",
+        Some("CP") => "CP",
+        _ => &storm_id[..2],
+    };
+    let bin = format!("{graphics_basin}{}", &storm_id[2..4.min(storm_id.len())]);
     let ts = &meta.graphics_issuance;
 
     if ts.is_empty() {
@@ -436,11 +442,10 @@ pub fn construct_image_products(meta: &StormMeta) -> Vec<ImageProduct> {
         data: None,
     });
 
-    // WPC QPF uses a shortened storm ID: basin + 2-digit storm num + 2-digit year
-    // e.g. "AL022026" → "AL0226"
+    // WPC QPF uses a shortened storm ID: graphics basin + 2-digit storm num + 2-digit year
+    // e.g. "AL022026" → "AT0226" (uses AT, not AL)
     let short_id = format!(
-        "{}{}{}",
-        &storm_id[..2],
+        "{graphics_basin}{}{}",
         &storm_id[2..4],
         &storm_id[6..8.min(storm_id.len())]
     );
@@ -1443,7 +1448,7 @@ mod tests {
         };
         let products = construct_image_products(&meta);
         assert!(!products.is_empty());
-        assert!(products[0].url.contains("AL02"));
+        assert!(products[0].url.contains("AT02"));
         assert!(products[0].url.contains("192344"));
     }
 
