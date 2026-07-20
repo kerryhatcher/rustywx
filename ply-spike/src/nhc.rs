@@ -815,6 +815,10 @@ enum PendingKind {
     },
     KmzEarliestArrival,
     KmzMostLikelyArrival,
+    /// GIS MapServer layer (cone=7, track=6, points=5, watches/warnings=8).
+    GisLayer {
+        layer: u32,
+    },
 }
 
 /// One pending phase-2 request tracked by its Ply net ID.
@@ -964,6 +968,23 @@ impl NhcFetchState {
         let mut pending: Vec<PendingRequest> = Vec::new();
         let mut results = NhcBundle::default();
 
+        // Add GIS layers that haven't arrived yet to the pending list so
+        // the completion check waits for them.
+        for (layer, arrived) in [
+            (7u32, gis_cone_val.is_some()),
+            (6, gis_track_val.is_some()),
+            (5, gis_points_val.is_some()),
+            (8, gis_ww_val.is_some()),
+        ] {
+            if !arrived {
+                let net_id = format!("{NET_ID_GIS_PREFIX}{layer}");
+                pending.push(PendingRequest {
+                    net_id,
+                    kind: PendingKind::GisLayer { layer },
+                });
+            }
+        }
+
         for meta in &metas {
             // Text products.
             for (title, url) in text_product_urls(meta) {
@@ -1080,24 +1101,6 @@ impl NhcFetchState {
     ) {
         use ply_engine::prelude::net;
 
-        // Also poll GIS layers that might not have arrived in phase 1.
-        for (layer, slot) in [
-            (7u32, &mut gis_cone),
-            (6, &mut gis_track),
-            (5, &mut gis_points),
-            (8, &mut gis_ww),
-        ] {
-            if slot.is_some() {
-                continue;
-            }
-            let id = format!("{NET_ID_GIS_PREFIX}{layer}");
-            if let Some(resp) = net::request(&id).and_then(|r| r.response())
-                && let Ok(r) = resp
-            {
-                *slot = parse_gis_layer(r.text()).ok();
-            }
-        }
-
         // Poll all pending requests.
         let mut still_pending = Vec::new();
         for req in pending.drain(..) {
@@ -1170,6 +1173,16 @@ impl NhcFetchState {
                                 Err(e) => {
                                     eprintln!("nhc: most likely arrival KMZ error: {e:#}");
                                 }
+                            }
+                        }
+                        PendingKind::GisLayer { layer } => {
+                            let parsed = parse_gis_layer(r.text()).ok();
+                            match layer {
+                                7 => gis_cone = parsed,
+                                6 => gis_track = parsed,
+                                5 => gis_points = parsed,
+                                8 => gis_ww = parsed,
+                                _ => {}
                             }
                         }
                     }
