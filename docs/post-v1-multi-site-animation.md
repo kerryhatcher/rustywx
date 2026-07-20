@@ -371,3 +371,42 @@ P(t) = (t³, t², t, 1) · MH · (P1, P2, P1', P2')ᵀ
 where MH is the Hermite basis matrix. See
 `docs/research/Volumetric_Visualization_Of_NEXRAD_Level_II_Doppler_WeatherVolumetric_Visualization_Of_NEXRAD_Level_II_Doppler_Weather.md`
 §3.2.4 for the full implementation.
+
+---
+
+## 4. Mobile Bottom Control Bar
+
+**Status:** 📝 Planned (deferred from Stage 6)
+
+Stage 6 implemented responsive layout for <900px (full-screen NHC panel,
+≥44px touch targets, 48px control bar height), but the control bar remains
+at the **top** on mobile. A true mobile layout would move the controls to
+the **bottom** of the screen (thumb-reachable, like mobile map apps).
+
+### Scope
+
+- On <900px: render the control bar as the last child (bottom) instead of
+  the first (top) in the `TopToBottom` layout, or as a floating element
+  anchored to the bottom edge.
+- Combine the control bar and status bar into a single bottom-docked
+  panel on mobile (reclaim screen space).
+- Larger touch targets (≥44px) already implemented; the bottom bar would
+  use these.
+
+### Why deferred
+
+Restructuring the Ply element tree to conditionally reorder the control
+bar, scope area, and status bar doubles the layout closure code (the
+immediate-mode builder doesn't support conditional child ordering without
+duplicating the branches). The mobile use case is secondary for a Linux
+desktop v1.0 target; the current top-bar + full-screen NHC + large touch
+targets is usable on mobile and ships the responsive requirement partially.
+
+### Implementation note
+
+The cleanest approach is to make the control bar a **floating** element
+(`.floating(|f| f.anchor(...).attach_root())`) docked to the bottom on
+mobile, leaving the in-flow children order unchanged. This avoids
+duplicating the builder closures. Track `is_mobile` (already computed
+each frame in `main.rs`) and switch the floating offset/anchor based on
+screen width.

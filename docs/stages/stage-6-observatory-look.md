@@ -140,8 +140,9 @@ pub const BLUR_SHADER: ShaderAsset = ShaderAsset::Source {
   - Observatory theme constants: `ACCENT` (teal `#0dc5b8`), `ACCENT_GLOW`,
     `GLASS_BG`, `GLASS_BORDER`, `PANEL_BG`, `CARD_BG`, `TEXT_PRIMARY`,
     `TEXT_MUTED` — mirroring `docs/observatory-mockup.html`.
-  - `glass()` — styling helper applying frosted background + blur shader +
-    subtle border to any element builder.
+  - `glass()` — styling helper applying semi-transparent frosted background +
+    subtle border to any element builder (blur shader NOT applied — see Lessons
+    Learned).
 - `colors.rs` — replaced stepped `banded()` lookup with Catmull-Rom
   (Cardinal Spline, tension 0) interpolation. Passes exactly through every
   NWS anchor at its threshold; smooth in between. 10 unit tests (was 4).
@@ -149,9 +150,9 @@ pub const BLUR_SHADER: ShaderAsset = ShaderAsset::Source {
   azimuth (ξ) and range (η). New testable `bilinear_sample()` helper
   renormalises by available weight so missing gates don't bias the sample.
   6 new unit tests.
-- `state.rs` — new animation/auto-hide fields: `start_time`,
-  `last_activity`, `controls_visible`, `nhc_anim_start`, `nhc_anim_from`,
-  `pulse_time`, `sweep_angle`, `hovered_ids`.
+- `state.rs` — new animation fields: `start_time`, `nhc_anim_start`,
+  `nhc_anim_from`, `pulse_time`, `sweep_angle`, `hovered_ids`,
+  `last_click_time`, `last_click_pos` (double-click site selection).
 - `main.rs` — visual identity wiring:
   - Fonts: Inter (Regular + Bold) as default UI font, JetBrains Mono for
     scope/data labels (status bar, zoom/pan readout, dBZ legend).
@@ -161,7 +162,7 @@ pub const BLUR_SHADER: ShaderAsset = ShaderAsset::Source {
   - Frosted glass on control bar, NHC panel, status bar, and modal.
   - Teal accent on active overlay buttons; hover-glow tint via
     previous-frame pointer-over state (`hover_tint`).
-  - Control bar auto-hides after 3s of inactivity, reappears on input.
+  - Control bar always visible (auto-hide removed per user request).
   - NHC panel spring slide-in (`ease_out_elastic`) from off-screen right;
     full-screen on mobile (<900px).
   - Pulse-on-new-data: status colour blends toward accent for ~1.2s.
@@ -169,12 +170,30 @@ pub const BLUR_SHADER: ShaderAsset = ShaderAsset::Source {
   - Loading skeleton: pulsing "◌ Loading radar data…" while first scan loads.
   - Empty states: "No active storms" (NHC), alerts count badge shows `(0)`.
   - Responsive: <900px → NHC full-screen, control bar 48px, touch targets
-    ≥44px on overlay buttons.
+    ≥44px on overlay buttons. (Bottom-docked controls deferred to post-v1.)
 - `Cargo.toml` — added `built-in-shaders` and `text-styling` features to
   `ply-engine` (both zero-cost API gates, no optional dependencies).
 - `assets/fonts/` — added Inter-Regular.ttf, Inter-Bold.ttf, JetBrainsMono.ttf
   (SIL OFL, from Google Fonts gstatic).
-- `lib.rs` — added `pub mod glass_panel` via `widgets/mod.rs`.
+- `lib.rs` — added `pub mod glass_panel` via `widgets/mod.rs`, and `pub mod cities`.
+
+### Additional features (added during Stage 6, beyond original scope)
+
+- **Radar site markers + double-click selection** — all radar sites drawn as
+  teal accent markers at their geographic positions (culled to screen bounds,
+  visible while panning). Double-clicking a marker selects it as the active
+  site. New `scope::project_site()` helper shared by the draw and hit-test.
+- **City data from Natural Earth GeoJSON** (`cities.rs` + `assets/cities.geojson`)
+  — replaced the hand-curated `geo::CITIES` list (1,194 entries, no population)
+  with Natural Earth 10m populated places trimmed to North America (1,369
+  cities, 174 KB), embedded via `include_str!`. Progressive disclosure: a
+  `min_population_for_zoom()` formula gates which cities appear (biggest
+  when zoomed out, progressively smaller as you zoom in). Greedy label
+  placement with rectangle collision avoidance so names never overlap.
+- **Default site + persistence** — first launch defaults to KFFC (Atlanta);
+  the last-selected site is persisted via Ply storage and restored on next
+  launch. New `cache::save_site()` / `load_site()`.
+
 
 ## Implementation Data
 
@@ -219,6 +238,23 @@ available weight, so partial data doesn't bias the sample toward zero.
 This gracefully degrades to azimuth-only or single-gate interpolation
 when range neighbours are missing.
 
+### Blur shader on content panels degrades text
+
+The custom GLSL blur shader (`BLUR_SHADER`) was validated by Spike S1 and
+compiles/runs cleanly. However, Ply's `.shader()` API captures an element
+**and its children** to an offscreen buffer and applies the fragment shader
+to that capture. Applied to a content-bearing panel, this blurs the panel's
+own text — making it unreadable — and in practice caused the NHC sidebar to
+render empty (the offscreen capture + blur of large floating panels is
+fragile).
+
+**Decision:** the frosted-glass look is achieved via the semi-transparent
+dark background (`GLASS_BG`) composited over the gradient scope, plus the
+subtle light border — NOT via the blur shader. `BLUR_SHADER` remains defined
+and validated for potential use on non-text decorative elements, but is not
+applied to any content panel. The `glass()` helper applies only
+`background_color` + `corner_radius` + `border` (no `.shader()`).
+
 
 ## Deliverable
 
@@ -226,13 +262,15 @@ App matches the `observatory-mockup.html` look and feel.
 
 ## Validation
 
-- [x] Frosted glass effect visible on panels (custom blur shader working)
-- [x] Control bar auto-hides after 3s, reappears on mouse move
+- [x] Frosted glass panels (semi-transparent dark background + border; blur shader
+  defined but not applied to content panels — see Lessons Learned)
+- [~] ~~Control bar auto-hides~~ — auto-hide removed per user request (always visible)
 - [x] Buttons glow on hover with accent color
 - [x] NHC panel slides with spring animation
 - [x] New data triggers subtle pulse
 - [x] Inter font used in UI, JetBrains Mono on scope
-- [x] Resize to <900px — controls move to bottom, NHC goes full-screen
+- [~] Responsive <900px: NHC full-screen + ≥44px touch targets ✓;
+  ~~controls move to bottom~~ deferred to [post-v1](../post-v1-multi-site-animation.md#4-mobile-bottom-control-bar)
 - [x] Touch targets ≥44px on mobile
 - [x] Loading state shows skeleton/spinner
 - [x] Empty states show helpful messages
