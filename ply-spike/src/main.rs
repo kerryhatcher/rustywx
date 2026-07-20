@@ -942,7 +942,7 @@ async fn main() {
                         .id("nhc-modal-backdrop")
                         .width(fixed!(screen_width()))
                         .height(fixed!(screen_height()))
-                        .background_color((0.0f32, 0.0f32, 0.0f32, 180.0f32))
+                        .background_color((0.0f32, 0.0f32, 0.0f32, 220.0f32))
                         .floating(|f| f.offset((0.0, 0.0)).z_index(200).attach_root())
                         .empty();
 
@@ -1015,7 +1015,10 @@ async fn main() {
                                                 .map(|l| format!("{l}\n"))
                                                 .collect();
                                             ui.text(window.trim_end(), |t| {
-                                                t.font_size(11).color(0x9E9590)
+                                                t.font_size(11)
+                                                    .color(0x9E9590)
+                                                    .line_height(14)
+                                                    .wrap_mode(ply_engine::text::WrapMode::Newline)
                                             });
                                         }
                                         NhcModal::Image { .. } => {
