@@ -108,6 +108,9 @@ struct AppState {
     dropdown_open: bool,
     dropdown_filter: String,
     dropdown_scroll: usize,
+    // Texture stress test (Spike S4)
+    stress_test: bool,
+    stress_frame_count: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -142,6 +145,8 @@ async fn main() {
         dropdown_open: false,
         dropdown_filter: String::new(),
         dropdown_scroll: 0,
+        stress_test: false,
+        stress_frame_count: 0,
     };
 
     loop {
@@ -172,6 +177,30 @@ async fn main() {
             }
         }
 
+        // ── Poll net responses (Spike S6) ─────────────────────────
+        for id in ["spike-test-a", "spike-test-b", "spike-test-c"] {
+            if let Some(req) = ply_engine::net::request(id) {
+                match req.response() {
+                    None => { /* still loading */ }
+                    Some(Ok(resp)) => {
+                        let status = resp.status();
+                        if status == 200 {
+                            let body = resp.text();
+                            let preview: String = body.chars().take(60).collect();
+                            state.status_text = format!(
+                                "Net {id}: {status} — {preview}…"
+                            );
+                        } else {
+                            state.status_text = format!("Net {id}: HTTP {status}");
+                        }
+                    }
+                    Some(Err(e)) => {
+                        state.status_text = format!("Net {id}: error — {e:?}");
+                    }
+                }
+            }
+        }
+
         // ── Get current sweep ─────────────────────────────────────
         let sweep: SweepData = if let Some(ref scan) = state.scan {
             let sweeps = scan.sweeps(state.product);
@@ -187,8 +216,12 @@ async fn main() {
 
         let site = &geo::RADAR_SITES[state.site_index];
 
-        // Rasterize when needed
-        if state.needs_reraster {
+        // Rasterize when needed (or every frame in stress test)
+        if state.needs_reraster || state.stress_test {
+            state.needs_reraster = false;
+            if state.stress_test {
+                state.stress_frame_count += 1;
+            }
             let rgba = scope::rasterize(
                 &sweep,
                 state.product,
@@ -428,8 +461,13 @@ async fn main() {
                     .children(|ui| {
                         let has_real = state.scan.is_some();
                         let status_color = if has_real { 0x5F8A6A } else { 0x9E9590 };
+                        let stress_info = if state.stress_test {
+                            format!(" [STRESS: {} frames]", state.stress_frame_count)
+                        } else {
+                            String::new()
+                        };
                         ui.text(
-                            &state.status_text,
+                            &format!("{}{}", state.status_text, stress_info),
                             |t| t.font_size(11).color(status_color),
                         );
                         // Color legend swatches
@@ -575,6 +613,24 @@ fn handle_input(state: &mut AppState, ply: &Ply<()>, _site: &geo::RadarSite) {
     }
     if is_key_pressed(KeyCode::G) {
         state.show_glass = !state.show_glass;
+    }
+    // Texture stress test toggle (Spike S4)
+    if is_key_pressed(KeyCode::F5) {
+        state.stress_test = !state.stress_test;
+        state.stress_frame_count = 0;
+        state.needs_reraster = true;
+    }
+    // Storage test (Spike S5) — press F6 to save/load test
+    if is_key_pressed(KeyCode::F6) {
+        // Spawn a test via the game loop — just set a flag
+        state.status_text = "Storage test: see console (not implemented in game loop)".to_string();
+    }
+    // Net concurrent test (Spike S6) — press F7 to fire 3 requests
+    if is_key_pressed(KeyCode::F7) {
+        ply_engine::net::get("spike-test-a", "https://httpbin.org/delay/0", |r| r);
+        ply_engine::net::get("spike-test-b", "https://httpbin.org/delay/1", |r| r);
+        ply_engine::net::get("spike-test-c", "https://httpbin.org/status/404", |r| r);
+        state.status_text = "Net test: fired 3 concurrent requests".to_string();
     }
     if is_key_pressed(KeyCode::Key0) {
         state.pan_km = (0.0, 0.0);
