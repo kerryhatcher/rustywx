@@ -33,11 +33,17 @@ Full research in `research/`.
   paths: `~/.local/share` on Linux, OPFS on WASM). Replaces SQLite.
 - **Frosted glass:** Ply's `built-in-shaders` has GLOW but no Gaussian blur.
   A custom GLSL ES 1.00 fragment shader will be needed for the blur effect.
+  **Spike S1 (pending)** must validate this before Stage 6.
 - **WASM radar data:** The NEXRAD S3 bucket does NOT serve CORS headers.
   WASM builds will need a relay proxy for live radar data (see Stage 8).
 - **NWS alerts from WASM:** Works — `api.weather.gov` returns
   `Access-Control-Allow-Origin: *`. Don't set a custom `User-Agent` header.
-- **NHC data from WASM:** CORS support unverified — test early in Stage 5.
+- **NHC data from WASM:** Researched (R1 in `de-risking-report.md`).
+  `CurrentStorms.json` has **NO CORS** (needs relay proxy).
+  GIS MapServer (`mapservices.weather.noaa.gov`) **has CORS** — overlays
+  work directly from WASM.
+- **Natural Earth GeoJSON from WASM:** Works — GitHub serves
+  `Access-Control-Allow-Origin: *`. Borders load directly in WASM builds.
 
 ## Git Workflow
 
@@ -211,9 +217,10 @@ on the radar scope.
   `CurrentStorms.json` and GIS MapServer requests. Use `net::get()` with
   unique IDs per endpoint, poll each frame. Keep `image` crate for
   decoding graphics product thumbnails into RGBA bytes for Ply textures.
-- **Verify NHC CORS headers early** — test `www.nhc.noaa.gov/CurrentStorms.json`
-  and `mapservices.weather.noaa.gov` from a browser context. If CORS is
-  missing, these will need the same relay proxy as NEXRAD for WASM (Stage 8).
+- **NHC CORS status (known from R1):** `CurrentStorms.json` has **no CORS**
+  (requires relay proxy for WASM). GIS MapServer **has CORS** (direct fetch
+  from WASM works). Desktop builds are unaffected — native HTTP clients
+  don't require CORS headers.
 - Draw NHC GIS overlays on scope: forecast cone, track, points, watches/warnings
 - Draw wind probability contours
 - Draw arrival time contours
@@ -240,7 +247,7 @@ panel with all products.
 - [ ] Wind probability contours render as colored lines
 - [ ] "No active storms" state when season is quiet
 - [ ] Data refreshes every 5 minutes
-- [ ] NHC CORS support verified (or proxy plan documented)
+- [ ] NHC CORS status confirmed: CurrentStorms.json proxied, GIS MapServer direct
 - [ ] `git push` → CI passes → `git tag v0.3.0-stage5` → `git push --tags`
 
 ---
@@ -333,14 +340,15 @@ typography, responsive layout.
 **Goal:** Build and test on all target platforms.
 
 **Scope:**
-- WASM build via `plyx web`
-- **WASM relay proxy for radar data.** The NEXRAD S3 bucket does not serve
-  CORS headers, so browser-based WASM cannot fetch radar data directly.
-  Build a simple relay (e.g., Cloudflare Worker) that proxies S3 requests
-  and adds CORS headers. Alternatively, accept WASM as "UI + overlays only"
-  with synthetic or bundled demo data.
-- NWS alerts work directly from WASM (CORS confirmed). NHC data may need
-  the same relay if CORS verification in Stage 5 failed.
+- WASM build via `plyx web` (requires `rustup target add wasm32-unknown-unknown`;
+  see R3 in `de-risking-report.md`)
+- **WASM relay proxy (Cloudflare Worker).** Two routes are needed:
+  | Route | Proxied URL | Reason |
+  |---|---|---|
+  | `/api/nexrad/*` | NEXRAD S3 (`unidata-nexrad-level2`) | S3 has no CORS |
+  | `/api/nhc/storms` | `www.nhc.noaa.gov/CurrentStorms.json` | CloudFront has no CORS |
+  **Not needed** (direct fetch from WASM): NWS Alerts, NHC GIS overlays,
+  Natural Earth GeoJSON — all serve CORS headers.
 - Android build via `plyx apk`
 - Performance profiling (frame time, texture cache hit rate)
 - Accessibility audit (labels, tab order, screen reader via Ply's `a11y`
@@ -376,14 +384,17 @@ typography, responsive layout.
 | 7 | Settings & Polish | 1 | Settings via Ply storage, shortcuts, error handling |
 | 8 | Cross-Platform | 2 | WASM relay proxy, Android, perf, a11y |
 
-**Total: ~11–13 days** to production-ready on all platforms.
+**Total: ~11–13 days** of stage work, plus **~5–8 hours** of pre-stage spikes
+(S1–S6 in `de-risking-report.md`) to de-risk the blur shader, nexrad-data
+integration, and custom widget approach before their respective stages.
 
 ### Key risk items
 
 | Risk | Stage | Mitigation |
 |---|---|---|
-| Custom GLSL blur shader | 6 | Prototype early; Ply's GLOW shader is a fallback |
-| WASM CORS relay proxy | 8 | Scope a simple Cloudflare Worker; accept synthetic-data mode as fallback |
-| NHC CORS support unknown | 5 | Test on day 1 of Stage 5; fall back to relay proxy |
+| Custom GLSL blur shader | 6 | Spike S1 (pending) must validate before Stage 6; GLOW shader is fallback |
+| WASM CORS relay proxy | 8 | Cloudflare Worker with 2 routes (NEXRAD S3 + NHC CurrentStorms.json) |
+| NHC CORS: CurrentStorms.json blocked on WASM | 5, 8 | Confirmed no CORS (R1); relay proxy route added to Stage 8 Worker |
 | Font loading on WASM/Android | 6 | Test font bundling early; DejaVuSansMono from spike is known-good fallback |
-| `nexrad-data` bucket migration | 2 | Bucket moving to `unidata-nexrad-level2`; verify crate version supports new bucket |
+| nexrad-data + Ply integration unvalidated | 2 | Spike S2 (pending) must validate background-thread pattern before Stage 2 |
+| Custom dropdown widget unvalidated | 3 | Spike S3 (pending) must validate composite widget approach before Stage 3 |
