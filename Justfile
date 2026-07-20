@@ -59,6 +59,10 @@ typos:
 lychee:
     lychee --no-progress --exclude 'localhost|127\.0\.0\.1|crates\.io' .
 
+# ── Secrets scan (kingfisher) ───────────────────────────────────
+kingfisher:
+    kingfisher scan --exclude target --exclude .git --exclude Cargo.lock .
+
 # ── Pre-commit ──────────────────────────────────────────────────
 pre-commit:
     pre-commit run --all-files
@@ -75,7 +79,7 @@ ci: fmt lint check test audit deny gitleaks typos
     @echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # ── Full CI suite including slow checks ─────────────────────────
-ci-full: ci test-doc trivy lychee
+ci-full: ci test-doc trivy lychee kingfisher
     @echo ""
     @echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     @echo "  Full CI suite passed ✓"

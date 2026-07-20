@@ -134,3 +134,13 @@ repos:
         language: system
         pass_filenames: false
         stages: [pre-push]
+
+  # ── Kingfisher secrets scan ───────────────────────────────────
+  - repo: local
+    hooks:
+      - id: kingfisher
+        name: kingfisher scan
+        entry: kingfisher scan --exclude target --exclude .git --exclude Cargo.lock .
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

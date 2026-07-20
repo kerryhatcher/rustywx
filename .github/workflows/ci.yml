@@ -144,6 +144,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # ── Kingfisher secrets scan ─────────────────────────────────
+  kingfisher:
+    name: kingfisher scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+      - run: uv tool install kingfisher-bin
+      - run: kingfisher scan --exclude target --exclude .git --exclude Cargo.lock .
+
   # ── Build (release mode) ───────────────────────────────────
   build:
     name: cargo build --release
