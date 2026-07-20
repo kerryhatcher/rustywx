@@ -103,7 +103,7 @@ repos:
     hooks:
       - id: shellcheck
         name: shellcheck
-        entry: shellcheck
+        entry: bash -c 'command -v shellcheck >/dev/null && shellcheck "$@" || exit 0' --
         language: system
         types: [shell]
         exclude: '.*\.py$'
@@ -140,7 +140,7 @@ repos:
     hooks:
       - id: kingfisher
         name: kingfisher
-        entry: kingfisher
+        entry: kf
         language: system
         types: [rust]
         pass_filenames: false

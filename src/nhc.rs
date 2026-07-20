@@ -12,8 +12,7 @@ use std::time::Duration;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 
 /// Base URL for the NHC tropical weather summary MapServer.
-const MAPSERVER: &str =
-    "https://mapservices.weather.noaa.gov/tropical/rest/services/tropical/NHC_tropical_weather_summary/MapServer";
+const MAPSERVER: &str = "https://mapservices.weather.noaa.gov/tropical/rest/services/tropical/NHC_tropical_weather_summary/MapServer";
 
 /// NHC active storms JSON API.
 const CURRENT_STORMS_URL: &str = "https://www.nhc.noaa.gov/CurrentStorms.json";
@@ -400,15 +399,10 @@ fn fetch_text_products(meta: &StormMeta) -> Vec<TextProduct> {
     let bin_num = &meta.bin_number[2..]; // e.g. "2" from "AT2"
 
     // Construct text product URLs.
-    let advisory_url = format!(
-        "https://www.nhc.noaa.gov/text/MIATCP{basin_prefix}{bin_num}.shtml"
-    );
-    let discussion_url = format!(
-        "https://www.nhc.noaa.gov/text/MIATCD{basin_prefix}{bin_num}.shtml"
-    );
-    let forecast_url = format!(
-        "https://www.nhc.noaa.gov/text/MIATCM{basin_prefix}{bin_num}.shtml"
-    );
+    let advisory_url = format!("https://www.nhc.noaa.gov/text/MIATCP{basin_prefix}{bin_num}.shtml");
+    let discussion_url =
+        format!("https://www.nhc.noaa.gov/text/MIATCD{basin_prefix}{bin_num}.shtml");
+    let forecast_url = format!("https://www.nhc.noaa.gov/text/MIATCM{basin_prefix}{bin_num}.shtml");
 
     for (title, url) in [
         ("Public Advisory", &advisory_url),
@@ -545,10 +539,7 @@ fn download_image(product: &ImageProduct) -> Option<Vec<u8>> {
             }
         }
         Err(e) => {
-            crate::logger::log(&format!(
-                "nhc: failed to download {}: {e}",
-                product.title
-            ));
+            crate::logger::log(&format!("nhc: failed to download {}: {e}", product.title));
             None
         }
     }
@@ -566,8 +557,7 @@ fn download_kmz(url: &str) -> Result<String> {
     let bytes = response.into_body().read_to_vec()?;
 
     let cursor = std::io::Cursor::new(bytes);
-    let mut archive =
-        zip::ZipArchive::new(cursor).map_err(|e| anyhow!("opening KMZ zip: {e}"))?;
+    let mut archive = zip::ZipArchive::new(cursor).map_err(|e| anyhow!("opening KMZ zip: {e}"))?;
 
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
@@ -655,10 +645,7 @@ fn parse_arrival_kml(kml: &str) -> Vec<ArrivalTimeContour> {
             continue;
         }
 
-        contours.push(ArrivalTimeContour {
-            label: name,
-            rings,
-        });
+        contours.push(ArrivalTimeContour { label: name, rings });
     }
 
     contours
@@ -740,9 +727,7 @@ fn extract_kml_rings(placemark: &str) -> Vec<Ring> {
 
 /// Fetch a GeoJSON feature collection from an ArcGIS MapServer layer.
 fn fetch_layer(layer_id: u32) -> Result<Value> {
-    let url = format!(
-        "{MAPSERVER}/{layer_id}/query?where=1%3D1&outFields=*&f=geojson"
-    );
+    let url = format!("{MAPSERVER}/{layer_id}/query?where=1%3D1&outFields=*&f=geojson");
     crate::logger::log(&format!("nhc: fetching layer {layer_id}…"));
     let body = ureq::get(&url)
         .header("User-Agent", "rustywx/0.1")
@@ -771,11 +756,7 @@ fn parse_polygon_rings(coords: &Value) -> Option<Vec<Ring>> {
             rings.push(points);
         }
     }
-    if rings.is_empty() {
-        None
-    } else {
-        Some(rings)
-    }
+    if rings.is_empty() { None } else { Some(rings) }
 }
 
 /// Parse a GeoJSON LineString coordinates array into a ring.
@@ -945,10 +926,7 @@ fn fetch_gis_storms() -> Result<Vec<StormGis>> {
         }
     }
 
-    crate::logger::log(&format!(
-        "nhc: parsed {} GIS storm(s)",
-        storms.len()
-    ));
+    crate::logger::log(&format!("nhc: parsed {} GIS storm(s)", storms.len()));
     Ok(storms)
 }
 
@@ -961,145 +939,142 @@ pub fn spawn_nhc_worker(
     egui_ctx: egui::Context,
     refresh_rx: std::sync::mpsc::Receiver<()>,
 ) {
-    std::thread::spawn(move || loop {
-        crate::logger::log("nhc: worker cycle starting…");
+    std::thread::spawn(move || {
+        loop {
+            crate::logger::log("nhc: worker cycle starting…");
 
-        let mut bundle = NhcBundle {
-            metas: Vec::new(),
-            gis_storms: Vec::new(),
-            text_products: Vec::new(),
-            image_products: Vec::new(),
-            wind_probs_34kt: Vec::new(),
-            wind_probs_50kt: Vec::new(),
-            wind_probs_64kt: Vec::new(),
-            earliest_arrival: Vec::new(),
-            most_likely_arrival: Vec::new(),
-        };
+            let mut bundle = NhcBundle {
+                metas: Vec::new(),
+                gis_storms: Vec::new(),
+                text_products: Vec::new(),
+                image_products: Vec::new(),
+                wind_probs_34kt: Vec::new(),
+                wind_probs_50kt: Vec::new(),
+                wind_probs_64kt: Vec::new(),
+                earliest_arrival: Vec::new(),
+                most_likely_arrival: Vec::new(),
+            };
 
-        // 1. Fetch storm metadata from CurrentStorms.json.
-        match fetch_current_storms() {
-            Ok(metas) => {
-                // 2. For each storm, fetch text products.
-                for meta in &metas {
-                    let texts = fetch_text_products(meta);
-                    if !texts.is_empty() {
-                        bundle
-                            .text_products
-                            .push((meta.id.clone(), texts));
+            // 1. Fetch storm metadata from CurrentStorms.json.
+            match fetch_current_storms() {
+                Ok(metas) => {
+                    // 2. For each storm, fetch text products.
+                    for meta in &metas {
+                        let texts = fetch_text_products(meta);
+                        if !texts.is_empty() {
+                            bundle.text_products.push((meta.id.clone(), texts));
+                        }
+
+                        // 3. Construct and download image products.
+                        let mut images = construct_image_products(meta);
+                        for img in &mut images {
+                            img.data = download_image(img);
+                        }
+                        bundle.image_products.push((meta.id.clone(), images));
                     }
 
-                    // 3. Construct and download image products.
-                    let mut images = construct_image_products(meta);
-                    for img in &mut images {
-                        img.data = download_image(img);
+                    // 4. Fetch KMZ overlays (wind probs + arrival times).
+                    // Use the first storm that has KMZ URLs (wind probs are
+                    // basin-wide, so they're the same for all storms).
+                    let mut fetched_34kt = false;
+                    let mut fetched_50kt = false;
+                    let mut fetched_64kt = false;
+                    for meta in &metas {
+                        if !fetched_34kt && !meta.wind_probs_34kt_kmz.is_empty() {
+                            match download_kmz(&meta.wind_probs_34kt_kmz) {
+                                Ok(kml) => {
+                                    bundle.wind_probs_34kt = parse_wind_prob_kml(&kml, 34);
+                                    fetched_34kt = true;
+                                }
+                                Err(e) => crate::logger::log(&format!(
+                                    "nhc: wind prob 34kt KMZ error: {e:#}"
+                                )),
+                            }
+                        }
+                        if !fetched_50kt && !meta.wind_probs_50kt_kmz.is_empty() {
+                            match download_kmz(&meta.wind_probs_50kt_kmz) {
+                                Ok(kml) => {
+                                    bundle.wind_probs_50kt = parse_wind_prob_kml(&kml, 50);
+                                    fetched_50kt = true;
+                                }
+                                Err(e) => crate::logger::log(&format!(
+                                    "nhc: wind prob 50kt KMZ error: {e:#}"
+                                )),
+                            }
+                        }
+                        if !fetched_64kt && !meta.wind_probs_64kt_kmz.is_empty() {
+                            match download_kmz(&meta.wind_probs_64kt_kmz) {
+                                Ok(kml) => {
+                                    bundle.wind_probs_64kt = parse_wind_prob_kml(&kml, 64);
+                                    fetched_64kt = true;
+                                }
+                                Err(e) => crate::logger::log(&format!(
+                                    "nhc: wind prob 64kt KMZ error: {e:#}"
+                                )),
+                            }
+                        }
+                        // Arrival time KMZs are per-storm.
+                        if !meta.earliest_arrival_kmz.is_empty() {
+                            match download_kmz(&meta.earliest_arrival_kmz) {
+                                Ok(kml) => {
+                                    let contours = parse_arrival_kml(&kml);
+                                    bundle.earliest_arrival.extend(contours);
+                                }
+                                Err(e) => crate::logger::log(&format!(
+                                    "nhc: earliest arrival KMZ error: {e:#}"
+                                )),
+                            }
+                        }
+                        if !meta.most_likely_arrival_kmz.is_empty() {
+                            match download_kmz(&meta.most_likely_arrival_kmz) {
+                                Ok(kml) => {
+                                    let contours = parse_arrival_kml(&kml);
+                                    bundle.most_likely_arrival.extend(contours);
+                                }
+                                Err(e) => crate::logger::log(&format!(
+                                    "nhc: most likely arrival KMZ error: {e:#}"
+                                )),
+                            }
+                        }
                     }
-                    bundle
-                        .image_products
-                        .push((meta.id.clone(), images));
+
+                    bundle.metas = metas;
                 }
-
-                // 4. Fetch KMZ overlays (wind probs + arrival times).
-                // Use the first storm that has KMZ URLs (wind probs are
-                // basin-wide, so they're the same for all storms).
-                let mut fetched_34kt = false;
-                let mut fetched_50kt = false;
-                let mut fetched_64kt = false;
-                for meta in &metas {
-                    if !fetched_34kt && !meta.wind_probs_34kt_kmz.is_empty() {
-                        match download_kmz(&meta.wind_probs_34kt_kmz) {
-                            Ok(kml) => {
-                                bundle.wind_probs_34kt =
-                                    parse_wind_prob_kml(&kml, 34);
-                                fetched_34kt = true;
-                            }
-                            Err(e) => crate::logger::log(&format!(
-                                "nhc: wind prob 34kt KMZ error: {e:#}"
-                            )),
-                        }
-                    }
-                    if !fetched_50kt && !meta.wind_probs_50kt_kmz.is_empty() {
-                        match download_kmz(&meta.wind_probs_50kt_kmz) {
-                            Ok(kml) => {
-                                bundle.wind_probs_50kt =
-                                    parse_wind_prob_kml(&kml, 50);
-                                fetched_50kt = true;
-                            }
-                            Err(e) => crate::logger::log(&format!(
-                                "nhc: wind prob 50kt KMZ error: {e:#}"
-                            )),
-                        }
-                    }
-                    if !fetched_64kt && !meta.wind_probs_64kt_kmz.is_empty() {
-                        match download_kmz(&meta.wind_probs_64kt_kmz) {
-                            Ok(kml) => {
-                                bundle.wind_probs_64kt =
-                                    parse_wind_prob_kml(&kml, 64);
-                                fetched_64kt = true;
-                            }
-                            Err(e) => crate::logger::log(&format!(
-                                "nhc: wind prob 64kt KMZ error: {e:#}"
-                            )),
-                        }
-                    }
-                    // Arrival time KMZs are per-storm.
-                    if !meta.earliest_arrival_kmz.is_empty() {
-                        match download_kmz(&meta.earliest_arrival_kmz) {
-                            Ok(kml) => {
-                                let contours = parse_arrival_kml(&kml);
-                                bundle.earliest_arrival.extend(contours);
-                            }
-                            Err(e) => crate::logger::log(&format!(
-                                "nhc: earliest arrival KMZ error: {e:#}"
-                            )),
-                        }
-                    }
-                    if !meta.most_likely_arrival_kmz.is_empty() {
-                        match download_kmz(&meta.most_likely_arrival_kmz) {
-                            Ok(kml) => {
-                                let contours = parse_arrival_kml(&kml);
-                                bundle.most_likely_arrival.extend(contours);
-                            }
-                            Err(e) => crate::logger::log(&format!(
-                                "nhc: most likely arrival KMZ error: {e:#}"
-                            )),
-                        }
-                    }
+                Err(e) => {
+                    crate::logger::log(&format!("nhc: CurrentStorms.json error: {e:#}"));
                 }
+            }
 
-                bundle.metas = metas;
+            // 5. Fetch GIS overlays from MapServer.
+            match fetch_gis_storms() {
+                Ok(gis) => {
+                    bundle.gis_storms = gis;
+                }
+                Err(e) => {
+                    crate::logger::log(&format!("nhc: GIS fetch error: {e:#}"));
+                }
             }
-            Err(e) => {
-                crate::logger::log(&format!("nhc: CurrentStorms.json error: {e:#}"));
-            }
+
+            // Log summary.
+            crate::logger::log(&format!(
+                "nhc: cycle complete — {} metas, {} gis, {} text sets, {} image sets, {} wind prob contours, {} arrival contours",
+                bundle.metas.len(),
+                bundle.gis_storms.len(),
+                bundle.text_products.len(),
+                bundle.image_products.len(),
+                bundle.wind_probs_34kt.len()
+                    + bundle.wind_probs_50kt.len()
+                    + bundle.wind_probs_64kt.len(),
+                bundle.earliest_arrival.len() + bundle.most_likely_arrival.len(),
+            ));
+
+            // Cache and send.
+            crate::cache::save_nhc(&bundle);
+            let _ = tx.send(Nhcmessage::Loaded(bundle));
+            egui_ctx.request_repaint();
+
+            // Wait for either a refresh trigger or the poll interval.
+            let _ = refresh_rx.recv_timeout(REFRESH_INTERVAL);
         }
-
-        // 5. Fetch GIS overlays from MapServer.
-        match fetch_gis_storms() {
-            Ok(gis) => {
-                bundle.gis_storms = gis;
-            }
-            Err(e) => {
-                crate::logger::log(&format!("nhc: GIS fetch error: {e:#}"));
-            }
-        }
-
-        // Log summary.
-        crate::logger::log(&format!(
-            "nhc: cycle complete — {} metas, {} gis, {} text sets, {} image sets, {} wind prob contours, {} arrival contours",
-            bundle.metas.len(),
-            bundle.gis_storms.len(),
-            bundle.text_products.len(),
-            bundle.image_products.len(),
-            bundle.wind_probs_34kt.len() + bundle.wind_probs_50kt.len() + bundle.wind_probs_64kt.len(),
-            bundle.earliest_arrival.len() + bundle.most_likely_arrival.len(),
-        ));
-
-        // Cache and send.
-        crate::cache::save_nhc(&bundle);
-        let _ = tx.send(Nhcmessage::Loaded(bundle));
-        egui_ctx.request_repaint();
-
-        // Wait for either a refresh trigger or the poll interval.
-        let _ = refresh_rx.recv_timeout(REFRESH_INTERVAL);
     });
 }

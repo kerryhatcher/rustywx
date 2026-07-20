@@ -6,7 +6,7 @@ use crate::borders::BorderMessage;
 use crate::data::WorkerMessage;
 use crate::geo::RadarSite;
 use crate::model::{Product, ScanData};
-use crate::nhc::{Nhcmessage, NhcBundle};
+use crate::nhc::{NhcBundle, Nhcmessage};
 use crate::scope;
 use chrono::{DateTime, Utc};
 use egui::{Color32, ColorImage, TextureHandle, TextureOptions, Ui, Vec2};
@@ -176,21 +176,14 @@ impl RadarApp {
                                 && let Ok(rgba) = decode_image_to_rgba(data)
                             {
                                 let key = format!("{storm_id}:{}", img.title);
-                                let texture = ctx.load_texture(
-                                    &key,
-                                    rgba,
-                                    TextureOptions::LINEAR,
-                                );
+                                let texture = ctx.load_texture(&key, rgba, TextureOptions::LINEAR);
                                 self.nhc_image_textures.insert(key, texture);
                             }
                         }
                     }
                     // Auto-select first storm if nothing selected.
-                    if self.nhc_selected_storm.is_none()
-                        && !bundle.metas.is_empty()
-                    {
-                        self.nhc_selected_storm =
-                            Some(bundle.metas[0].id.clone());
+                    if self.nhc_selected_storm.is_none() && !bundle.metas.is_empty() {
+                        self.nhc_selected_storm = Some(bundle.metas[0].id.clone());
                         self.nhc_show_panel = true;
                     }
                     self.nhc_bundle = Some(bundle);
@@ -254,9 +247,11 @@ impl RadarApp {
                 .nhc_selected_storm
                 .as_deref()
                 .and_then(|id| {
-                    bundle.metas.iter().find(|m| m.id == id).map(|m| {
-                        format!("{} — {} ({})", m.name, m.classification, m.id)
-                    })
+                    bundle
+                        .metas
+                        .iter()
+                        .find(|m| m.id == id)
+                        .map(|m| format!("{} — {} ({})", m.name, m.classification, m.id))
                 })
                 .unwrap_or_else(|| "Select…".to_string());
 
@@ -319,10 +314,7 @@ impl RadarApp {
                             (meta.movement_dir_deg, meta.movement_speed_kt)
                         {
                             ui.label(bold("Movement:"));
-                            ui.label(format!(
-                                "{}° at {} kt",
-                                dir, spd
-                            ));
+                            ui.label(format!("{}° at {} kt", dir, spd));
                             ui.end_row();
                         }
 
@@ -339,10 +331,7 @@ impl RadarApp {
 
                 // ── Graphics page link ──────────────────────────────
                 if !meta.graphics_url.is_empty() {
-                    if ui
-                        .button("🌐 Open NHC Graphics Page")
-                        .clicked()
-                    {
+                    if ui.button("🌐 Open NHC Graphics Page").clicked() {
                         let _ = webbrowser::open(&meta.graphics_url);
                     }
                     ui.add_space(8.0);
@@ -350,17 +339,11 @@ impl RadarApp {
 
                 // ── Image products ──────────────────────────────────
                 ui.separator();
-                ui.label(
-                    egui::RichText::new("Graphics Products")
-                        .strong()
-                        .size(14.0),
-                );
+                ui.label(egui::RichText::new("Graphics Products").strong().size(14.0));
                 ui.add_space(4.0);
 
-                if let Some((_, images)) = bundle
-                    .image_products
-                    .iter()
-                    .find(|(id, _)| id == storm_id)
+                if let Some((_, images)) =
+                    bundle.image_products.iter().find(|(id, _)| id == storm_id)
                 {
                     for img in images {
                         let key = format!("{storm_id}:{}", img.title);
@@ -369,12 +352,9 @@ impl RadarApp {
                         ui.horizontal(|ui| {
                             if has_texture {
                                 // Show thumbnail.
-                                if let Some(tex) =
-                                    self.nhc_image_textures.get(&key)
-                                {
+                                if let Some(tex) = self.nhc_image_textures.get(&key) {
                                     let available = ui.available_width().min(200.0);
-                                    let aspect = tex.size_vec2().x
-                                        / tex.size_vec2().y.max(1.0);
+                                    let aspect = tex.size_vec2().x / tex.size_vec2().y.max(1.0);
                                     let height = available / aspect;
                                     ui.image(egui::ImageSource::Texture(
                                         egui::load::SizedTexture::new(
@@ -388,16 +368,13 @@ impl RadarApp {
                                 ui.add_sized(
                                     [200.0, 120.0],
                                     egui::Label::new(
-                                        egui::RichText::new("Loading…")
-                                            .color(Color32::GRAY),
+                                        egui::RichText::new("Loading…").color(Color32::GRAY),
                                     ),
                                 );
                             }
 
                             ui.vertical(|ui| {
-                                ui.label(
-                                    egui::RichText::new(&img.title).strong(),
-                                );
+                                ui.label(egui::RichText::new(&img.title).strong());
                                 if ui.button("🔗 Open").clicked() {
                                     let _ = webbrowser::open(&img.url);
                                 }
@@ -411,11 +388,7 @@ impl RadarApp {
 
                 // ── Overlay toggles ────────────────────────────────
                 ui.separator();
-                ui.label(
-                    egui::RichText::new("Map Overlays")
-                        .strong()
-                        .size(14.0),
-                );
+                ui.label(egui::RichText::new("Map Overlays").strong().size(14.0));
                 ui.add_space(4.0);
 
                 let has_34kt = bundle.wind_probs_34kt.is_empty();
@@ -425,28 +398,16 @@ impl RadarApp {
                 let has_most_likely = bundle.most_likely_arrival.is_empty();
 
                 ui.add_enabled_ui(!has_34kt, |ui| {
-                    ui.checkbox(
-                        &mut self.show_wind_probs_34kt,
-                        "34kt Wind Probability",
-                    );
+                    ui.checkbox(&mut self.show_wind_probs_34kt, "34kt Wind Probability");
                 });
                 ui.add_enabled_ui(!has_50kt, |ui| {
-                    ui.checkbox(
-                        &mut self.show_wind_probs_50kt,
-                        "50kt Wind Probability",
-                    );
+                    ui.checkbox(&mut self.show_wind_probs_50kt, "50kt Wind Probability");
                 });
                 ui.add_enabled_ui(!has_64kt, |ui| {
-                    ui.checkbox(
-                        &mut self.show_wind_probs_64kt,
-                        "64kt Wind Probability",
-                    );
+                    ui.checkbox(&mut self.show_wind_probs_64kt, "64kt Wind Probability");
                 });
                 ui.add_enabled_ui(!has_earliest, |ui| {
-                    ui.checkbox(
-                        &mut self.show_earliest_arrival,
-                        "Earliest Arrival (34kt)",
-                    );
+                    ui.checkbox(&mut self.show_earliest_arrival, "Earliest Arrival (34kt)");
                 });
                 ui.add_enabled_ui(!has_most_likely, |ui| {
                     ui.checkbox(
@@ -459,17 +420,10 @@ impl RadarApp {
 
                 // ── Text products ───────────────────────────────────
                 ui.separator();
-                ui.label(
-                    egui::RichText::new("Text Products")
-                        .strong()
-                        .size(14.0),
-                );
+                ui.label(egui::RichText::new("Text Products").strong().size(14.0));
                 ui.add_space(4.0);
 
-                if let Some((_, texts)) = bundle
-                    .text_products
-                    .iter()
-                    .find(|(id, _)| id == storm_id)
+                if let Some((_, texts)) = bundle.text_products.iter().find(|(id, _)| id == storm_id)
                 {
                     for product in texts {
                         ui.collapsing(&product.title, |ui| {
@@ -519,10 +473,7 @@ impl eframe::App for RadarApp {
         egui::Panel::top("controls").show(ui, |ui| {
             ui.horizontal(|ui| {
                 let site = self.current_site();
-                ui.label(
-                    egui::RichText::new(format!("{} — {}", site.id, site.name))
-                        .strong(),
-                );
+                ui.label(egui::RichText::new(format!("{} — {}", site.id, site.name)).strong());
                 ui.separator();
 
                 egui::ComboBox::from_label("Site")
@@ -542,10 +493,7 @@ impl eframe::App for RadarApp {
                                 self.texture = None;
                                 self.texture_key = None;
                                 self.tilt_index = 0;
-                                self.status = format!(
-                                    "Switching to {} — fetching data…",
-                                    s.id
-                                );
+                                self.status = format!("Switching to {} — fetching data…", s.id);
                                 self.save_current_state();
                                 let _ = self.nhc_refresh_tx.send(());
                             }
@@ -581,10 +529,7 @@ impl eframe::App for RadarApp {
                         let current = self.clamped_tilt();
                         let mut tilt_changed = false;
                         egui::ComboBox::from_label("Tilt")
-                            .selected_text(format!(
-                                "{:.1}°",
-                                sweeps[current].elevation_deg
-                            ))
+                            .selected_text(format!("{:.1}°", sweeps[current].elevation_deg))
                             .show_ui(ui, |ui| {
                                 for (i, sweep) in sweeps.iter().enumerate() {
                                     if ui
@@ -683,16 +628,16 @@ impl RadarApp {
             egui::Sense::drag(),
         );
         if response.dragged() {
-            let side = ui.available_rect_before_wrap().width()
+            let side = ui
+                .available_rect_before_wrap()
+                .width()
                 .min(ui.available_rect_before_wrap().height());
-            let km_per_px =
-                (2.0 * scope::MAX_RANGE_KM) / (side * self.zoom);
+            let km_per_px = (2.0 * scope::MAX_RANGE_KM) / (side * self.zoom);
             self.pan_km += response.drag_delta() * km_per_px;
         }
         let scroll = ui.ctx().input(|i| i.smooth_scroll_delta.y);
         if scroll != 0.0 {
-            self.zoom =
-                (self.zoom * (1.0 + scroll * 0.001)).clamp(0.05, 4.0);
+            self.zoom = (self.zoom * (1.0 + scroll * 0.001)).clamp(0.05, 4.0);
         }
 
         // Collect GIS storms for scope drawing.

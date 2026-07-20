@@ -21,18 +21,78 @@ pub struct RadarSite {
 
 /// All NEXRAD sites whose 230 km coverage radius overlaps Georgia.
 pub const RADAR_SITES: &[RadarSite] = &[
-    RadarSite { id: "KJGX", name: "Robins AFB, GA",       lat: 32.6755, lon: -83.3511 },
-    RadarSite { id: "KFFC", name: "Peachtree City, GA",    lat: 33.3636, lon: -84.5658 },
-    RadarSite { id: "KVAX", name: "Moody AFB, GA",         lat: 30.8904, lon: -83.0019 },
-    RadarSite { id: "KBMX", name: "Birmingham, AL",        lat: 33.1722, lon: -86.7700 },
-    RadarSite { id: "KHTX", name: "Huntsville, AL",        lat: 34.9304, lon: -86.0836 },
-    RadarSite { id: "KMRX", name: "Morristown, TN",        lat: 36.1686, lon: -83.4019 },
-    RadarSite { id: "KGSP", name: "Greer, SC",             lat: 34.8833, lon: -82.2200 },
-    RadarSite { id: "KCAE", name: "Columbia, SC",          lat: 33.9486, lon: -81.1183 },
-    RadarSite { id: "KCLX", name: "Charleston, SC",        lat: 32.6550, lon: -81.0422 },
-    RadarSite { id: "KJAX", name: "Jacksonville, FL",      lat: 30.4847, lon: -81.7019 },
-    RadarSite { id: "KTLH", name: "Tallahassee, FL",       lat: 30.3976, lon: -84.3289 },
-    RadarSite { id: "KEOX", name: "Fort Rucker, AL",       lat: 31.4606, lon: -85.4594 },
+    RadarSite {
+        id: "KJGX",
+        name: "Robins AFB, GA",
+        lat: 32.6755,
+        lon: -83.3511,
+    },
+    RadarSite {
+        id: "KFFC",
+        name: "Peachtree City, GA",
+        lat: 33.3636,
+        lon: -84.5658,
+    },
+    RadarSite {
+        id: "KVAX",
+        name: "Moody AFB, GA",
+        lat: 30.8904,
+        lon: -83.0019,
+    },
+    RadarSite {
+        id: "KBMX",
+        name: "Birmingham, AL",
+        lat: 33.1722,
+        lon: -86.7700,
+    },
+    RadarSite {
+        id: "KHTX",
+        name: "Huntsville, AL",
+        lat: 34.9304,
+        lon: -86.0836,
+    },
+    RadarSite {
+        id: "KMRX",
+        name: "Morristown, TN",
+        lat: 36.1686,
+        lon: -83.4019,
+    },
+    RadarSite {
+        id: "KGSP",
+        name: "Greer, SC",
+        lat: 34.8833,
+        lon: -82.2200,
+    },
+    RadarSite {
+        id: "KCAE",
+        name: "Columbia, SC",
+        lat: 33.9486,
+        lon: -81.1183,
+    },
+    RadarSite {
+        id: "KCLX",
+        name: "Charleston, SC",
+        lat: 32.6550,
+        lon: -81.0422,
+    },
+    RadarSite {
+        id: "KJAX",
+        name: "Jacksonville, FL",
+        lat: 30.4847,
+        lon: -81.7019,
+    },
+    RadarSite {
+        id: "KTLH",
+        name: "Tallahassee, FL",
+        lat: 30.3976,
+        lon: -84.3289,
+    },
+    RadarSite {
+        id: "KEOX",
+        name: "Fort Rucker, AL",
+        lat: 31.4606,
+        lon: -85.4594,
+    },
 ];
 
 /// Cities drawn on the scope: (name, lat, lon).

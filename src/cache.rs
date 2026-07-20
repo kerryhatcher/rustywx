@@ -12,8 +12,7 @@ fn cache_dir_under(home: &Path) -> PathBuf {
 }
 
 fn cache_dir() -> Result<PathBuf> {
-    let home =
-        std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME not set"))?;
+    let home = std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME not set"))?;
     Ok(cache_dir_under(Path::new(&home)))
 }
 

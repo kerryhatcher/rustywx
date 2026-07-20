@@ -59,7 +59,7 @@ lychee:
 
 # ── Code review ─────────────────────────────────────────────────
 kingfisher:
-    kingfisher
+    kf
 
 # ── Pre-commit ──────────────────────────────────────────────────
 pre-commit:
@@ -105,5 +105,5 @@ setup-tools:
     @echo "  gitleaks:  https://github.com/gitleaks/gitleaks#installing"
     @echo "           or use Docker: source ~/.zshrc.d/gitleaks.zsh"
     @echo "  trivy:     https://trivy.dev/latest/getting-started/installation/"
-    @echo "  kingfisher: cargo install kingfisher"
+    @echo "  kingfisher: cargo install kingfisher (binary: kf)"
     @echo "  shellcheck: apt install shellcheck"

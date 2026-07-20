@@ -10,7 +10,10 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([900.0, 960.0])
-            .with_title(format!("rustywx — {} radarscope ({})", default_site.id, default_site.name)),
+            .with_title(format!(
+                "rustywx — {} radarscope ({})",
+                default_site.id, default_site.name
+            )),
         ..Default::default()
     };
 

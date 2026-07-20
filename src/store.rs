@@ -30,8 +30,7 @@ fn open_db_at(path: &Path) -> Result<Connection> {
         std::fs::create_dir_all(parent)
             .map_err(|e| anyhow!("creating {}: {e}", parent.display()))?;
     }
-    let conn = Connection::open(path)
-        .map_err(|e| anyhow!("opening {}: {e}", path.display()))?;
+    let conn = Connection::open(path).map_err(|e| anyhow!("opening {}: {e}", path.display()))?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS app_state (
             key   TEXT PRIMARY KEY,
@@ -115,7 +114,8 @@ mod tests {
     use super::*;
 
     fn temp_db_path(label: &str) -> (PathBuf, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("rustywx-test-{}-{}", std::process::id(), label));
+        let dir =
+            std::env::temp_dir().join(format!("rustywx-test-{}-{}", std::process::id(), label));
         let _ = std::fs::create_dir_all(&dir);
         let db = dir.join("state.db");
         (db, dir)
