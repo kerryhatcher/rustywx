@@ -104,6 +104,10 @@ struct AppState {
     site_tx: mpsc::Sender<String>,
     // Glass panel toggle (Spike S1)
     show_glass: bool,
+    // Dropdown state (Spike S3)
+    dropdown_open: bool,
+    dropdown_filter: String,
+    dropdown_scroll: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +139,9 @@ async fn main() {
         worker_rx,
         site_tx,
         show_glass: true,
+        dropdown_open: false,
+        dropdown_filter: String::new(),
+        dropdown_scroll: 0,
     };
 
     loop {
@@ -228,8 +235,23 @@ async fn main() {
                             .align(Left, CenterY)
                     })
                     .children(|ui| {
+                        // ── Site selector dropdown button ────────
+                        ui.element()
+                            .id("site-dropdown-btn")
+                            .width(fit!())
+                            .height(fixed!(24.0))
+                            .background_color(0x1E1B1B)
+                            .corner_radius(4.0)
+                            .layout(|l| l.padding((0, 8, 0, 8)).align(CenterX, CenterY))
+                            .children(|ui| {
+                                ui.text(
+                                    &format!("{} ▾", site.id),
+                                    |t| t.font_size(13).color(0xE8E0DC),
+                                );
+                            });
+
                         ui.text(
-                            &format!("{} — {}", site.id, site.name),
+                            &format!(" — {}", site.name),
                             |t| t.font_size(14).color(0xE8E0DC),
                         );
 
@@ -275,6 +297,75 @@ async fn main() {
                             |t| t.font_size(11).color(0x9E9590),
                         );
                     });
+
+                // ── Site dropdown panel (Spike S3) ────────────
+                if state.dropdown_open {
+                    // Build filtered site list
+                    let filter = state.dropdown_filter.to_lowercase();
+                    let filtered: Vec<(usize, &geo::RadarSite)> = geo::RADAR_SITES
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, s)| {
+                            filter.is_empty()
+                                || s.id.to_lowercase().contains(&filter)
+                                || s.name.to_lowercase().contains(&filter)
+                        })
+                        .collect();
+
+                    let visible_count = 12usize;
+                    let max_scroll = filtered.len().saturating_sub(visible_count);
+                    let scroll = state.dropdown_scroll.min(max_scroll);
+                    let visible = &filtered[scroll..(scroll + visible_count).min(filtered.len())];
+
+                    ui.element()
+                        .id("site-dropdown-panel")
+                        .width(fixed!(220.0))
+                        .height(fixed!(300.0))
+                        .background_color(0xDD1A1D)
+                        .corner_radius(6.0)
+                        .floating(|f| {
+                            f.offset((8.0, 44.0)).z_index(100)
+                        })
+                        .layout(|l| {
+                            l.direction(TopToBottom)
+                                .padding(4)
+                                .gap(2)
+                        })
+                        .children(|ui| {
+                            // Filter hint
+                            ui.text(
+                                &format!("Filter: {}_", state.dropdown_filter),
+                                |t| t.font_size(11).color(0x9E9590),
+                            );
+                            // Site list
+                            for &(idx, site) in visible {
+                                let bg = if idx == state.site_index {
+                                    0x3A3533
+                                } else {
+                                    0x00000000
+                                };
+                                ui.element()
+                                    .id(("site-opt", idx as u32))
+                                    .width(grow!())
+                                    .height(fixed!(22.0))
+                                    .background_color(bg)
+                                    .corner_radius(3.0)
+                                    .layout(|l| l.padding((0, 6, 0, 6)).align(Left, CenterY))
+                                    .children(|ui| {
+                                        ui.text(
+                                            &format!("{} — {}", site.id, site.name),
+                                            |t| t.font_size(12).color(0xE8E0DC),
+                                        );
+                                    });
+                            }
+                            if filtered.len() > visible_count {
+                                ui.text(
+                                    &format!("{} more…", filtered.len() - visible_count),
+                                    |t| t.font_size(10).color(0x5F8A6A),
+                                );
+                            }
+                        });
+                }
 
                 // ── Radar scope ────────────────────────────────────
                 ui.element()
@@ -365,6 +456,89 @@ async fn main() {
 }
 
 fn handle_input(state: &mut AppState, ply: &Ply<()>, _site: &geo::RadarSite) {
+    // ── Dropdown keyboard handling ────────────────────────────
+    if state.dropdown_open {
+        // Character input for filter
+        if let Some(c) = get_char_pressed() {
+            if c.is_ascii_alphanumeric() || c == ' ' || c == '-' {
+                state.dropdown_filter.push(c);
+                state.dropdown_scroll = 0;
+            }
+        }
+        // Backspace
+        if is_key_pressed(KeyCode::Backspace) && !state.dropdown_filter.is_empty() {
+            state.dropdown_filter.pop();
+            state.dropdown_scroll = 0;
+        }
+        // Escape to close
+        if is_key_pressed(KeyCode::Escape) {
+            state.dropdown_open = false;
+            state.dropdown_filter.clear();
+        }
+        // Arrow keys for scroll
+        if is_key_pressed(KeyCode::Down) {
+            state.dropdown_scroll += 1;
+        }
+        if is_key_pressed(KeyCode::Up) {
+            state.dropdown_scroll = state.dropdown_scroll.saturating_sub(1);
+        }
+        // Enter to select first visible
+        if is_key_pressed(KeyCode::Enter) {
+            let filter = state.dropdown_filter.to_lowercase();
+            if let Some((idx, _)) = geo::RADAR_SITES.iter().enumerate().find(|(_, s)| {
+                filter.is_empty()
+                    || s.id.to_lowercase().contains(&filter)
+                    || s.name.to_lowercase().contains(&filter)
+            }) {
+                state.site_index = idx;
+                let _ = state.site_tx.send(geo::RADAR_SITES[idx].id.to_string());
+                state.scan = None;
+                state.needs_reraster = true;
+                state.status_text = format!("Switching to {}…", geo::RADAR_SITES[idx].id);
+            }
+            state.dropdown_open = false;
+            state.dropdown_filter.clear();
+        }
+        // Don't process other input while dropdown is open
+        // (except mouse for clicking options)
+    }
+
+    // ── Dropdown button click ─────────────────────────────────
+    if ply.is_just_pressed("site-dropdown-btn") {
+        state.dropdown_open = !state.dropdown_open;
+        if state.dropdown_open {
+            state.dropdown_filter.clear();
+            state.dropdown_scroll = 0;
+        }
+    }
+
+    // ── Dropdown option clicks ────────────────────────────────
+    if state.dropdown_open {
+        for (idx, _site) in geo::RADAR_SITES.iter().enumerate() {
+            if ply.is_just_pressed(("site-opt", idx as u32)) {
+                state.site_index = idx;
+                let _ = state.site_tx.send(geo::RADAR_SITES[idx].id.to_string());
+                state.scan = None;
+                state.needs_reraster = true;
+                state.status_text = format!("Switching to {}…", geo::RADAR_SITES[idx].id);
+                state.dropdown_open = false;
+                state.dropdown_filter.clear();
+                break;
+            }
+        }
+    }
+
+    // ── Outside click closes dropdown ─────────────────────────
+    if state.dropdown_open && is_mouse_button_pressed(MouseButton::Left) {
+        // Check if click is on the dropdown panel or button
+        let panel_pressed = ply.is_just_pressed("site-dropdown-panel");
+        let btn_pressed = ply.is_just_pressed("site-dropdown-btn");
+        if !panel_pressed && !btn_pressed {
+            state.dropdown_open = false;
+            state.dropdown_filter.clear();
+        }
+    }
+
     // Mouse drag for panning
     if is_mouse_button_down(MouseButton::Left) {
         let delta = mouse_delta_position();

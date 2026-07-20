@@ -420,4 +420,4 @@ integration, and custom widget approach before their respective stages.
 | NHC CORS: CurrentStorms.json blocked on WASM | 5, 8 | Confirmed no CORS (R1); relay proxy route added to Stage 8 Worker |
 | Font loading on WASM/Android | 6 | Test font bundling early; DejaVuSansMono from spike is known-good fallback |
 | nexrad-data + Ply integration unvalidated | 2 | ✅ Spike S2 validated — background-thread + mpsc pattern works |
-| Custom dropdown widget unvalidated | 3 | Spike S3 (pending) must validate composite widget approach before Stage 3 |
+| Custom dropdown widget unvalidated | 3 | ✅ Spike S3 validated — Ply-native approach works; no raw macroquad needed |
