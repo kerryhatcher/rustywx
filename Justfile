@@ -91,7 +91,7 @@ build:
 
 # ── Run (release build) ─────────────────────────────────────────
 run:
-    cargo run --release
+    cd ply-spike && cargo run --release
 
 # ── Clean ───────────────────────────────────────────────────────
 clean:
