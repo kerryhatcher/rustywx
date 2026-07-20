@@ -468,23 +468,60 @@ pub fn draw_scope_to_texture(
     draw_circle(center_x, center_y, 4.0, WHITE);
     draw_text(site.id, center_x + 8.0, center_y + 8.0, 18.0, WHITE);
 
-    // City markers — check all cities within range (~1000 haversine
-    // calculations per frame is trivial).
-    let city_color = MacroquadColor::from_rgba(0xdd, 0xdd, 0xaa, 255);
-    for &(name, lat, lon) in geo::CITIES.iter() {
-        let (range_km, bearing_deg) = geo::range_bearing(site.lat, site.lon, lat, lon);
-        if range_km as f32 > MAX_RANGE_KM {
+    // ── City markers (progressive disclosure + collision avoidance) ──
+    //
+    // Cities are filtered by a population threshold derived from zoom
+    // (biggest cities when zoomed out, progressively smaller as you zoom
+    // in), then greedily placed sorted by population descending with a
+    // label safe-zone so names never overlap.
+    use crate::cities;
+    let city_color = MacroquadColor::from_rgba(0xdd, 0xdd, 0xaa, 230);
+    let min_pop = cities::min_population_for_zoom(zoom);
+    let sw = screen_width();
+    let sh = screen_height();
+    let label_margin = 6.0; // safe-zone padding around each label
+    let cull_margin = 80.0;
+
+    // Collect on-screen candidates meeting the population threshold.
+    let mut candidates: Vec<(&str, f32, f32, i64)> = Vec::new();
+    for city in cities::cities().iter() {
+        if city.pop < min_pop {
             continue;
         }
-        let (dx, dy) = geo::polar_to_offset(bearing_deg as f32, range_km as f32, px_per_km);
-        draw_circle_lines(center_x + dx, center_y + dy, 4.0, 2.0, city_color);
-        draw_text(
-            name,
-            center_x + dx + 8.0,
-            center_y + dy - 8.0,
-            16.0,
-            city_color,
-        );
+        let km = geo::point_to_km_offset(site.lat, site.lon, (city.lat, city.lon));
+        let cx = center_x + km.x * px_per_km;
+        let cy = center_y + km.y * px_per_km;
+        if cx < -cull_margin || cx > sw + cull_margin || cy < -cull_margin || cy > sh + cull_margin
+        {
+            continue;
+        }
+        candidates.push((city.name.as_str(), cx, cy, city.pop));
+    }
+    // Biggest cities first — they get priority for label placement.
+    candidates.sort_unstable_by_key(|&(_, _, _, pop)| std::cmp::Reverse(pop));
+
+    // Greedy label placement with rectangle overlap avoidance.
+    // Each entry: (min_x, min_y, max_x, max_y) of the placed label safe-zone.
+    let mut placed: Vec<(f32, f32, f32, f32)> = Vec::new();
+    let label_font = 15.0;
+    for (name, cx, cy, _pop) in &candidates {
+        let text_dims = measure_text(name, None, label_font as u16, 1.0);
+        let lx = cx + 8.0;
+        let ly = cy - 8.0 - text_dims.height;
+        let bw = text_dims.width + label_margin * 2.0;
+        let bh = text_dims.height + label_margin * 2.0;
+        let box_x = lx - label_margin;
+        let box_y = ly - label_margin;
+        // Check collision against already-placed labels.
+        let collides = placed.iter().any(|&(px0, py0, px1, py1)| {
+            box_x < px1 && box_x + bw > px0 && box_y < py1 && box_y + bh > py0
+        });
+        if collides {
+            continue; // skip — would overlap an existing label
+        }
+        draw_circle(*cx, *cy, 3.0, city_color);
+        draw_text(name, lx, ly, label_font, city_color);
+        placed.push((box_x, box_y, box_x + bw, box_y + bh));
     }
 
     // ── Radar site markers (double-click to select) ─────────────

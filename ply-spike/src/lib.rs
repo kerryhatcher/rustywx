@@ -5,6 +5,7 @@
 pub mod alerts;
 pub mod borders;
 pub mod cache;
+pub mod cities;
 pub mod colors;
 pub mod data;
 pub mod geo;
