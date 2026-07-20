@@ -6,6 +6,7 @@ extend-exclude = [
     "Cargo.lock",
     "target/",
     "ply-spike/target/",
+    "docs/research/",
     "*.png",
     "*.jpg",
     "*.gif",
@@ -13,6 +14,9 @@ extend-exclude = [
     "*.woff2",
     "*.wasm",
     "*.bin",
+    "*.pdf",
+    "md_partB.md",
+    "fmh-11B-2005.md",
 ]
 
 [default]
