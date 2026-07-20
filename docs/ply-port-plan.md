@@ -24,8 +24,8 @@ Full research in `research/`.
 | `chrono` | **Keep** | Timestamp parsing, display formatting |
 | `image` | **Keep** | Decode NHC graphics product thumbnails into RGBA for Ply textures (Stage 5) |
 | `serde`, `serde_json` | **Keep** | JSON parsing for borders, alerts, NHC data |
-| `zip` | **Keep** | Decompress NEXRAD volume files from S3 (used by nexrad-data internally) |
-| `webbrowser` | **Keep** | Open external links from NHC panel (Stage 5); confirmed WASM-compatible (R4) |
+| `zip` | **Keep** | Decompress NEXRAD volume files from S3; used directly by the app, not just a transitive dependency |
+| `webbrowser` | **Keep** (bump to 1.2) | Open external links from NHC panel (Stage 5); confirmed WASM-compatible (R4); v1.2 has improved WASM support |
 
 ### Architecture decisions
 
@@ -38,7 +38,7 @@ Full research in `research/`.
   paths: `~/.local/share` on Linux, OPFS on WASM). Replaces SQLite.
 - **Frosted glass:** Ply's `built-in-shaders` has GLOW but no Gaussian blur.
   A custom GLSL ES 1.00 fragment shader will be needed for the blur effect.
-  **Spike S1 (pending)** must validate this before Stage 6.
+  ✅ Spike S1 validated this — 5×5 Gaussian blur compiles and runs.
 - **WASM radar data:** The NEXRAD S3 bucket does NOT serve CORS headers.
   WASM builds will need a relay proxy for live radar data (see Stage 8).
 - **NWS alerts from WASM:** Works — `api.weather.gov` returns
@@ -81,8 +81,9 @@ Full research in `research/`.
 - Tags let you jump back to any stage's working state for comparison or
   rollback. The minor version bumps at Stage 5 (major feature: NHC) and
   Stage 6 (visual identity), with 1.0.0 at Stage 8 when the port is complete.
-- Branch: `spike/ply-radar-scope` (already exists). Merge to `main` after
-  Stage 8 is validated.
+- Branch: `spike/ply-radar-scope` (already exists). All spike research
+  code and the implementation live here. Merge to `main` after Stage 8
+  is validated.
 
 ---
 
@@ -91,12 +92,20 @@ Full research in `research/`.
 **Goal:** App boots, renders a radar scope with overlays, pan/zoom works.
 
 **Scope:**
-- Ply project scaffold (`plyx init` equivalent)
+- Manual Ply project scaffold (matching `ply-spike/` structure; no `plyx init`)
 - `model.rs`, `colors.rs`, `geo.rs` ported (no egui deps — copy + minor tweaks)
-- `scope.rs` rasterization + overlay drawing (from spike, synthetic data)
-- `state.rs` — `AppState` struct
+- `scope.rs` rasterization + overlay drawing — **full rewrite** of the drawing
+  layer from egui (`Painter`, `Pos2`, `ColorImage`, `Stroke`) to Ply's
+  rendering API. The spike has a working Ply version; use that as the
+  starting point. Note: egui uses top-left origin with Y-down; Ply uses a
+  different coordinate system — all drawing math must be translated.
+- `state.rs` — `AppState` struct (replaces the egui `app.rs` app struct;
+  `app.rs` is removed in this stage)
+- `lib.rs` — updated module tree for Ply (old egui modules removed)
+- `logger.rs` — ported to Ply's logging; if Ply provides equivalent
+  functionality, this module is dropped
 - `main.rs` — window config, game loop, Ply UI shell
-- Basic controls: keyboard R/V for product, arrow keys for site, scroll/drag for pan/zoom
+- Basic controls: keyboard R/V for product, arrow keys for site, scroll/drag for pan/zoom, 0 to reset view
 - Top bar: site name, product indicator, zoom/pan readout
 - Bottom strip: status text
 
@@ -131,8 +140,12 @@ cardinal spokes, station marker, city markers. Drag to pan, scroll to zoom.
   `mpsc::channel`. Same architecture as the egui app, adapted for Ply.
   The `tokio` runtime lives on its own thread — Ply's game loop just polls
   `rx.try_recv()` each frame. Validated by Spike S2 before this stage.
-- `cache.rs` — disk cache using Ply `storage` (`save_bytes` / `load_bytes`
-  for serialized scan data, or JSON metadata files)
+- `cache.rs` — **full rewrite** from SQLite/rusqlite to Ply `storage`
+  (`save_bytes` / `load_bytes` for serialized scan data, or JSON metadata
+  files). The old `cache.rs` uses SQL schema and prepared statements;
+  Ply `storage` is a key-value API — the data model changes accordingly.
+  The old `store.rs` (rusqlite-based settings) is also removed in this
+  stage since Ply `storage` handles all persistence.
 - Wire up real NEXRAD data flow: fetch → decode → rasterize → display
 - Site selector (keyboard: Left/Right arrow keys)
 - Tilt selector (keyboard: T key cycles tilts)
@@ -317,15 +330,16 @@ typography, responsive layout.
 - Settings persistence via Ply `storage`:
   `storage.save_string("settings.json", &serde_json::to_string(&settings)?)`
   and `storage.load_string("settings.json")` on startup.
-  Replaces the old `store.rs` + SQLite approach.
+  (Ply `storage` replaced SQLite/rusqlite in Stage 2; this stage adds the
+  settings schema and UI on top of it.)
 - Settings: default site, poll interval, NHC refresh, overlay defaults,
   animation level (Full/Subtle/None)
 - Keyboard shortcuts overlay (? key)
 - Error recovery (network failures, corrupt cache)
-- Remove all egui-era dead code from `src/` — old `app.rs`, old `store.rs`,
-  any remaining `egui::` imports. The old `src/` files should have been
-  incrementally replaced as each module was ported; this stage is the final
-  sweep.
+- Remove all egui-era dead code from `src/` — old `app.rs`, any remaining
+  `egui::` imports. The old `src/` files should have been incrementally
+  replaced as each module was ported; this stage is the final sweep.
+  (`store.rs` was already removed in Stage 2 when Ply `storage` took over.)
 - Update documentation (`README.md`, `USER_GUIDE.md`)
 
 **Deliverable:** Polished, configurable app.
@@ -379,12 +393,43 @@ typography, responsive layout.
 
 ---
 
+## Directory Strategy
+
+**`ply-spike/` is the new `src/`.** The existing `ply-spike/` directory
+(created during spike research) contains the Ply project scaffold. During
+Stage 1, `ply-spike/src/` becomes the canonical source tree. The old
+`src/` directory (egui-based) is **not** modified — it remains as a
+reference until the final cleanup sweep in Stage 7, at which point it is
+removed entirely.
+
+Each stage adds or rewrites files under `ply-spike/src/`. The old `src/`
+is never the build target after Stage 1 begins.
+
+## Testing Strategy
+
+- **Unit tests** for pure-data modules (`model.rs`, `colors.rs`, `geo.rs`)
+  survive the port with minimal changes. These modules have no egui
+  dependencies and their existing tests carry over.
+- **No new integration tests** are planned for the Ply UI layer — Ply
+  does not have a headless testing mode. Manual validation checklists
+  (in each stage) are the primary verification method.
+- **CI** (`just ci-full`) continues to run `cargo test` for all unit tests.
+  The `justfile` (lowercase — `Justfile` with capital J is a symlink on
+  Linux, a separate file on macOS; `justfile` is canonical) needs no
+  changes for Ply-based builds since `cargo build` / `cargo test` work
+  the same way.
+
 ## Toolchain Requirements
 
 - **Rust edition 2024** — requires Rust ≥1.85 (stabilized February 2025).
   CI runners and dev machines must be on a recent stable toolchain.
 - **`nexrad-data` is an RC** (1.0.0-rc.7). Pin with `=` in Cargo.toml to
-  avoid surprise breakage. Monitor upstream for the 1.0 stable release.
+  avoid surprise breakage. The main `Cargo.toml` currently uses `^` (caret)
+  — update to `=1.0.0-rc.7` before Stage 2. Monitor upstream for the 1.0
+  stable release.
+- **`image` crate** (Stage 5): Current features `["png", "jpeg"]` are
+  sufficient for NHC graphics products. No additional features needed —
+  `image` decodes to RGBA bytes natively with these codecs.
 - **Fonts** (Stage 6): Inter and JetBrains Mono are both SIL OFL licensed.
   Download from Google Fonts or GitHub releases, place in `assets/fonts/`,
   and commit to the repo. On Android, Ply's asset bundling handles paths;

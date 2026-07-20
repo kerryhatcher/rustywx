@@ -1,7 +1,7 @@
 # De-Risking Report — rustywx → Ply Port
 
 **Date:** 2025-07-19
-**Status:** Research items R1–R4 complete; spikes S1–S6 pending
+**Status:** Research items R1–R4 complete; spikes S1–S6 complete ✅
 
 This report answers the binary research questions from `de-risking-plan.md`.
 Each item maps to a specific risk in `ply-port-plan.md`.
