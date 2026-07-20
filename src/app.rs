@@ -172,16 +172,16 @@ impl RadarApp {
                     // Decode newly arrived images into textures.
                     for (storm_id, images) in &bundle.image_products {
                         for img in images {
-                            if let Some(ref data) = img.data {
-                                if let Ok(rgba) = decode_image_to_rgba(data) {
-                                    let key = format!("{storm_id}:{}", img.title);
-                                    let texture = ctx.load_texture(
-                                        &key,
-                                        rgba,
-                                        TextureOptions::LINEAR,
-                                    );
-                                    self.nhc_image_textures.insert(key, texture);
-                                }
+                            if let Some(ref data) = img.data
+                                && let Ok(rgba) = decode_image_to_rgba(data)
+                            {
+                                let key = format!("{storm_id}:{}", img.title);
+                                let texture = ctx.load_texture(
+                                    &key,
+                                    rgba,
+                                    TextureOptions::LINEAR,
+                                );
+                                self.nhc_image_textures.insert(key, texture);
                             }
                         }
                     }
@@ -611,7 +611,7 @@ impl eframe::App for RadarApp {
                 let has_storms = self
                     .nhc_bundle
                     .as_ref()
-                    .map_or(false, |b| !b.metas.is_empty());
+                    .is_some_and(|b| !b.metas.is_empty());
                 let toggle_label = if self.nhc_show_panel {
                     "🟢 NHC"
                 } else if has_storms {

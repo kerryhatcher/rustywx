@@ -1,0 +1,29 @@
+# Trivy configuration for rustywx
+# Docs: https://trivy.dev/latest/docs/references/configuration/
+
+scan:
+  scanners:
+    - vuln
+    - secret
+    - misconfig
+
+severity:
+  - HIGH
+  - CRITICAL
+
+exit-code: 1
+
+# Filesystem scanning
+filesystem:
+  ignore-unfixed: true
+
+# Skip binary and generated files
+skip-files:
+  - "target/**"
+  - "ply-spike/target/**"
+  - "*.wasm"
+  - "*.bin"
+  - "*.png"
+  - "*.jpg"
+  - "*.ttf"
+  - "Cargo.lock"

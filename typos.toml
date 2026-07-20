@@ -1,0 +1,74 @@
+# typos configuration for rustywx
+# Docs: https://github.com/crate-ci/typos
+
+[files]
+extend-exclude = [
+    "Cargo.lock",
+    "target/",
+    "ply-spike/target/",
+    "*.png",
+    "*.jpg",
+    "*.gif",
+    "*.ttf",
+    "*.woff2",
+    "*.wasm",
+    "*.bin",
+]
+
+[default]
+extend-ignore-re = [
+    # Hex color codes
+    "\\b[0-9a-fA-F]{6}\\b",
+    # Crate names
+    "nexrad",
+    "ureq",
+    "rusqlite",
+    "egui",
+    "eframe",
+    "webbrowser",
+    "chrono",
+    "serde",
+    "anyhow",
+    "tokio",
+]
+
+[default.extend-words]
+# US state abbreviations
+ND = "ND"
+SD = "SD"
+# Domain/tech terms
+NEXRAD = "NEXRAD"
+nexrad = "nexrad"
+dBZ = "dBZ"
+dbz = "dbz"
+# Crate names
+ureq = "ureq"
+egui = "egui"
+eframe = "eframe"
+rusqlite = "rusqlite"
+# GIS terms
+GeoJSON = "GeoJSON"
+geojson = "geojson"
+KML = "KML"
+kml = "kml"
+KMZ = "KMZ"
+kmz = "kmz"
+# Weather terms
+NHC = "NHC"
+NWS = "NWS"
+# Radar terms
+KJGX = "KJGX"
+KFFC = "KFFC"
+radarscope = "radarscope"
+# Ply terms
+plyx = "plyx"
+Ply = "Ply"
+# Other
+rustywx = "rustywx"
+Observatory = "Observatory"
+# City names (false positives)
+Buda = "Buda"
+Vermillion = "Vermillion"
+Flippin = "Flippin"
+# Alternate spelling
+unparseable = "unparseable"

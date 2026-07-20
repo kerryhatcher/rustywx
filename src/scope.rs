@@ -18,7 +18,7 @@ pub const RASTER_SIZE_PX: usize = 1024;
 const BORDER_COLOR: Color32 = Color32::from_rgb(0x8a, 0x6d, 0x4a);
 
 /// Toggle options for optional NHC overlay layers.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct OverlayOptions {
     pub show_wind_probs_34kt: bool,
     pub show_wind_probs_50kt: bool,
@@ -35,23 +35,6 @@ pub struct OverlayOptions {
     pub earliest_arrival: Vec<crate::nhc::ArrivalTimeContour>,
     /// Reference to most likely arrival contours.
     pub most_likely_arrival: Vec<crate::nhc::ArrivalTimeContour>,
-}
-
-impl Default for OverlayOptions {
-    fn default() -> Self {
-        Self {
-            show_wind_probs_34kt: false,
-            show_wind_probs_50kt: false,
-            show_wind_probs_64kt: false,
-            show_earliest_arrival: false,
-            show_most_likely_arrival: false,
-            wind_probs_34kt: Vec::new(),
-            wind_probs_50kt: Vec::new(),
-            wind_probs_64kt: Vec::new(),
-            earliest_arrival: Vec::new(),
-            most_likely_arrival: Vec::new(),
-        }
-    }
 }
 
 /// Pre-process a sweep: apply range-adaptive thresholding (reflectivity
