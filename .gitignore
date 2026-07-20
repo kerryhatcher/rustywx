@@ -3,3 +3,6 @@
 /logs
 /.pi-subagents
 ply-spike/target/
+
+# PDFs — research docs managed separately, not tracked in git
+*.pdf
