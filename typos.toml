@@ -72,3 +72,5 @@ Vermillion = "Vermillion"
 Flippin = "Flippin"
 # Alternate spelling
 unparseable = "unparseable"
+# Journal abbreviation (IEEE Trans. Ultrason. Ferroelectr. Freq. Control)
+Ultrason = "Ultrason"
