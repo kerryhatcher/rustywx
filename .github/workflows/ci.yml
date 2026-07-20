@@ -82,6 +82,11 @@ jobs:
       - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998  # v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          # RUSTSEC-2026-0192/0194/0195: quick-xml 0.39 DoS advisories, transitive
+          # via egui/eframe -> winit -> wayland-scanner. No upstream fix
+          # (wayland-scanner 0.31 pins quick-xml 0.39); egui is removed in
+          # Stage 1 of the Ply port, then these ignores are deleted.
+          ignore: RUSTSEC-2026-0192,RUSTSEC-2026-0194,RUSTSEC-2026-0195
 
   # ── License + advisory + source check (cargo-deny) ─────────
   deny:
