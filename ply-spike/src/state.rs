@@ -6,6 +6,7 @@
 use crate::cache::Cache;
 use crate::data::WorkerMessage;
 use crate::model::{Product, ScanData};
+use crate::widgets::dropdown::DropdownState;
 use ply_engine::prelude::Texture2D;
 use std::sync::mpsc;
 use tokio::sync::oneshot;
@@ -45,11 +46,9 @@ pub struct AppState {
     /// Sends site-change requests to the background data thread.
     pub site_tx: mpsc::Sender<String>,
 
-    // ── Site dropdown (Spike S3 — Stage 3 will extract to widget) ─
-    /// Whether the site selector dropdown panel is open.
-    pub dropdown_open: bool,
-    /// Type-to-filter text for the site dropdown.
-    pub dropdown_filter: String,
-    /// Scroll position within the filtered site list.
-    pub dropdown_scroll: usize,
+    // ── Custom controls ──────────────────────────────────────────
+    /// Searchable radar-site selector state.
+    pub site_dropdown: DropdownState,
+    /// Available-elevation selector state.
+    pub tilt_dropdown: DropdownState,
 }

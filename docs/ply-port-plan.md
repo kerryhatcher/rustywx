@@ -11,7 +11,7 @@ future-stage polish — every one stands on its own as a working app.
 |---|---|---|---|---|
 | 1 | Hello Radar | ✅ Complete | `v0.2.0-stage1` | [stage-1-hello-radar.md](stages/stage-1-hello-radar.md) |
 | 2 | Live Data | ✅ Complete | `v0.2.0-stage2` | [stage-2-live-data.md](stages/stage-2-live-data.md) |
-| 3 | Custom Widgets | 🔲 Not started | `v0.2.0-stage3` | [stage-3-custom-widgets.md](stages/stage-3-custom-widgets.md) |
+| 3 | Custom Widgets | 🟡 Implemented and locally validated — CI/tag pending | `v0.2.0-stage3` | [stage-3-custom-widgets.md](stages/stage-3-custom-widgets.md) |
 | 4 | Borders & Alerts | 🔲 Not started | `v0.2.0-stage4` | [stage-4-borders-alerts.md](stages/stage-4-borders-alerts.md) |
 | 5 | Tropical | 🔲 Not started | `v0.3.0-stage5` | [stage-5-tropical.md](stages/stage-5-tropical.md) |
 | 6 | Observatory Look | 🔲 Not started | `v0.4.0-stage6` | [stage-6-observatory-look.md](stages/stage-6-observatory-look.md) |
@@ -105,7 +105,8 @@ rustywx/
 │       ├── colors.rs   # NWS color tables (4 unit tests)
 │       ├── geo.rs      # geographic utilities, RADAR_SITES, CITIES (3 unit tests)
 │       ├── scope.rs    # rasterization + overlay drawing
-│       └── data.rs     # background NEXRAD worker (enabled in Stage 2)
+│       ├── data.rs     # background NEXRAD worker (enabled in Stage 2)
+│       └── widgets/    # reusable dropdown, toggle, and collapsing controls
 └── docs/
     ├── ply-port-plan.md        # this file (overview/index)
     ├── stages/                 # per-stage detail files

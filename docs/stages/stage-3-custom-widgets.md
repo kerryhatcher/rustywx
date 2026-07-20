@@ -1,6 +1,6 @@
 # Stage 3: "Custom Widgets" — Dropdown, Toggle, Collapsing
 
-**Status:** 🔲 Not started
+**Status:** 🟡 Implemented and locally validated — CI/tag pending
 **Tag:** `v0.2.0-stage3`
 
 ## Goal
@@ -23,8 +23,9 @@ Proper clickable controls replacing keyboard-only hacks.
   S3). It uses Ply-native elements: button + floating panel + keyboard
   input + outside-click detection. Stage 3 extracts this into a reusable
   `widgets/dropdown.rs` module.
-- The dropdown's filter input uses raw macroquad `get_char_pressed()` —
-  there's no Ply-native text input widget (see Ply issue #3).
+- The dropdown's filter input continues to use raw macroquad
+  `get_char_pressed()`. Ply 1.1.1 now has a text-input primitive, but its
+  callback model is not needed for this compact type-to-filter control.
 - The dropdown iterates all 160+ sites for click detection each frame.
   Stage 3 should optimize to only check visible options.
 - The product toggle buttons (Reflectivity/Velocity) are already in the
@@ -38,11 +39,13 @@ working tilt dropdown.
 
 ## Validation
 
-- [ ] Site dropdown opens on click, shows list of sites
-- [ ] Typing in site dropdown filters the list
-- [ ] Selecting a site triggers data fetch
-- [ ] Product toggle shows active state with accent color
-- [ ] Tilt dropdown shows available elevations from current scan
-- [ ] All controls work with mouse and keyboard
-- [ ] Dropdowns close on outside click
+- [x] Site dropdown opens on click and shows visible site rows
+- [x] Typing in site dropdown filters the list
+- [x] Selecting a site triggers data fetch
+- [x] Product toggle shows active state with accent color
+- [x] Tilt dropdown shows elevations from the current scan
+- [x] Mouse and keyboard paths are implemented (click/type/arrows/Enter/Escape)
+- [x] Dropdowns close on outside click
+- [x] `cargo fmt`, clippy, check, and tests pass
+- [x] Mandatory `just run` smoke test stays alive for 3 seconds
 - [ ] `git push` → CI passes → `git tag v0.2.0-stage3` → `git push --tags`

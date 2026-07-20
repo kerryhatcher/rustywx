@@ -12,7 +12,42 @@ use rustywx::geo;
 use rustywx::model::{Product, RadialData, SweepData};
 use rustywx::scope;
 use rustywx::state::AppState;
+use rustywx::widgets::dropdown::{DropdownConfig, DropdownOption, DropdownState};
+use rustywx::widgets::toggle::{self, ToggleOption};
 use std::sync::mpsc;
+
+const SITE_DROPDOWN: DropdownConfig = DropdownConfig {
+    button_id: "site-dropdown-btn",
+    panel_id: "site-dropdown-panel",
+    option_id: "site-dropdown-option",
+    width: 260.0,
+    visible_rows: 12,
+    panel_offset: (8.0, 44.0),
+    searchable: true,
+};
+
+const TILT_DROPDOWN: DropdownConfig = DropdownConfig {
+    button_id: "tilt-dropdown-btn",
+    panel_id: "tilt-dropdown-panel",
+    option_id: "tilt-dropdown-option",
+    width: 100.0,
+    visible_rows: 10,
+    panel_offset: (610.0, 44.0),
+    searchable: false,
+};
+
+const PRODUCT_OPTIONS: [ToggleOption<Product>; 2] = [
+    ToggleOption {
+        id: "btn-refl",
+        label: "Reflectivity",
+        value: Product::Reflectivity,
+    },
+    ToggleOption {
+        id: "btn-vel",
+        label: "Velocity",
+        value: Product::Velocity,
+    },
+];
 
 // ---------------------------------------------------------------------------
 // Synthetic radar data (fallback until real data arrives)
@@ -122,9 +157,8 @@ async fn main() {
         site_tx,
         cache,
         pending_load,
-        dropdown_open: false,
-        dropdown_filter: String::new(),
-        dropdown_scroll: 0,
+        site_dropdown: DropdownState::default(),
+        tilt_dropdown: DropdownState::default(),
     };
 
     loop {
@@ -138,14 +172,7 @@ async fn main() {
             if let Some(scan) = cached {
                 state.scan = Some(scan);
                 state.needs_reraster = true;
-                if let Some(ref s) = state.scan {
-                    state.status_text = format!(
-                        "{} — {} — {} tilt(s) [cached]",
-                        s.timestamp.format("%Y-%m-%d %H:%M UTC"),
-                        geo::RADAR_SITES[state.site_index].id,
-                        s.sweeps(state.product).len(),
-                    );
-                }
+                update_scan_status(&mut state, " [cached]");
             } else {
                 state.status_text = "Waiting for data…".to_string();
             }
@@ -168,14 +195,7 @@ async fn main() {
                     state.scan = Some(*scan);
                     state.tilt_index = 0;
                     state.needs_reraster = true;
-                    if let Some(ref s) = state.scan {
-                        state.status_text = format!(
-                            "{} — {} — {} tilt(s)",
-                            s.timestamp.format("%Y-%m-%d %H:%M UTC"),
-                            current_site,
-                            s.sweeps(state.product).len(),
-                        );
-                    }
+                    update_scan_status(&mut state, "");
                 }
                 WorkerMessage::Status(s) => {
                     // Don't overwrite a real scan status with transient
@@ -227,144 +247,89 @@ async fn main() {
         // causes a 180° rotation of the content).
         scope::draw_scope_to_texture(state.radar_texture.as_ref(), site, state.pan_km, state.zoom);
 
+        // Build frame-local control options before borrowing Ply for layout.
+        let site_options: Vec<DropdownOption> = geo::RADAR_SITES
+            .iter()
+            .enumerate()
+            .map(|(index, site)| DropdownOption {
+                source_index: index,
+                label: format!("{} — {}", site.id, site.name),
+                search_text: format!("{} {}", site.id, site.name),
+            })
+            .collect();
+        let tilt_options: Vec<DropdownOption> = state
+            .scan
+            .as_ref()
+            .map(|scan| {
+                scan.sweeps(state.product)
+                    .iter()
+                    .enumerate()
+                    .map(|(index, sweep)| DropdownOption {
+                        source_index: index,
+                        label: format!("{:.1}°", sweep.elevation_deg),
+                        search_text: format!("{:.1}", sweep.elevation_deg),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let tilt_label = tilt_options
+            .get(state.tilt_index)
+            .map(|option| option.label.as_str())
+            .unwrap_or("No tilts");
+
         // ── Ply UI ─────────────────────────────────────────────────
         let mut ui = ply.begin();
 
         ui.element()
             .width(grow!())
             .height(grow!())
-            .layout(|l| l.direction(TopToBottom))
+            .layout(|layout| layout.direction(TopToBottom))
             .children(|ui| {
                 // ── Top controls bar ───────────────────────────────
                 ui.element()
                     .width(grow!())
                     .height(fixed!(36.0))
                     .background_color(0x12161e)
-                    .layout(|l| {
-                        l.direction(LeftToRight)
+                    .layout(|layout| {
+                        layout
+                            .direction(LeftToRight)
                             .padding(8)
                             .gap(12)
                             .align(Left, CenterY)
                     })
                     .children(|ui| {
-                        // Site selector dropdown button
-                        ui.element()
-                            .id("site-dropdown-btn")
-                            .width(fit!())
-                            .height(fixed!(24.0))
-                            .background_color(0x1E1B1B)
-                            .corner_radius(4.0)
-                            .layout(|l| l.padding((0, 8, 0, 8)).align(CenterX, CenterY))
-                            .children(|ui| {
-                                ui.text(&format!("{} ▾", site.id), |t| {
-                                    t.font_size(13).color(0xE8E0DC)
-                                });
-                            });
+                        state.site_dropdown.draw(
+                            ui,
+                            SITE_DROPDOWN,
+                            site.id,
+                            &site_options,
+                            Some(state.site_index),
+                        );
 
-                        ui.text(&format!(" — {}", site.name), |t| {
-                            t.font_size(14).color(0xE8E0DC)
+                        ui.text(&format!("— {}", site.name), |text| {
+                            text.font_size(14).color(0xE8E0DC)
                         });
 
-                        // Reflectivity button
-                        let refl_bg = if state.product == Product::Reflectivity {
-                            0x3A3533
-                        } else {
-                            0x1E1B1B
-                        };
-                        ui.element()
-                            .id("btn-refl")
-                            .width(fit!())
-                            .height(fixed!(24.0))
-                            .background_color(refl_bg)
-                            .corner_radius(4.0)
-                            .layout(|l| l.padding((0, 8, 0, 8)).align(CenterX, CenterY))
-                            .children(|ui| {
-                                ui.text("Reflectivity", |t| t.font_size(12).color(0xE8E0DC));
-                            });
+                        toggle::draw(ui, state.product, &PRODUCT_OPTIONS);
 
-                        // Velocity button
-                        let vel_bg = if state.product == Product::Velocity {
-                            0x3A3533
-                        } else {
-                            0x1E1B1B
-                        };
-                        ui.element()
-                            .id("btn-vel")
-                            .width(fit!())
-                            .height(fixed!(24.0))
-                            .background_color(vel_bg)
-                            .corner_radius(4.0)
-                            .layout(|l| l.padding((0, 8, 0, 8)).align(CenterX, CenterY))
-                            .children(|ui| {
-                                ui.text("Velocity", |t| t.font_size(12).color(0xE8E0DC));
-                            });
+                        state.tilt_dropdown.draw(
+                            ui,
+                            TILT_DROPDOWN,
+                            tilt_label,
+                            &tilt_options,
+                            tilt_options
+                                .get(state.tilt_index)
+                                .map(|option| option.source_index),
+                        );
 
                         ui.text(
                             &format!(
                                 "Zoom: {:.1}x  Pan: ({:.0}, {:.0}) km",
                                 state.zoom, state.pan_km.0, state.pan_km.1
                             ),
-                            |t| t.font_size(11).color(0x9E9590),
+                            |text| text.font_size(11).color(0x9E9590),
                         );
                     });
-
-                // ── Site dropdown panel ─────────────────────────────
-                if state.dropdown_open {
-                    let filter = state.dropdown_filter.to_lowercase();
-                    let filtered: Vec<(usize, &geo::RadarSite)> = geo::RADAR_SITES
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, s)| {
-                            filter.is_empty()
-                                || s.id.to_lowercase().contains(&filter)
-                                || s.name.to_lowercase().contains(&filter)
-                        })
-                        .collect();
-
-                    let visible_count = 12usize;
-                    let max_scroll = filtered.len().saturating_sub(visible_count);
-                    let scroll = state.dropdown_scroll.min(max_scroll);
-                    let visible = &filtered[scroll..(scroll + visible_count).min(filtered.len())];
-
-                    ui.element()
-                        .id("site-dropdown-panel")
-                        .width(fixed!(220.0))
-                        .height(fixed!(300.0))
-                        .background_color(0xDD1A1D)
-                        .corner_radius(6.0)
-                        .floating(|f| f.offset((8.0, 44.0)).z_index(100))
-                        .layout(|l| l.direction(TopToBottom).padding(4).gap(2))
-                        .children(|ui| {
-                            ui.text(&format!("Filter: {}_", state.dropdown_filter), |t| {
-                                t.font_size(11).color(0x9E9590)
-                            });
-                            for &(idx, site) in visible {
-                                let bg = if idx == state.site_index {
-                                    0x3A3533
-                                } else {
-                                    0x00000000
-                                };
-                                ui.element()
-                                    .id(("site-opt", idx as u32))
-                                    .width(grow!())
-                                    .height(fixed!(22.0))
-                                    .background_color(bg)
-                                    .corner_radius(3.0)
-                                    .layout(|l| l.padding((0, 6, 0, 6)).align(Left, CenterY))
-                                    .children(|ui| {
-                                        ui.text(&format!("{} — {}", site.id, site.name), |t| {
-                                            t.font_size(12).color(0xE8E0DC)
-                                        });
-                                    });
-                            }
-                            if filtered.len() > visible_count {
-                                ui.text(
-                                    &format!("{} more…", filtered.len() - visible_count),
-                                    |t| t.font_size(10).color(0x5F8A6A),
-                                );
-                            }
-                        });
-                }
 
                 // ── Radar scope (transparent — drawn directly to screen) ──
                 ui.element().width(grow!()).height(grow!()).empty();
@@ -374,8 +339,9 @@ async fn main() {
                     .width(grow!())
                     .height(fixed!(24.0))
                     .background_color(0x12161e)
-                    .layout(|l| {
-                        l.direction(LeftToRight)
+                    .layout(|layout| {
+                        layout
+                            .direction(LeftToRight)
                             .padding(8)
                             .gap(12)
                             .align(Left, CenterY)
@@ -383,8 +349,9 @@ async fn main() {
                     .children(|ui| {
                         let has_real = state.scan.is_some();
                         let status_color = if has_real { 0x5F8A6A } else { 0x9E9590 };
-                        ui.text(&state.status_text, |t| t.font_size(11).color(status_color));
-                        // Color legend swatches
+                        ui.text(&state.status_text, |text| {
+                            text.font_size(11).color(status_color)
+                        });
                         for &(_threshold, color) in colors::DBZ_LEGEND.iter().step_by(2) {
                             let hex = (color[0] as u32) << 16
                                 | (color[1] as u32) << 8
@@ -395,14 +362,14 @@ async fn main() {
                                 .background_color(hex)
                                 .empty();
                         }
-                        ui.text("dBZ", |t| t.font_size(10).color(0x5F8A6A));
+                        ui.text("dBZ", |text| text.font_size(10).color(0x5F8A6A));
                     });
             });
 
         ui.show(|_| {}).await;
 
         // ── Input handling ─────────────────────────────────────────
-        handle_input(&mut state, &ply);
+        handle_input(&mut state, &ply, &site_options, &tilt_options);
 
         next_frame().await;
     }
@@ -412,89 +379,41 @@ async fn main() {
 // Input handling
 // ---------------------------------------------------------------------------
 
-fn handle_input(state: &mut AppState, ply: &Ply<()>) {
-    // ── Dropdown keyboard handling ────────────────────────────
-    if state.dropdown_open {
-        if let Some(c) = get_char_pressed()
-            && (c.is_ascii_alphanumeric() || c == ' ' || c == '-')
-        {
-            state.dropdown_filter.push(c);
-            state.dropdown_scroll = 0;
-        }
-        if is_key_pressed(KeyCode::Backspace) && !state.dropdown_filter.is_empty() {
-            state.dropdown_filter.pop();
-            state.dropdown_scroll = 0;
-        }
-        if is_key_pressed(KeyCode::Escape) {
-            state.dropdown_open = false;
-            state.dropdown_filter.clear();
-        }
-        if is_key_pressed(KeyCode::Down) {
-            state.dropdown_scroll += 1;
-        }
-        if is_key_pressed(KeyCode::Up) {
-            state.dropdown_scroll = state.dropdown_scroll.saturating_sub(1);
-        }
-        if is_key_pressed(KeyCode::Enter) {
-            let filter = state.dropdown_filter.to_lowercase();
-            if let Some((idx, _)) = geo::RADAR_SITES.iter().enumerate().find(|(_, s)| {
-                filter.is_empty()
-                    || s.id.to_lowercase().contains(&filter)
-                    || s.name.to_lowercase().contains(&filter)
-            }) {
-                state.site_index = idx;
-                let site_id = geo::RADAR_SITES[idx].id.to_string();
-                let _ = state.site_tx.send(site_id.clone());
-                state.scan = None;
-                state.needs_reraster = true;
-                state.status_text = format!("Switching to {}…", site_id);
-                state.pending_load = Some(state.cache.load_scan(&site_id));
-            }
-            state.dropdown_open = false;
-            state.dropdown_filter.clear();
-        }
+fn handle_input(
+    state: &mut AppState,
+    ply: &Ply<()>,
+    site_options: &[DropdownOption],
+    tilt_options: &[DropdownOption],
+) {
+    // The open dropdown gets first chance to consume keyboard and wheel input.
+    let site_was_open = state.site_dropdown.is_open();
+    let tilt_was_open = state.tilt_dropdown.is_open();
+
+    if let Some(index) = state
+        .site_dropdown
+        .handle_input(ply, SITE_DROPDOWN, site_options)
+    {
+        state.tilt_dropdown.close();
+        select_site(state, index);
+    }
+    if let Some(index) = state
+        .tilt_dropdown
+        .handle_input(ply, TILT_DROPDOWN, tilt_options)
+    {
+        state.site_dropdown.close();
+        select_tilt(state, index);
     }
 
-    // ── Dropdown button click ─────────────────────────────────
-    if ply.is_just_pressed("site-dropdown-btn") {
-        state.dropdown_open = !state.dropdown_open;
-        if state.dropdown_open {
-            state.dropdown_filter.clear();
-            state.dropdown_scroll = 0;
-        }
+    if !site_was_open && state.site_dropdown.is_open() {
+        state.tilt_dropdown.close();
+    }
+    if !tilt_was_open && state.tilt_dropdown.is_open() {
+        state.site_dropdown.close();
     }
 
-    // ── Dropdown option clicks ────────────────────────────────
-    if state.dropdown_open {
-        for (idx, _site) in geo::RADAR_SITES.iter().enumerate() {
-            if ply.is_just_pressed(("site-opt", idx as u32)) {
-                state.site_index = idx;
-                let site_id = geo::RADAR_SITES[idx].id.to_string();
-                let _ = state.site_tx.send(site_id.clone());
-                state.scan = None;
-                state.needs_reraster = true;
-                state.status_text = format!("Switching to {}…", site_id);
-                state.pending_load = Some(state.cache.load_scan(&site_id));
-                state.dropdown_open = false;
-                state.dropdown_filter.clear();
-                break;
-            }
-        }
-    }
+    let dropdown_open = state.site_dropdown.is_open() || state.tilt_dropdown.is_open();
 
-    // ── Outside click closes dropdown ─────────────────────────
-    if state.dropdown_open && is_mouse_button_pressed(MouseButton::Left) {
-        let panel_pressed = ply.is_just_pressed("site-dropdown-panel");
-        let btn_pressed = ply.is_just_pressed("site-dropdown-btn");
-        if !panel_pressed && !btn_pressed {
-            state.dropdown_open = false;
-            state.dropdown_filter.clear();
-        }
-    }
-
-    // Mouse drag for panning (disabled while dropdown is open to
-    // avoid scope drift when interacting with the site selector).
-    if !state.dropdown_open && is_mouse_button_down(MouseButton::Left) {
+    if !dropdown_open && is_mouse_button_down(MouseButton::Left) {
         let delta = mouse_delta_position();
         let side = screen_width().min(screen_height());
         let px_per_km = (side / 2.0) / scope::MAX_RANGE_KM * state.zoom;
@@ -502,60 +421,102 @@ fn handle_input(state: &mut AppState, ply: &Ply<()>) {
         state.pan_km.1 += delta.y / px_per_km;
     }
 
-    // Scroll for zoom
-    let scroll = mouse_wheel().1;
-    if scroll != 0.0 {
-        state.zoom = (state.zoom * (1.0 + scroll * 0.001)).clamp(0.05, 4.0);
-    }
-
-    // Keyboard shortcuts
-    if is_key_pressed(KeyCode::R) {
-        state.product = Product::Velocity;
-        state.needs_reraster = true;
-    }
-    if is_key_pressed(KeyCode::V) {
-        state.product = Product::Reflectivity;
-        state.needs_reraster = true;
-    }
-    if is_key_pressed(KeyCode::T)
-        && let Some(ref scan) = state.scan
-    {
-        let sweeps = scan.sweeps(state.product);
-        if !sweeps.is_empty() {
-            state.tilt_index = (state.tilt_index + 1) % sweeps.len();
-            state.needs_reraster = true;
+    if !dropdown_open {
+        let scroll = mouse_wheel().1;
+        if scroll != 0.0 {
+            state.zoom = (state.zoom * (1.0 + scroll * 0.001)).clamp(0.05, 4.0);
         }
     }
-    if is_key_pressed(KeyCode::Key0) {
-        state.pan_km = (0.0, 0.0);
-        state.zoom = 1.0;
-    }
-    if is_key_pressed(KeyCode::Right) && !state.dropdown_open {
-        state.site_index = (state.site_index + 1) % geo::RADAR_SITES.len();
-        let site_id = geo::RADAR_SITES[state.site_index].id.to_string();
-        let _ = state.site_tx.send(site_id.clone());
-        state.scan = None;
-        state.needs_reraster = true;
-        state.status_text = format!("Switching to {}…", site_id);
-        state.pending_load = Some(state.cache.load_scan(&site_id));
-    }
-    if is_key_pressed(KeyCode::Left) && !state.dropdown_open {
-        state.site_index = (state.site_index + geo::RADAR_SITES.len() - 1) % geo::RADAR_SITES.len();
-        let site_id = geo::RADAR_SITES[state.site_index].id.to_string();
-        let _ = state.site_tx.send(site_id.clone());
-        state.scan = None;
-        state.needs_reraster = true;
-        state.status_text = format!("Switching to {}…", site_id);
-        state.pending_load = Some(state.cache.load_scan(&site_id));
+
+    if !dropdown_open {
+        if is_key_pressed(KeyCode::R) {
+            select_product(state, Product::Reflectivity);
+        }
+        if is_key_pressed(KeyCode::V) {
+            select_product(state, Product::Velocity);
+        }
+        if is_key_pressed(KeyCode::T) {
+            let tilt_count = state
+                .scan
+                .as_ref()
+                .map(|scan| scan.sweeps(state.product).len())
+                .unwrap_or(0);
+            if tilt_count > 0 {
+                select_tilt(state, (state.tilt_index + 1) % tilt_count);
+            }
+        }
+        if is_key_pressed(KeyCode::Key0) {
+            state.pan_km = (0.0, 0.0);
+            state.zoom = 1.0;
+        }
+        if is_key_pressed(KeyCode::Right) {
+            select_site(state, (state.site_index + 1) % geo::RADAR_SITES.len());
+        }
+        if is_key_pressed(KeyCode::Left) {
+            select_site(
+                state,
+                (state.site_index + geo::RADAR_SITES.len() - 1) % geo::RADAR_SITES.len(),
+            );
+        }
     }
 
-    // Ply button presses
-    if ply.is_just_pressed("btn-refl") {
-        state.product = Product::Reflectivity;
-        state.needs_reraster = true;
+    if let Some(product) = toggle::pressed(ply, &PRODUCT_OPTIONS) {
+        select_product(state, product);
     }
-    if ply.is_just_pressed("btn-vel") {
-        state.product = Product::Velocity;
+}
+
+fn select_product(state: &mut AppState, product: Product) {
+    if state.product != product {
+        state.product = product;
+        state.tilt_index = 0;
         state.needs_reraster = true;
+        update_scan_status(state, "");
+    }
+}
+
+fn select_tilt(state: &mut AppState, index: usize) {
+    let tilt_count = state
+        .scan
+        .as_ref()
+        .map(|scan| scan.sweeps(state.product).len())
+        .unwrap_or(0);
+    if index < tilt_count && state.tilt_index != index {
+        state.tilt_index = index;
+        state.needs_reraster = true;
+        update_scan_status(state, "");
+    }
+}
+
+fn select_site(state: &mut AppState, index: usize) {
+    if index >= geo::RADAR_SITES.len() || index == state.site_index {
+        return;
+    }
+
+    state.site_index = index;
+    state.tilt_index = 0;
+    state.tilt_dropdown.close();
+    let site_id = geo::RADAR_SITES[index].id.to_string();
+    let _ = state.site_tx.send(site_id.clone());
+    state.scan = None;
+    state.needs_reraster = true;
+    state.status_text = format!("Switching to {site_id}…");
+    state.pending_load = Some(state.cache.load_scan(&site_id));
+}
+
+fn update_scan_status(state: &mut AppState, suffix: &str) {
+    if let Some(scan) = &state.scan {
+        let sweeps = scan.sweeps(state.product);
+        let elevation = sweeps
+            .get(state.tilt_index)
+            .map(|sweep| format!(" — {:.1}°", sweep.elevation_deg))
+            .unwrap_or_default();
+        state.status_text = format!(
+            "{} — {} — {} tilt(s){}{}",
+            scan.timestamp.format("%Y-%m-%d %H:%M UTC"),
+            geo::RADAR_SITES[state.site_index].id,
+            sweeps.len(),
+            elevation,
+            suffix,
+        );
     }
 }

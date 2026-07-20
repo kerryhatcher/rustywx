@@ -9,3 +9,4 @@ pub mod geo;
 pub mod model;
 pub mod scope;
 pub mod state;
+pub mod widgets;
