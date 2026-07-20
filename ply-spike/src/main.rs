@@ -777,9 +777,15 @@ async fn main() {
                                             );
                                             nhc_toggle_button(
                                                 ui,
-                                                "btn-nhc-at",
-                                                "Arrival Times",
-                                                state.nhc_overlays.show_arrival_times,
+                                                "btn-nhc-earliest",
+                                                "Earliest Arrival (34kt)",
+                                                state.nhc_overlays.show_earliest_arrival,
+                                            );
+                                            nhc_toggle_button(
+                                                ui,
+                                                "btn-nhc-likely",
+                                                "Most Likely Arrival (34kt)",
+                                                state.nhc_overlays.show_most_likely_arrival,
                                             );
                                         });
 
@@ -1172,8 +1178,11 @@ fn handle_input(
     if ply.is_just_pressed("btn-nhc-wp") {
         state.nhc_overlays.show_wind_probs = !state.nhc_overlays.show_wind_probs;
     }
-    if ply.is_just_pressed("btn-nhc-at") {
-        state.nhc_overlays.show_arrival_times = !state.nhc_overlays.show_arrival_times;
+    if ply.is_just_pressed("btn-nhc-earliest") {
+        state.nhc_overlays.show_earliest_arrival = !state.nhc_overlays.show_earliest_arrival;
+    }
+    if ply.is_just_pressed("btn-nhc-likely") {
+        state.nhc_overlays.show_most_likely_arrival = !state.nhc_overlays.show_most_likely_arrival;
     }
 
     // ── NHC external link buttons ────────────────────────────────

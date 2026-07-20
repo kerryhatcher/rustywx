@@ -561,7 +561,8 @@ pub struct NhcOverlayState {
     pub show_points: bool,
     pub show_watches_warnings: bool,
     pub show_wind_probs: bool,
-    pub show_arrival_times: bool,
+    pub show_earliest_arrival: bool,
+    pub show_most_likely_arrival: bool,
 }
 
 impl Default for NhcOverlayState {
@@ -572,7 +573,8 @@ impl Default for NhcOverlayState {
             show_points: true,
             show_watches_warnings: true,
             show_wind_probs: false,
-            show_arrival_times: false,
+            show_earliest_arrival: false,
+            show_most_likely_arrival: false,
         }
     }
 }
@@ -724,7 +726,7 @@ fn draw_nhc_overlays(
     }
 
     // ── Arrival time contours ──────────────────────────────────────
-    if overlays.show_arrival_times {
+    if overlays.show_earliest_arrival {
         draw_arrival_contours(
             &bundle.earliest_arrival,
             site,
@@ -734,7 +736,10 @@ fn draw_nhc_overlays(
             sw,
             sh,
             margin,
+            MacroquadColor::from_rgba(0x66, 0xaa, 0xff, 180),
         );
+    }
+    if overlays.show_most_likely_arrival {
         draw_arrival_contours(
             &bundle.most_likely_arrival,
             site,
@@ -744,6 +749,7 @@ fn draw_nhc_overlays(
             sw,
             sh,
             margin,
+            MacroquadColor::from_rgba(0x66, 0xdd, 0x88, 180),
         );
     }
 }
@@ -801,8 +807,9 @@ fn draw_arrival_contours(
     sw: f32,
     sh: f32,
     margin: f32,
+    color: MacroquadColor,
 ) {
-    let arrival_color = MacroquadColor::from_rgba(0x66, 0xaa, 0xff, 180);
+    let arrival_color = color;
     for contour in contours {
         for ring in &contour.rings {
             if ring.len() < 3 {
