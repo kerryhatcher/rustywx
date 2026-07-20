@@ -136,7 +136,7 @@ button for each product.
 - [x] "No active storms" state when season is quiet
 - [x] Data refreshes every 5 minutes
 - [x] NHC CORS status confirmed: CurrentStorms.json native (no CORS needed on desktop), GIS MapServer direct
-- [x] `cargo fmt`, clippy, check, tests pass locally (54 tests)
+- [x] `cargo fmt`, clippy, check, tests pass locally (57 tests)
 - [x] `git push` → CI passes → `git tag v0.3.0-stage5` → `git push --tags` ✅
 
 ## Follow-ups / Deferred Polish
