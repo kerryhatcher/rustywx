@@ -144,6 +144,12 @@ cardinal spokes, station marker, city markers. Drag to pan, scroll to zoom.
   Ply `storage` is a key-value API — the data model changes accordingly.
   The old `store.rs` (rusqlite-based settings) is also removed in this
   stage since Ply `storage` handles all persistence.
+
+  **Integration pattern (Spike S8 validated):**
+  - **Settings/metadata** (<2ms): Direct `.await` in game loop
+  - **Raw scan data** (10–15ms): Spawn task + `oneshot::channel` to avoid frame stalls
+  - **Save**: Fire-and-forget `tokio::spawn` after receiving new scan
+  - **Load**: Show "Loading…" UI while async load completes, poll channel with `try_recv()`
 - Wire up real NEXRAD data flow: fetch → decode → rasterize → display
 - Site selector (keyboard: Left/Right arrow keys)
 - Tilt selector (keyboard: T key cycles tilts)
@@ -331,6 +337,7 @@ typography, responsive layout.
   the async game loop — Spike S5 confirmed `Storage` is async).
   (Ply `storage` replaced SQLite/rusqlite in Stage 2; this stage adds the
   settings schema and UI on top of it.)
+  **Direct `.await` is acceptable** — settings JSON is small (<2ms load/save).
 - Settings: default site, poll interval, NHC refresh, overlay defaults,
   animation level (Full/Subtle/None)
 - Keyboard shortcuts overlay (? key)
