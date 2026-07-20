@@ -7,6 +7,7 @@ use crate::borders::Ring;
 use crate::colors;
 use crate::geo::{self, RadarSite};
 use crate::model::{Product, SweepData};
+use crate::nhc::{ArrivalTimeContour, NhcBundle, WindProbContour};
 use macroquad::math::Vec2;
 use ply_engine::prelude::*;
 
@@ -329,6 +330,7 @@ fn angular_distance(a: f32, b: f32) -> f32 {
 /// render_to_texture coordinate flip — see Stage 1 lesson).
 ///
 /// Stage 4 adds optional border and alert overlay drawing.
+/// Stage 5 adds optional NHC tropical cyclone overlay drawing.
 pub fn draw_scope_to_texture(
     radar_texture: Option<&Texture2D>,
     site: &RadarSite,
@@ -336,6 +338,7 @@ pub fn draw_scope_to_texture(
     zoom: f32,
     borders: Option<(&[Ring], bool)>,
     alerts: Option<(&[Alert], bool)>,
+    nhc: Option<(&NhcBundle, &NhcOverlayState)>,
 ) {
     let side = screen_width().min(screen_height());
     let px_per_km = (side / 2.0) / MAX_RANGE_KM * zoom;
@@ -433,6 +436,11 @@ pub fn draw_scope_to_texture(
         && show
     {
         draw_alerts(alerts, site, center_x, center_y, px_per_km);
+    }
+
+    // ── NHC overlays (Stage 5) ──────────────────────────────────
+    if let Some((bundle, overlays)) = nhc {
+        draw_nhc_overlays(bundle, overlays, site, center_x, center_y, px_per_km);
     }
 }
 
@@ -538,6 +546,287 @@ fn draw_alerts(alerts: &[Alert], site: &RadarSite, center_x: f32, center_y: f32,
                 &alert.event
             };
             draw_text(label, cx, cy, 14.0, label_color);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NHC overlay drawing (Stage 5)
+// ---------------------------------------------------------------------------
+
+/// Toggle state for individual NHC overlay layers.
+pub struct NhcOverlayState {
+    pub show_cone: bool,
+    pub show_track: bool,
+    pub show_points: bool,
+    pub show_watches_warnings: bool,
+    pub show_wind_probs: bool,
+    pub show_arrival_times: bool,
+}
+
+impl Default for NhcOverlayState {
+    fn default() -> Self {
+        Self {
+            show_cone: true,
+            show_track: true,
+            show_points: true,
+            show_watches_warnings: true,
+            show_wind_probs: false,
+            show_arrival_times: false,
+        }
+    }
+}
+
+/// Draw NHC tropical cyclone overlays on the scope.
+fn draw_nhc_overlays(
+    bundle: &NhcBundle,
+    overlays: &NhcOverlayState,
+    site: &RadarSite,
+    center_x: f32,
+    center_y: f32,
+    px_per_km: f32,
+) {
+    let sw = screen_width();
+    let sh = screen_height();
+    let margin = 50.0;
+
+    // ── GIS overlays: cone, track, points, watches/warnings ──────
+    for storm in &bundle.gis_storms {
+        // Forecast cone (semi-transparent white outline)
+        if overlays.show_cone {
+            let cone_color = MacroquadColor::from_rgba(0xff, 0xff, 0xff, 100);
+            for ring in &storm.cone {
+                if ring.len() < 3 {
+                    continue;
+                }
+                let pts: Vec<(f32, f32)> = ring
+                    .iter()
+                    .map(|&(lat, lon)| {
+                        let km = geo::point_to_km_offset(site.lat, site.lon, (lat, lon));
+                        (center_x + km.x * px_per_km, center_y + km.y * px_per_km)
+                    })
+                    .collect();
+                for i in 0..pts.len() {
+                    let (ax, ay) = pts[i];
+                    let (bx, by) = pts[(i + 1) % pts.len()];
+                    if (ax < -margin && bx < -margin)
+                        || (ax > sw + margin && bx > sw + margin)
+                        || (ay < -margin && by < -margin)
+                        || (ay > sh + margin && by > sh + margin)
+                    {
+                        continue;
+                    }
+                    draw_line(ax, ay, bx, by, 1.5, cone_color);
+                }
+            }
+        }
+
+        // Forecast track (dotted line in storm color)
+        if overlays.show_track {
+            let track_color = MacroquadColor::from_rgba(0xff, 0xcc, 0x66, 200);
+            for ring in &storm.track {
+                for pair in ring.windows(2) {
+                    let a_km = geo::point_to_km_offset(site.lat, site.lon, pair[0]);
+                    let b_km = geo::point_to_km_offset(site.lat, site.lon, pair[1]);
+                    let ax = center_x + a_km.x * px_per_km;
+                    let ay = center_y + a_km.y * px_per_km;
+                    let bx = center_x + b_km.x * px_per_km;
+                    let by = center_y + b_km.y * px_per_km;
+                    if (ax < -margin && bx < -margin)
+                        || (ax > sw + margin && bx > sw + margin)
+                        || (ay < -margin && by < -margin)
+                        || (ay > sh + margin && by > sh + margin)
+                    {
+                        continue;
+                    }
+                    draw_line(ax, ay, bx, by, 2.0, track_color);
+                }
+            }
+        }
+
+        // Forecast points (markers with labels)
+        if overlays.show_points {
+            let pt_color = MacroquadColor::from_rgba(0xff, 0xcc, 0x66, 255);
+            for &(lat, lon, ref label) in &storm.points {
+                let km = geo::point_to_km_offset(site.lat, site.lon, (lat, lon));
+                let px = center_x + km.x * px_per_km;
+                let py = center_y + km.y * px_per_km;
+                if px < -margin || px > sw + margin || py < -margin || py > sh + margin {
+                    continue;
+                }
+                draw_circle(px, py, 3.0, pt_color);
+                if !label.is_empty() {
+                    draw_text(label, px + 5.0, py - 8.0, 12.0, pt_color);
+                }
+            }
+        }
+
+        // Watches/warnings (colored line segments)
+        if overlays.show_watches_warnings {
+            for (ring, ww_type) in &storm.watches_warnings {
+                let color = crate::nhc::watch_warning_color(ww_type);
+                let line_color = MacroquadColor::from_rgba(color[0], color[1], color[2], color[3]);
+                if ring.len() < 2 {
+                    continue;
+                }
+                for pair in ring.windows(2) {
+                    let a_km = geo::point_to_km_offset(site.lat, site.lon, pair[0]);
+                    let b_km = geo::point_to_km_offset(site.lat, site.lon, pair[1]);
+                    let ax = center_x + a_km.x * px_per_km;
+                    let ay = center_y + a_km.y * px_per_km;
+                    let bx = center_x + b_km.x * px_per_km;
+                    let by = center_y + b_km.y * px_per_km;
+                    if (ax < -margin && bx < -margin)
+                        || (ax > sw + margin && bx > sw + margin)
+                        || (ay < -margin && by < -margin)
+                        || (ay > sh + margin && by > sh + margin)
+                    {
+                        continue;
+                    }
+                    draw_line(ax, ay, bx, by, 3.0, line_color);
+                }
+            }
+        }
+    }
+
+    // ── Wind probability contours ──────────────────────────────────
+    if overlays.show_wind_probs {
+        draw_contours(
+            &bundle.wind_probs_34kt,
+            site,
+            center_x,
+            center_y,
+            px_per_km,
+            sw,
+            sh,
+            margin,
+        );
+        draw_contours(
+            &bundle.wind_probs_50kt,
+            site,
+            center_x,
+            center_y,
+            px_per_km,
+            sw,
+            sh,
+            margin,
+        );
+        draw_contours(
+            &bundle.wind_probs_64kt,
+            site,
+            center_x,
+            center_y,
+            px_per_km,
+            sw,
+            sh,
+            margin,
+        );
+    }
+
+    // ── Arrival time contours ──────────────────────────────────────
+    if overlays.show_arrival_times {
+        draw_arrival_contours(
+            &bundle.earliest_arrival,
+            site,
+            center_x,
+            center_y,
+            px_per_km,
+            sw,
+            sh,
+            margin,
+        );
+        draw_arrival_contours(
+            &bundle.most_likely_arrival,
+            site,
+            center_x,
+            center_y,
+            px_per_km,
+            sw,
+            sh,
+            margin,
+        );
+    }
+}
+
+/// Draw wind probability contours as colored polygon outlines.
+#[allow(clippy::too_many_arguments)]
+fn draw_contours(
+    contours: &[WindProbContour],
+    site: &RadarSite,
+    center_x: f32,
+    center_y: f32,
+    px_per_km: f32,
+    sw: f32,
+    sh: f32,
+    margin: f32,
+) {
+    for contour in contours {
+        let color = crate::nhc::wind_prob_color(contour.prob_high);
+        let line_color = MacroquadColor::from_rgba(color[0], color[1], color[2], color[3]);
+        for ring in &contour.rings {
+            if ring.len() < 3 {
+                continue;
+            }
+            let pts: Vec<(f32, f32)> = ring
+                .iter()
+                .map(|&(lat, lon)| {
+                    let km = geo::point_to_km_offset(site.lat, site.lon, (lat, lon));
+                    (center_x + km.x * px_per_km, center_y + km.y * px_per_km)
+                })
+                .collect();
+            for i in 0..pts.len() {
+                let (ax, ay) = pts[i];
+                let (bx, by) = pts[(i + 1) % pts.len()];
+                if (ax < -margin && bx < -margin)
+                    || (ax > sw + margin && bx > sw + margin)
+                    || (ay < -margin && by < -margin)
+                    || (ay > sh + margin && by > sh + margin)
+                {
+                    continue;
+                }
+                draw_line(ax, ay, bx, by, 1.5, line_color);
+            }
+        }
+    }
+}
+
+/// Draw arrival time contours as colored polygon outlines.
+#[allow(clippy::too_many_arguments)]
+fn draw_arrival_contours(
+    contours: &[ArrivalTimeContour],
+    site: &RadarSite,
+    center_x: f32,
+    center_y: f32,
+    px_per_km: f32,
+    sw: f32,
+    sh: f32,
+    margin: f32,
+) {
+    let arrival_color = MacroquadColor::from_rgba(0x66, 0xaa, 0xff, 180);
+    for contour in contours {
+        for ring in &contour.rings {
+            if ring.len() < 3 {
+                continue;
+            }
+            let pts: Vec<(f32, f32)> = ring
+                .iter()
+                .map(|&(lat, lon)| {
+                    let km = geo::point_to_km_offset(site.lat, site.lon, (lat, lon));
+                    (center_x + km.x * px_per_km, center_y + km.y * px_per_km)
+                })
+                .collect();
+            for i in 0..pts.len() {
+                let (ax, ay) = pts[i];
+                let (bx, by) = pts[(i + 1) % pts.len()];
+                if (ax < -margin && bx < -margin)
+                    || (ax > sw + margin && bx > sw + margin)
+                    || (ay < -margin && by < -margin)
+                    || (ay > sh + margin && by > sh + margin)
+                {
+                    continue;
+                }
+                draw_line(ax, ay, bx, by, 1.5, arrival_color);
+            }
         }
     }
 }

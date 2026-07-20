@@ -8,8 +8,10 @@ use crate::borders::Ring;
 use crate::cache::Cache;
 use crate::data::WorkerMessage;
 use crate::model::{Product, ScanData};
+use crate::nhc::{NhcBundle, NhcFetchState};
 use crate::widgets::dropdown::DropdownState;
 use ply_engine::prelude::Texture2D;
+use std::collections::HashMap;
 use std::sync::mpsc;
 use tokio::sync::oneshot;
 
@@ -73,6 +75,26 @@ pub struct AppState {
     pub show_borders: bool,
     /// Toggle: show NWS alert polygons on the scope.
     pub show_alerts: bool,
+
+    // ── NHC Tropical (Stage 5) ────────────────────────────────────
+    /// NHC data bundle (storm metadata, GIS, text, images, contours).
+    pub nhc_bundle: Option<NhcBundle>,
+    /// NHC fetch state machine.
+    pub nhc_fetch: NhcFetchState,
+    /// Whether the NHC fetch has been started.
+    pub nhc_fetch_fired: bool,
+    /// Wall-clock time of the last NHC refresh.
+    pub nhc_last_poll: f64,
+    /// Whether the NHC detail panel is visible.
+    pub nhc_show_panel: bool,
+    /// Currently selected storm index into `nhc_bundle.metas`.
+    pub nhc_selected_storm: usize,
+    /// Storm selector dropdown state.
+    pub nhc_storm_dropdown: DropdownState,
+    /// Decoded image textures keyed by "storm_id:product_title".
+    pub nhc_image_textures: HashMap<String, Texture2D>,
+    /// NHC overlay toggle state.
+    pub nhc_overlays: crate::scope::NhcOverlayState,
 
     /// Last mouse position for manual pan delta calculation.
     pub last_mouse_pos: Option<(f32, f32)>,

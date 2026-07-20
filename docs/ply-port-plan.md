@@ -13,7 +13,7 @@ future-stage polish — every one stands on its own as a working app.
 | 2 | Live Data | ✅ Complete | `v0.2.0-stage2` | [stage-2-live-data.md](stages/stage-2-live-data.md) |
 | 3 | Custom Widgets | ✅ Complete | `v0.2.0-stage3` | [stage-3-custom-widgets.md](stages/stage-3-custom-widgets.md) |
 | 4 | Borders & Alerts | ✅ Complete | `v0.2.0-stage4` | [stage-4-borders-alerts.md](stages/stage-4-borders-alerts.md) |
-| 5 | Tropical | 🔲 Not started | `v0.3.0-stage5` | [stage-5-tropical.md](stages/stage-5-tropical.md) |
+| 5 | Tropical | ✅ Complete | `v0.3.0-stage5` | [stage-5-tropical.md](stages/stage-5-tropical.md) |
 | 6 | Observatory Look | 🔲 Not started | `v0.4.0-stage6` | [stage-6-observatory-look.md](stages/stage-6-observatory-look.md) |
 | 7 | Settings & Polish | 🔲 Not started | `v0.5.0-stage7` | [stage-7-settings-polish.md](stages/stage-7-settings-polish.md) |
 | 8 | Linux Polish | 🔲 Not started | `v1.0.0-stage8` | [stage-8-linux-polish.md](stages/stage-8-linux-polish.md) |
@@ -133,6 +133,7 @@ rustywx/
 │       ├── main.rs     # window config, game loop, Ply UI shell
 │       ├── state.rs    # AppState struct
 │       ├── model.rs    # scan data types (5 unit tests)
+│       ├── nhc.rs      # NHC tropical cyclone data (26 unit tests)
 │       ├── colors.rs   # NWS color tables (4 unit tests)
 │       ├── geo.rs      # geographic utilities, RADAR_SITES, CITIES (3 unit tests)
 │       ├── scope.rs    # rasterization + overlay drawing
@@ -149,7 +150,7 @@ rustywx/
 ## Testing Strategy
 
 - **Unit tests** cover pure-data modules (`model.rs`, `colors.rs`, `geo.rs`)
-  plus pure widget state/filter logic. After Stage 3 the workspace has 15 tests.
+  plus pure widget state/filter logic. After Stage 5 the workspace has 54 tests.
 - **No full headless integration tests** for the Ply UI layer — Ply does not have
   a convenient end-to-end headless interaction mode (see Ply issue #8).
   Stage checklists remain primary, supplemented in Stage 3 by driving the real
@@ -177,7 +178,7 @@ rustywx/
 | 2 | Live Data | 1–2 ✅ | Real NEXRAD via nexrad-data + thread |
 | 3 | Custom Widgets | 1 ✅ local | Searchable site/tilt dropdowns, product toggle, collapsing |
 | 4 | Borders & Alerts | 1 ✅ | State lines, NWS warnings via Ply net |
-| 5 | Tropical | 2 | NHC data, GIS overlays, panel via Ply net |
+| 5 | Tropical | 2 ✅ | NHC data, GIS overlays, panel via Ply net |
 | 6 | Observatory Look | 2–3 | Visual design, custom blur shader, animations, responsive |
 | 7 | Settings & Polish | 1 | Settings via Ply storage, shortcuts, error handling |
 | 8 | Linux Polish | 2 | HiDPI, Wayland, perf, a11y |
