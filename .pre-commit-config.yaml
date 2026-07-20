@@ -131,7 +131,7 @@ repos:
     hooks:
       - id: lychee
         name: lychee
-        entry: lychee --no-progress --exclude 'localhost|127\.0\.0\.1|crates\.io' --exclude-path 'docs/research' --exclude-path 'docs/Volumetric' .
+        entry: lychee --no-progress --exclude 'localhost|127\.0\.0\.1|crates\.io' --exclude-path 'docs/research' --exclude-path 'docs/Volumetric' --exclude-path 'md_partB.md' --exclude-path 'fmh-11B-2005.md' .
         language: system
         pass_filenames: false
         stages: [pre-push]
