@@ -16,4 +16,5 @@ pub mod rle;
 pub mod scope;
 pub mod settings;
 pub mod state;
+pub mod system_location;
 pub mod widgets;
