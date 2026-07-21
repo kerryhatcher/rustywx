@@ -18,6 +18,8 @@ pub mod nf {
     pub const RADAR: &str = "\u{f0bce}"; // md-radar
     pub const CHEVRON_DOWN: &str = "\u{f078}"; // fa-chevron-down
     pub const CHEVRON_UP: &str = "\u{f077}"; // fa-chevron-up
+    pub const EXPAND: &str = "\u{f065}"; // fa-expand (enter fullscreen)
+    pub const COMPRESS: &str = "\u{f066}"; // fa-compress (exit fullscreen)
 }
 
 pub mod collapsing;

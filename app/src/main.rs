@@ -244,6 +244,23 @@ fn hover_tint(hovered: &[Id], id: &str, active: i32, _idle: i32) -> i32 {
 // Window config
 // ---------------------------------------------------------------------------
 
+/// Window icon, decoded from the rendered PNGs at startup.
+/// Source of truth is `assets/icon/rustywx.svg`; regenerate the PNGs with
+/// `rsvg-convert -w N -h N rustywx.svg -o icon_N.png`.
+fn app_icon() -> miniquad::conf::Icon {
+    fn rgba<const N: usize>(png: &[u8]) -> [u8; N] {
+        let img = image::load_from_memory(png).expect("icon png").to_rgba8();
+        let mut out = [0u8; N];
+        out.copy_from_slice(&img);
+        out
+    }
+    miniquad::conf::Icon {
+        small: rgba(include_bytes!("../assets/icon/icon_16.png")),
+        medium: rgba(include_bytes!("../assets/icon/icon_32.png")),
+        big: rgba(include_bytes!("../assets/icon/icon_64.png")),
+    }
+}
+
 fn window_conf() -> macroquad::conf::Conf {
     // Optional startup size override for window-size / HiDPI testing:
     // RUSTYWX_WIN_W / RUSTYWX_WIN_H.
@@ -260,6 +277,7 @@ fn window_conf() -> macroquad::conf::Conf {
             window_height: env_i32("RUSTYWX_WIN_H", 960),
             high_dpi: true,
             sample_count: 4,
+            icon: Some(app_icon()),
             platform: miniquad::conf::Platform {
                 webgl_version: miniquad::conf::WebGLVersion::WebGL2,
                 ..Default::default()
@@ -376,6 +394,7 @@ async fn main() {
         last_alert_poll: 0.0,
         show_borders: true,
         show_alerts: true,
+        fullscreen: false,
         nhc_bundle: None,
         nhc_fetch: nhc::NhcFetchState::new(),
         nhc_fetch_fired: false,
@@ -401,6 +420,13 @@ async fn main() {
         show_settings_panel: false,
         show_shortcuts: false,
         toast: None,
+        // Seeded from settings once the async load resolves (see the
+        // settings_applied block below) — no network call at startup.
+        user_location: None,
+        show_location: false,
+        location_resolver: rustywx::location::LocationResolver::new(),
+        location_input_focused: false,
+        location_error_shown: false,
     };
 
     // Boot-time bookkeeping for applying loaded settings exactly once, and
@@ -513,6 +539,16 @@ async fn main() {
             state.show_borders = state.settings.show_borders;
             state.show_alerts = state.settings.show_alerts;
             state.nhc_show_panel = state.settings.show_nhc;
+            state.show_location = state.settings.show_location;
+            // Restore last known location from settings without any
+            // network call — the resolver chain runs only on Detect.
+            state.user_location = match (state.settings.user_lat, state.settings.user_lon) {
+                (Some(lat), Some(lon)) => Some(rustywx::location::Coords { lat, lon }),
+                _ => None,
+            };
+            if state.settings.center_on_location && state.user_location.is_some() {
+                recenter_on_user(&mut state);
+            }
             // The initial raster (if any) used the default TDBZ kernel size
             // before this load resolved — redo it with the loaded setting.
             state.needs_reraster = true;
@@ -670,6 +706,30 @@ async fn main() {
             }
         }
 
+        // ── Poll the location resolver (Detect in progress) ───────
+        if let Some(coords) = state.location_resolver.poll(now) {
+            state.user_location = Some(coords);
+            state.settings.user_lat = Some(coords.lat);
+            state.settings.user_lon = Some(coords.lon);
+            state.cache.save_settings(&state.settings);
+            if state.settings.center_on_location {
+                recenter_on_user(&mut state);
+            }
+        }
+        // Surface resolver failures as a toast (once, until the next detect).
+        if !state.location_error_shown {
+            let msg = match state.location_resolver.status() {
+                rustywx::location::LocationStatus::Offline => Some("Location: offline"),
+                rustywx::location::LocationStatus::Denied => Some("Location permission denied"),
+                rustywx::location::LocationStatus::NotFound => Some("ZIP not found"),
+                _ => None,
+            };
+            if let Some(msg) = msg {
+                state.toast = Some(toast_widget::Toast::new(msg, now));
+                state.location_error_shown = true;
+            }
+        }
+
         // ── Get current sweep ─────────────────────────────────────
         let sweep: SweepData = if let Some(ref scan) = state.scan {
             let sweeps = scan.sweeps(state.product);
@@ -715,6 +775,11 @@ async fn main() {
             Some((&state.borders, state.show_borders)),
             Some((&state.alerts, state.show_alerts)),
             state.nhc_bundle.as_ref().map(|b| (b, &state.nhc_overlays)),
+            if state.show_location {
+                state.user_location
+            } else {
+                None
+            },
         );
 
         // Radar sweep line (optional observatory visual flourish) — dropped
@@ -905,7 +970,88 @@ async fn main() {
                                 });
                             });
 
+                        // ── Location toggle button (Task 9) ──────────────
+                        let loc_bg = hover_tint(
+                            &state.hovered_ids,
+                            "btn-location",
+                            if state.show_location {
+                                0x0dc5b8
+                            } else {
+                                0x1E1B1B
+                            },
+                            0x1E1B1B,
+                        );
+                        let loc_label = if state.show_location {
+                            "Location ✓"
+                        } else {
+                            "Location"
+                        };
+                        ui.element()
+                            .id("btn-location")
+                            .width(fit!())
+                            .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                            .background_color(loc_bg)
+                            .corner_radius(4.0)
+                            .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
+                            .accessibility(|a| a.button(loc_label).checked(state.show_location))
+                            .children(|ui| {
+                                ui.text(loc_label, |text| text.font_size(12).color(0xE8E0DC));
+                            });
+
                         // Settings gear lives in the bottom status bar.
+
+                        // Spacer pushes window controls to the right edge.
+                        ui.element()
+                            .width(grow!())
+                            .height(fixed!(0.0))
+                            .children(|_| {});
+
+                        // ── Window controls (right side, kept together) ──
+                        let ctrl_h = if is_mobile { 44.0 } else { 24.0 };
+                        let ctrl_w = fixed!(if is_mobile { 44.0 } else { 30.0 });
+                        let (fs_glyph, fs_label) = if state.fullscreen {
+                            (nf::COMPRESS, "Exit fullscreen")
+                        } else {
+                            (nf::EXPAND, "Fullscreen")
+                        };
+                        let fs_bg =
+                            hover_tint(&state.hovered_ids, "btn-fullscreen", 0x1E1B1B, 0x2A2727);
+                        let close_bg =
+                            hover_tint(&state.hovered_ids, "btn-close", 0x1E1B1B, 0xC03535);
+                        ui.element()
+                            .width(fit!())
+                            .height(fixed!(ctrl_h))
+                            .layout(|layout| {
+                                layout.direction(LeftToRight).gap(6).align(Left, CenterY)
+                            })
+                            .children(|ui| {
+                                ui.element()
+                                    .id("btn-fullscreen")
+                                    .width(ctrl_w)
+                                    .height(fixed!(ctrl_h))
+                                    .background_color(fs_bg)
+                                    .corner_radius(4.0)
+                                    .layout(|layout| layout.align(CenterX, CenterY))
+                                    .accessibility(|a| a.button(fs_label))
+                                    .children(|ui| {
+                                        ui.text(fs_glyph, |text| {
+                                            text.font_size(13).font(&SYMBOL_FONT).color(0xE8E0DC)
+                                        });
+                                    });
+                                ui.element()
+                                    .id("btn-close")
+                                    .width(ctrl_w)
+                                    .height(fixed!(ctrl_h))
+                                    .background_color(close_bg)
+                                    .corner_radius(4.0)
+                                    .layout(|layout| layout.align(CenterX, CenterY))
+                                    .accessibility(|a| a.button("Close"))
+                                    .children(|ui| {
+                                        ui.text(nf::CLOSE, |text| {
+                                            text.font_size(13).font(&SYMBOL_FONT).color(0xE8E0DC)
+                                        });
+                                    });
+                            });
                     });
 
                 // ── NHC slide-in panel (Stage 5) ────────────────────────
@@ -1394,7 +1540,30 @@ async fn main() {
                 // ── Settings modal (Stage 7) ────────────────────────────
                 if state.show_settings_panel {
                     let site = &geo::RADAR_SITES[state.site_index];
-                    settings_widget::draw(ui, &state.settings, site.id);
+                    let loc_status = match state.location_resolver.status() {
+                        rustywx::location::LocationStatus::Idle => match state.user_location {
+                            Some(c) => format!("{:.4}, {:.4}", c.lat, c.lon),
+                            None => "Not set".to_string(),
+                        },
+                        rustywx::location::LocationStatus::Detecting => "Detecting…".to_string(),
+                        rustywx::location::LocationStatus::Resolved(c, src) => {
+                            format!("{:.4}, {:.4} ({:?})", c.lat, c.lon, src)
+                        }
+                        rustywx::location::LocationStatus::Denied => {
+                            "Permission denied".to_string()
+                        }
+                        rustywx::location::LocationStatus::Offline => "Offline".to_string(),
+                        rustywx::location::LocationStatus::NotFound => "ZIP not found".to_string(),
+                        rustywx::location::LocationStatus::Invalid => "Invalid input".to_string(),
+                    };
+                    settings_widget::draw(
+                        ui,
+                        &state.settings,
+                        site.id,
+                        &state.settings.location_input,
+                        state.location_input_focused,
+                        &loc_status,
+                    );
                 }
 
                 // ── Keyboard shortcuts overlay (Stage 7) ────────────────────
@@ -1768,6 +1937,22 @@ fn handle_input(
     if ply.is_just_pressed("btn-alerts") {
         state.show_alerts = !state.show_alerts;
     }
+    if ply.is_just_pressed("btn-location") {
+        state.show_location = !state.show_location;
+        state.settings.show_location = state.show_location;
+        state.cache.save_settings(&state.settings);
+    }
+
+    // ── Window controls: fullscreen toggle + close ───────────────
+    if ply.is_just_pressed("btn-fullscreen")
+        || (!dropdown_open && !state.location_input_focused && is_key_pressed(KeyCode::F))
+    {
+        state.fullscreen = !state.fullscreen;
+        miniquad::window::set_fullscreen(state.fullscreen);
+    }
+    if ply.is_just_pressed("btn-close") {
+        miniquad::window::order_quit();
+    }
 
     // ── NHC toggle button and keyboard shortcut (Stage 5) ────────
     if ply.is_just_pressed("btn-nhc") {
@@ -1776,7 +1961,7 @@ fn handle_input(
             state.nhc_anim_start = 0.0;
         }
     }
-    if !dropdown_open && is_key_pressed(KeyCode::N) {
+    if !dropdown_open && !state.location_input_focused && is_key_pressed(KeyCode::N) {
         state.nhc_show_panel = !state.nhc_show_panel;
     }
 
@@ -1819,6 +2004,64 @@ fn handle_input(
         if ply.is_just_pressed(settings_widget::USE_CURRENT_SITE_ID) {
             state.settings.default_site = geo::RADAR_SITES[state.site_index].id.to_string();
             state.cache.save_settings(&state.settings);
+        }
+
+        // Focus the location field on click; blur when clicking elsewhere.
+        if ply.is_just_pressed(settings_widget::LOCATION_INPUT_ID) {
+            state.location_input_focused = true;
+        }
+        // Capture typing while focused (typing and Escape key off disjoint
+        // KeyCodes, so their relative ordering doesn't matter).
+        if state.location_input_focused {
+            let now = get_time();
+            while let Some(ch) = get_char_pressed() {
+                if !ch.is_control() && state.settings.location_input.len() < 32 {
+                    state.settings.location_input.push(ch);
+                }
+            }
+            if is_key_pressed(KeyCode::Backspace) {
+                state.settings.location_input.pop();
+            }
+            if is_key_pressed(KeyCode::Enter) {
+                state.location_input_focused = false;
+                state.location_error_shown = false;
+                if let Some(c) = state
+                    .location_resolver
+                    .detect(&state.settings.location_input, now)
+                {
+                    state.user_location = Some(c);
+                    state.settings.user_lat = Some(c.lat);
+                    state.settings.user_lon = Some(c.lon);
+                    if state.settings.center_on_location {
+                        recenter_on_user(state);
+                    }
+                }
+                state.cache.save_settings(&state.settings);
+            }
+        }
+        if ply.is_just_pressed(settings_widget::LOCATION_DETECT_ID) {
+            let now = get_time();
+            state.location_input_focused = false;
+            state.location_error_shown = false;
+            if let Some(c) = state
+                .location_resolver
+                .detect(&state.settings.location_input, now)
+            {
+                state.user_location = Some(c);
+                state.settings.user_lat = Some(c.lat);
+                state.settings.user_lon = Some(c.lon);
+                if state.settings.center_on_location {
+                    recenter_on_user(state);
+                }
+            }
+            state.cache.save_settings(&state.settings);
+        }
+        if ply.is_just_pressed(settings_widget::CENTER_TOGGLE_ID) {
+            state.settings.center_on_location = !state.settings.center_on_location;
+            state.cache.save_settings(&state.settings);
+            if state.settings.center_on_location {
+                recenter_on_user(state);
+            }
         }
     }
 
@@ -2015,6 +2258,15 @@ fn show_toast(state: &mut AppState, now: f64, kind: toast_widget::ErrorKind) {
         toast_widget::friendly_message(kind),
         now,
     ));
+}
+
+/// Set pan so the user's location sits at screen center. No-op if unknown.
+fn recenter_on_user(state: &mut AppState) {
+    if let Some(user) = state.user_location {
+        let site = &geo::RADAR_SITES[state.site_index];
+        let off = geo::point_to_km_offset(site.lat, site.lon, (user.lat, user.lon));
+        state.pan_km = (-off.x, -off.y);
+    }
 }
 
 fn select_site(state: &mut AppState, index: usize) {
