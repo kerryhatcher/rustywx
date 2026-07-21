@@ -7,6 +7,7 @@ use crate::alerts::Alert;
 use crate::borders::Ring;
 use crate::cache::Cache;
 use crate::data::WorkerMessage;
+use crate::forecast::{Forecast, GeoHit};
 use crate::model::{Product, ScanData};
 use crate::nhc::{NhcBundle, NhcFetchState};
 use crate::settings::Settings;
@@ -16,6 +17,15 @@ use ply_engine::prelude::Texture2D;
 use std::collections::HashMap;
 use std::sync::mpsc;
 use tokio::sync::oneshot;
+
+/// Which top-level screen is showing. Radar is the map scope; Forecast is the
+/// full-screen non-map current-conditions + 7-day view.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub enum ViewMode {
+    #[default]
+    Radar,
+    Forecast,
+}
 
 /// What's shown in the NHC product modal popup.
 #[derive(Clone)]
@@ -196,4 +206,26 @@ pub struct AppState {
     /// Auto-fades per [`crate::widgets::toast::Toast::opacity`]; overwritten
     /// (not queued) by the next error — see [`crate::widgets::toast`].
     pub toast: Option<Toast>,
+
+    // ── Forecast view ─────────────────────────────────────────────
+    /// Which top-level screen is showing (Radar scope or Forecast).
+    pub view_mode: ViewMode,
+    /// Latest fetched forecast, if any.
+    pub forecast: Option<Forecast>,
+    /// Coords the current `forecast` was fetched for (None until first fetch).
+    pub forecast_coords: Option<crate::location::Coords>,
+    /// Whether a forecast fetch is in flight for the current target coords.
+    pub forecast_fetch_fired: bool,
+    /// Last forecast fetch/parse error, shown inline in the view.
+    pub forecast_error: Option<String>,
+    /// Display label for the forecast location (from search pick or settings).
+    pub forecast_place: String,
+    /// Forecast-view search box text.
+    pub fc_search_text: String,
+    /// Whether the forecast search box is capturing keystrokes.
+    pub fc_search_focused: bool,
+    /// Geocode results for the current search.
+    pub fc_geo_hits: Vec<GeoHit>,
+    /// Whether a geocode search is in flight.
+    pub fc_geo_fired: bool,
 }

@@ -10,12 +10,14 @@ use rustywx::borders;
 use rustywx::cache::Cache;
 use rustywx::colors;
 use rustywx::data::{self, WorkerMessage};
+use rustywx::forecast;
 use rustywx::geo;
 use rustywx::model::{Product, RadialData, SweepData, format_nyquist_velocity, vcp_mode_label};
 use rustywx::nhc;
 use rustywx::scope;
 use rustywx::settings::{AnimationLevel, Settings};
 use rustywx::state::{AlertModal, AppState, NhcModal};
+use rustywx::state::ViewMode;
 use rustywx::widgets::dropdown::{DropdownConfig, DropdownOption, DropdownState};
 use rustywx::widgets::glass_panel;
 use rustywx::widgets::settings as settings_widget;
@@ -486,6 +488,16 @@ async fn main() {
         location_input_focused: false,
         location_error_shown: false,
         center_pending: false,
+        view_mode: ViewMode::Radar,
+        forecast: None,
+        forecast_coords: None,
+        forecast_fetch_fired: false,
+        forecast_error: None,
+        forecast_place: String::new(),
+        fc_search_text: String::new(),
+        fc_search_focused: false,
+        fc_geo_hits: Vec::new(),
+        fc_geo_fired: false,
     };
 
     // Boot-time bookkeeping for applying loaded settings exactly once, and
