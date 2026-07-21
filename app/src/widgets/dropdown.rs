@@ -73,12 +73,15 @@ impl DropdownState {
             .height(fixed!(24.0))
             .background_color(BUTTON_BACKGROUND)
             .corner_radius(4.0)
-            .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
+            .layout(|layout| layout.padding((0, 8, 0, 8)).gap(4).align(CenterX, CenterY))
             .accessibility(|a| a.button(button_label))
             .children(|ui| {
-                let arrow = if self.open { '▴' } else { '▾' };
-                ui.text(&format!("{button_label} {arrow}"), |text| {
-                    text.font_size(12).color(TEXT_COLOR)
+                ui.text(button_label, |text| text.font_size(12).color(TEXT_COLOR));
+                // Caret uses the symbol font (Inter lacks ▾/▴).
+                ui.text(if self.open { "▴" } else { "▾" }, |text| {
+                    text.font_size(10)
+                        .font(&super::SYMBOL_FONT)
+                        .color(TEXT_COLOR)
                 });
             });
 

@@ -105,7 +105,9 @@ pub fn draw(ui: &mut Ui<'_, ()>) {
                         .layout(|l| l.align(CenterX, CenterY))
                         .accessibility(|a| a.button("Close shortcuts"))
                         .children(|ui| {
-                            ui.text("✕", |t| t.font_size(14).color(TEXT_COLOR));
+                            ui.text("✕", |t| {
+                                t.font_size(14).font(&super::SYMBOL_FONT).color(TEXT_COLOR)
+                            });
                         });
                 });
 

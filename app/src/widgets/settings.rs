@@ -69,11 +69,12 @@ fn cycle_button(ui: &mut Ui<'_, ()>, id: &'static str, label: &str) {
         .height(fixed!(24.0))
         .background_color(INACTIVE_BG)
         .corner_radius(4.0)
-        .layout(|l| l.padding((0, 10, 0, 10)).align(CenterX, CenterY))
+        .layout(|l| l.padding((0, 10, 0, 10)).gap(6).align(CenterX, CenterY))
         .accessibility(|a| a.button(label))
         .children(|ui| {
-            ui.text(&format!("{label}  ↻"), |t| {
-                t.font_size(12).color(TEXT_COLOR)
+            ui.text(label, |t| t.font_size(12).color(TEXT_COLOR));
+            ui.text("↻", |t| {
+                t.font_size(12).font(&super::SYMBOL_FONT).color(TEXT_COLOR)
             });
         });
 }
@@ -123,7 +124,9 @@ pub fn draw(ui: &mut Ui<'_, ()>, settings: &Settings, current_site_id: &str) {
                         .layout(|l| l.align(CenterX, CenterY))
                         .accessibility(|a| a.button("Close settings"))
                         .children(|ui| {
-                            ui.text("✕", |t| t.font_size(14).color(TEXT_COLOR));
+                            ui.text("✕", |t| {
+                                t.font_size(14).font(&super::SYMBOL_FONT).color(TEXT_COLOR)
+                            });
                         });
                 });
 

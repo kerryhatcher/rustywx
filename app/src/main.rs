@@ -16,6 +16,7 @@ use rustywx::nhc;
 use rustywx::scope;
 use rustywx::settings::{AnimationLevel, Settings};
 use rustywx::state::{AppState, NhcModal};
+use rustywx::widgets::SYMBOL_FONT;
 use rustywx::widgets::dropdown::{DropdownConfig, DropdownOption, DropdownState};
 use rustywx::widgets::glass_panel;
 use rustywx::widgets::settings as settings_widget;
@@ -286,8 +287,6 @@ async fn main() {
     static DEFAULT_FONT: FontAsset = FontAsset::Path("assets/fonts/Inter-Regular.ttf");
     static INTER_BOLD: FontAsset = FontAsset::Path("assets/fonts/Inter-Bold.ttf");
     static MONO_FONT: FontAsset = FontAsset::Path("assets/fonts/Inter-Regular.ttf");
-    // Inter lacks symbol glyphs (⚙, arrows); DejaVu Sans Mono covers them.
-    static SYMBOL_FONT: FontAsset = FontAsset::Path("assets/fonts/DejaVuSansMono.ttf");
     let mut ply = Ply::<()>::new(&DEFAULT_FONT).await;
 
     // Secondary fonts (Inter Bold, JetBrains Mono) are lazy-loaded on
@@ -1287,7 +1286,9 @@ async fn main() {
                                         .corner_radius(4.0)
                                         .layout(|l| l.align(CenterX, CenterY))
                                         .children(|ui| {
-                                            ui.text("✕", |t| t.font_size(14).color(0xE8E0DC));
+                                            ui.text("✕", |t| {
+                                                t.font_size(14).font(&SYMBOL_FONT).color(0xE8E0DC)
+                                            });
                                         });
                                 });
 
@@ -1383,7 +1384,7 @@ async fn main() {
                             let pulse = (0.5 + 0.5 * (now * 2.0).sin()) as f32;
                             let c = blend_hex(0x9E9590, 0x0dc5b8, pulse);
                             ui.text("◌ Loading radar data…", |t| {
-                                t.font_size(18).font(&MONO_FONT).color(c)
+                                t.font_size(18).font(&SYMBOL_FONT).color(c)
                             });
                         });
                 } else {
