@@ -9,6 +9,7 @@ pub mod cities;
 pub mod colors;
 pub mod data;
 pub mod geo;
+pub mod location;
 pub mod model;
 pub mod nhc;
 pub mod rle;
