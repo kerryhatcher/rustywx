@@ -28,8 +28,6 @@ extend-ignore-re = [
     "nexrad",
     "ureq",
     "rusqlite",
-    "egui",
-    "eframe",
     "webbrowser",
     "chrono",
     "serde",
@@ -48,8 +46,6 @@ dBZ = "dBZ"
 dbz = "dbz"
 # Crate names
 ureq = "ureq"
-egui = "egui"
-eframe = "eframe"
 rusqlite = "rusqlite"
 # GIS terms
 GeoJSON = "GeoJSON"

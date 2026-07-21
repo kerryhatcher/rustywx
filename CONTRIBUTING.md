@@ -15,18 +15,20 @@ how to extend it. For what the app *does* from a user's perspective, see
 ## Building and running
 
 ```
-cargo build             # debug build
-cargo run --release     # run the GUI; release mode matters, see below
-just run                # alias for `cargo run --release`
+cd ply-spike
+cargo build                    # debug build
+cargo run --release            # run the app; release mode matters, see below
+just run                       # alias for `cargo run --release`
 ```
 
 Debug builds are fine for `cargo check`/`cargo test`, but running the actual
-GUI in debug mode makes rasterizing a sweep (see [`src/scope.rs`](src/scope.rs))
+app in debug mode makes rasterizing a sweep (see [`src/scope.rs`](ply-spike/src/scope.rs))
 noticeably slow. Always use `--release` when running the app interactively.
 
 ## Testing
 
 ```
+cd ply-spike
 cargo test                                         # unit tests — no network required
 cargo test --test network -- --ignored             # live NEXRAD fetch/decode
 cargo test --test borders_network -- --ignored     # live TIGERweb state-border fetch
@@ -37,14 +39,15 @@ geometry math, color banding, scan-model conversion, and rasterization, all
 using synthetic data built from `nexrad-model`'s public constructors — no
 network access needed, and they run in milliseconds.
 
-[`tests/network.rs`](tests/network.rs) is `#[ignore]`d by default because it
+[`tests/network.rs`](ply-spike/tests/network.rs) is `#[ignore]`d by default because it
 downloads and decodes a real volume from S3. Run it explicitly when you
-change anything in [`src/data.rs`](src/data.rs)'s fetch path, or after
+change anything in [`src/data.rs`](ply-spike/src/data.rs)'s fetch path, or after
 bumping the `nexrad-data`/`nexrad-model` dependency versions.
 
 ## Linting and formatting
 
 ```
+cd ply-spike
 cargo fmt
 cargo clippy
 ```
@@ -70,18 +73,18 @@ ScanData (rustywx's own thin model)
 RadarApp (src/app.rs) — picks product + tilt, tracks what needs redrawing
       │  scope::rasterize (src/scope.rs)
       ▼
-egui texture → scope::draw_scope (overlays: rings, spokes, cities, borders, legend)
+pixel buffer → scope::draw_scope (overlays: rings, spokes, cities, borders, legend)
 ```
 
 | Module | Responsibility |
 |---|---|
-| [`src/data.rs`](src/data.rs) | Background worker thread: polls S3 for the latest volume, downloads, decodes, reports status/errors/new scans over an `mpsc` channel. Owns retry/backoff. |
-| [`src/model.rs`](src/model.rs) | `ScanData` — a thin, rendering-oriented model built from `nexrad-model`'s `Scan`. Converts raw moment values into `Option<f32>` gates and splits/sorts/dedups sweeps per product. |
-| [`src/scope.rs`](src/scope.rs) | Rasterizes one sweep into an RGBA `ColorImage` (inverse polar mapping — for each pixel, find its azimuth/range and look up the nearest radial/gate), and paints all overlays (rings, spokes, city markers, legend, timestamp). |
-| [`src/colors.rs`](src/colors.rs) | NWS-style stepped color tables for dBZ and velocity, plus the lookup functions the rasterizer calls per-gate. |
-| [`src/geo.rs`](src/geo.rs) | Great-circle range/bearing (haversine) and polar-to-screen-pixel projection. Also holds the KJGX coordinates and the city list. |
-| [`src/borders.rs`](src/borders.rs) | Loads US state boundary lines for the scope overlay: checks `~/.rustywx/state_borders.geojson`, fetching it from the Census TIGERweb REST API on first run if missing, then reports parsed rings to the UI over its own one-shot channel. |
-| [`src/app.rs`](src/app.rs) | The `eframe::App` impl: owns UI state (selected product/tilt, current scan, cached texture), drains worker messages, and lays out the control/status panels. |
+| [`src/data.rs`](ply-spike/src/data.rs) | Background worker thread: polls S3 for the latest volume, downloads, decodes, reports status/errors/new scans over an `mpsc` channel. Owns retry/backoff. |
+| [`src/model.rs`](ply-spike/src/model.rs) | `ScanData` — a thin, rendering-oriented model built from `nexrad-model`'s `Scan`. Converts raw moment values into `Option<f32>` gates and splits/sorts/dedups sweeps per product. |
+| [`src/scope.rs`](ply-spike/src/scope.rs) | Rasterizes one sweep into an RGBA `ColorImage` (inverse polar mapping — for each pixel, find its azimuth/range and look up the nearest radial/gate), and paints all overlays (rings, spokes, city markers, legend, timestamp). |
+| [`src/colors.rs`](ply-spike/src/colors.rs) | NWS-style stepped color tables for dBZ and velocity, plus the lookup functions the rasterizer calls per-gate. |
+| [`src/geo.rs`](ply-spike/src/geo.rs) | Great-circle range/bearing (haversine) and polar-to-screen-pixel projection. Also holds the KJGX coordinates and the city list. |
+| [`src/borders.rs`](ply-spike/src/borders.rs) | Loads US state boundary lines for the scope overlay: checks `~/.rustywx/state_borders.geojson`, fetching it from the Census TIGERweb REST API on first run if missing, then reports parsed rings to the UI over its own one-shot channel. |
+| [`src/app.rs`](ply-spike/src/app.rs) | Ply-engine app: owns UI state (selected product/tilt, current scan, cached texture), drains worker messages, and manages the display. |
 
 ### Why a separate `ScanData` model instead of using `nexrad-model` directly
 
@@ -124,38 +127,38 @@ These aren't enforced by types, so it's easy to break them silently:
   without reassessing whether a proper projection is needed.
 - **Retry backoff**: 0 errors → normal 2-minute poll; each consecutive
   failure doubles the delay starting at 30s, capped at 600s. Resets to the
-  normal interval on the next success. See `retry_delay` in `src/data.rs`.
+  normal interval on the next success. See `retry_delay` in `ply-spike/src/data.rs`.
 
 ## How to extend
 
 **Add a new radar product (e.g. Spectrum Width):**
-1. Add a variant to `Product` in `src/model.rs` and give it a `label()`.
+1. Add a variant to `Product` in `ply-spike/src/model.rs` and give it a `label()`.
 2. Add a field to `ScanData` and populate it in `from_sweeps`, following the
    `reflectivity`/`velocity` pattern (pull the right accessor off `Radial`).
 3. Update `ScanData::sweeps()` to match the new variant.
-4. Add a color table to `src/colors.rs` and wire it into the `color_of`
+4. Add a color table to `ply-spike/src/colors.rs` and wire it into the `color_of`
    match in `scope::rasterize` and the `legend`/`unit` match in
    `scope::draw_scope`.
-5. Add a button for it in `src/app.rs`'s control bar.
+5. Add a button for it in `ply-spike/src/app.rs`'s control bar.
 6. Add unit tests mirroring the existing ones in `model.rs`/`colors.rs`.
 
 **Add a new city marker:**
-Add an entry to `CITIES` in `src/geo.rs` — `(name, lat, lon)`. That's it;
+Add an entry to `CITIES` in `ply-spike/src/geo.rs` — `(name, lat, lon)`. That's it;
 `scope::draw_scope` iterates the list and computes range/bearing
 automatically, skipping anything beyond `MAX_RANGE_KM`.
 
 **Change the color legend or add a band:**
-Edit `DBZ_LEGEND` / `VELOCITY_LEGEND` in `src/colors.rs`. Keep entries sorted
+Edit `DBZ_LEGEND` / `VELOCITY_LEGEND` in `ply-spike/src/colors.rs`. Keep entries sorted
 ascending by threshold — `banded()` and the `legends_are_ascending` test both
 assume this.
 
 **Change the poll interval:**
-Adjust `POLL_INTERVAL` in `src/data.rs`. Consider whether `retry_delay`'s cap
+Adjust `POLL_INTERVAL` in `ply-spike/src/data.rs`. Consider whether `retry_delay`'s cap
 (600s) still makes sense relative to a much shorter or longer interval.
 
 **Point at a different radar site:**
-Change `SITE` in `src/data.rs` and `KJGX_LAT`/`KJGX_LON` in `src/geo.rs`
-(and probably the window title in `src/main.rs`, and the `CITIES` list).
+Change `SITE` in `ply-spike/src/data.rs` and `KJGX_LAT`/`KJGX_LON` in `ply-spike/src/geo.rs`
+(and probably the window title in `ply-spike/src/main.rs`, and the `CITIES` list).
 
 ## Commit and PR conventions
 
