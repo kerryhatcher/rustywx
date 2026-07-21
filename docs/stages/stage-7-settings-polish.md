@@ -1,6 +1,6 @@
 # Stage 7: "Settings & Polish" — Configuration + Fit & Finish
 
-**Status:** ✅ Complete (Nyquist deferred to post-v1; tag pending CI)
+**Status:** ✅ Complete (tagged `v0.5.0-stage7`; Nyquist deferred to post-v1)
 **Tag:** `v0.5.0-stage7`
 
 ## Goal
@@ -94,4 +94,4 @@ Polished, configurable app.
   raw message-31 radial header. Moved to post-v1 rather than fabricate a
   physical value. Status-bar slot + label plumbing already in place.
 - [x] TDBZ kernel size selectable in settings (Sensitive / Default / Aggressive)
-- [ ] `git push` → CI passes → `git tag v0.5.0-stage7` → `git push --tags`  *(pending)*
+- [x] `git push` → CI passes → `git tag v0.5.0-stage7` → `git push --tags`  ✅
