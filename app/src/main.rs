@@ -947,7 +947,10 @@ async fn main() {
                                     .align(Left, CenterY)
                             })
                             .children(|ui| {
-                                ui.text("🌀 NHC Tropical Cyclones", |text| {
+                                ui.text("◉", |text| {
+                                    text.font_size(14).font(&SYMBOL_FONT).color(0x0dc5b8)
+                                });
+                                ui.text("NHC Tropical Cyclones", |text| {
                                     text.font_size(14).font(&INTER_BOLD).color(0xE8E0DC)
                                 });
                             });
@@ -1052,12 +1055,18 @@ async fn main() {
                                         .background_color(0x1E1B1B)
                                         .corner_radius(4.0)
                                         .layout(|layout| {
-                                            layout.padding((0, 8, 0, 8)).align(CenterX, CenterY)
+                                            layout
+                                                .padding((0, 8, 0, 8))
+                                                .gap(5)
+                                                .align(CenterX, CenterY)
                                         })
                                         .accessibility(|a| a.link("NHC Graphics Page"))
                                         .children(|ui| {
-                                            ui.text("🌐 NHC Graphics Page", |t| {
+                                            ui.text("NHC Graphics Page", |t| {
                                                 t.font_size(11).color(0x4a90d9)
+                                            });
+                                            ui.text("↗", |t| {
+                                                t.font_size(11).font(&SYMBOL_FONT).color(0x4a90d9)
                                             });
                                         });
                                 }
@@ -1344,11 +1353,14 @@ async fn main() {
                                         .background_color(0x2a3a5a)
                                         .corner_radius(4.0)
                                         .layout(|l| {
-                                            l.padding((0, 12, 0, 12)).align(CenterX, CenterY)
+                                            l.padding((0, 12, 0, 12)).gap(6).align(CenterX, CenterY)
                                         })
                                         .children(|ui| {
-                                            ui.text("🔗 Open in browser", |t| {
+                                            ui.text("Open in browser", |t| {
                                                 t.font_size(12).color(0x88aaff)
+                                            });
+                                            ui.text("↗", |t| {
+                                                t.font_size(12).font(&SYMBOL_FONT).color(0x88aaff)
                                             });
                                         });
                                 });
