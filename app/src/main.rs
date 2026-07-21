@@ -967,6 +967,34 @@ async fn main() {
                                 });
                             });
 
+                        // ── Location toggle button (Task 9) ──────────────
+                        let loc_bg = hover_tint(
+                            &state.hovered_ids,
+                            "btn-location",
+                            if state.show_location {
+                                0x0dc5b8
+                            } else {
+                                0x1E1B1B
+                            },
+                            0x1E1B1B,
+                        );
+                        let loc_label = if state.show_location {
+                            "Location ✓"
+                        } else {
+                            "Location"
+                        };
+                        ui.element()
+                            .id("btn-location")
+                            .width(fit!())
+                            .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                            .background_color(loc_bg)
+                            .corner_radius(4.0)
+                            .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
+                            .accessibility(|a| a.button(loc_label).checked(state.show_location))
+                            .children(|ui| {
+                                ui.text(loc_label, |text| text.font_size(12).color(0xE8E0DC));
+                            });
+
                         // Settings gear lives in the bottom status bar.
 
                         // Spacer pushes window controls to the right edge.
@@ -1882,6 +1910,11 @@ fn handle_input(
     }
     if ply.is_just_pressed("btn-alerts") {
         state.show_alerts = !state.show_alerts;
+    }
+    if ply.is_just_pressed("btn-location") {
+        state.show_location = !state.show_location;
+        state.settings.show_location = state.show_location;
+        state.cache.save_settings(&state.settings);
     }
 
     // ── Window controls: fullscreen toggle + close ───────────────
