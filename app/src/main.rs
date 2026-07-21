@@ -427,6 +427,7 @@ async fn main() {
         location_resolver: rustywx::location::LocationResolver::new(),
         location_input_focused: false,
         location_error_shown: false,
+        center_pending: false,
     };
 
     // Boot-time bookkeeping for applying loaded settings exactly once, and
@@ -712,9 +713,10 @@ async fn main() {
             state.settings.user_lat = Some(coords.lat);
             state.settings.user_lon = Some(coords.lon);
             state.cache.save_settings(&state.settings);
-            if state.settings.center_on_location {
+            if state.settings.center_on_location || state.center_pending {
                 recenter_on_user(&mut state);
             }
+            state.center_pending = false;
         }
         // Surface resolver failures as a toast (once, until the next detect).
         if !state.location_error_shown {
@@ -1941,6 +1943,22 @@ fn handle_input(
         state.show_location = !state.show_location;
         state.settings.show_location = state.show_location;
         state.cache.save_settings(&state.settings);
+        // Turning the marker on triggers a snap-to-location: recenter now if
+        // we already have a fix, otherwise kick off auto-resolution (system →
+        // IP) and snap once it lands (see the resolver-poll block).
+        if state.show_location {
+            if state.user_location.is_some() {
+                recenter_on_user(state);
+            } else {
+                state.location_error_shown = false;
+                state.location_resolver.detect("", get_time());
+                state.center_pending = true;
+            }
+        } else {
+            // Toggled off: cancel any pending snap so a late fix doesn't move
+            // the map after the marker is hidden.
+            state.center_pending = false;
+        }
     }
 
     // ── Window controls: fullscreen toggle + close ───────────────

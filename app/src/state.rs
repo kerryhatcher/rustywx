@@ -107,6 +107,9 @@ pub struct AppState {
     /// current resolver run (set by Task 8; kept here to avoid re-touching
     /// this file later).
     pub location_error_shown: bool,
+    /// One-shot: snap the map to the user's location the next time a fix is
+    /// resolved (set when the top-bar Location toggle is switched on).
+    pub center_pending: bool,
     /// Whether the window is currently fullscreen (chrome hidden).
     pub fullscreen: bool,
 
