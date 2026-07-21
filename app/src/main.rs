@@ -420,6 +420,13 @@ async fn main() {
         show_settings_panel: false,
         show_shortcuts: false,
         toast: None,
+        // Seeded from settings once the async load resolves (see the
+        // settings_applied block below) — no network call at startup.
+        user_location: None,
+        show_location: false,
+        location_resolver: rustywx::location::LocationResolver::new(),
+        location_input_focused: false,
+        location_error_shown: false,
     };
 
     // Boot-time bookkeeping for applying loaded settings exactly once, and
@@ -532,6 +539,13 @@ async fn main() {
             state.show_borders = state.settings.show_borders;
             state.show_alerts = state.settings.show_alerts;
             state.nhc_show_panel = state.settings.show_nhc;
+            state.show_location = state.settings.show_location;
+            // Restore last known location from settings without any
+            // network call — the resolver chain runs only on Detect.
+            state.user_location = match (state.settings.user_lat, state.settings.user_lon) {
+                (Some(lat), Some(lon)) => Some(rustywx::location::Coords { lat, lon }),
+                _ => None,
+            };
             // The initial raster (if any) used the default TDBZ kernel size
             // before this load resolved — redo it with the loaded setting.
             state.needs_reraster = true;

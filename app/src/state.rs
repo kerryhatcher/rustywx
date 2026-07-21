@@ -93,6 +93,20 @@ pub struct AppState {
     pub show_borders: bool,
     /// Toggle: show NWS alert polygons on the scope.
     pub show_alerts: bool,
+
+    // ── User location (Stage 8) ───────────────────────────────────
+    /// Resolved user location (marker + centering source). `None` until set.
+    pub user_location: Option<crate::location::Coords>,
+    /// Whether the user-location marker is drawn (mirrors the top-bar toggle).
+    pub show_location: bool,
+    /// Fallback-chain driver for on-demand location detection.
+    pub location_resolver: crate::location::LocationResolver,
+    /// Whether the settings location text field is capturing keystrokes.
+    pub location_input_focused: bool,
+    /// Whether the location-error toast has already been shown for the
+    /// current resolver run (set by Task 8; kept here to avoid re-touching
+    /// this file later).
+    pub location_error_shown: bool,
     /// Whether the window is currently fullscreen (chrome hidden).
     pub fullscreen: bool,
 
