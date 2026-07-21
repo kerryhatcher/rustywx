@@ -24,11 +24,59 @@ pub const RASTER_SIZE_PX: usize = 1024;
 // Rasterization
 // ---------------------------------------------------------------------------
 
-fn clean_sweep(sweep: &SweepData, product: Product, tdbz_kernel_size: usize) -> SweepData {
+fn clean_sweep(
+    sweep: &SweepData,
+    product: Product,
+    tdbz_kernel_size: usize,
+    cc_sweep: Option<&SweepData>,
+    cc_gate_enabled: bool,
+    cc_gate_threshold: f32,
+) -> SweepData {
     let mut cleaned = SweepData {
         elevation_deg: sweep.elevation_deg,
         radials: sweep.radials.clone(),
     };
+
+    // CC-gating: null Reflectivity gates whose co-located correlation
+    // coefficient is below threshold (non-meteorological echo — birds, chaff,
+    // AP, ground clutter). Dual-pol REF/CC come from the same surveillance cut,
+    // so they share gate geometry; align by nearest azimuth and equal index.
+    // Runs before the dBZ floor / TDBZ block so a suppressed gate is not also
+    // texture-processed. Fails open per-gate: a missing/absent CC sweep or an
+    // out-of-range CC gate leaves the REF gate untouched.
+    if product == Product::Reflectivity
+        && cc_gate_enabled
+        && let Some(cc) = cc_sweep
+        && !cc.radials.is_empty()
+    {
+        // Pre-sort CC azimuths once for nearest-azimuth lookup.
+        let mut cc_order: Vec<usize> = (0..cc.radials.len()).collect();
+        cc_order.sort_by(|&a, &b| {
+            cc.radials[a]
+                .azimuth_deg
+                .total_cmp(&cc.radials[b].azimuth_deg)
+        });
+        let cc_azimuths: Vec<f32> = cc_order
+            .iter()
+            .map(|&i| cc.radials[i].azimuth_deg)
+            .collect();
+
+        for radial in &mut cleaned.radials {
+            // Nearest CC radial by azimuth (reuse the existing helper; take its
+            // primary index, ignore the interpolation weights — CC is a QC mask,
+            // interpolating it would blur the birds/precip boundary).
+            let (i1, _i2, _w1, _w2) = nearest_two_radial_indices(&cc_azimuths, radial.azimuth_deg);
+            let cc_radial = &cc.radials[cc_order[i1]];
+            for (i, gate) in radial.gates.iter_mut().enumerate() {
+                if gate.is_some()
+                    && let Some(Some(cc_val)) = cc_radial.gates.get(i)
+                    && *cc_val < cc_gate_threshold
+                {
+                    *gate = None;
+                }
+            }
+        }
+    }
 
     if product == Product::Reflectivity {
         for radial in &mut cleaned.radials {
@@ -50,32 +98,56 @@ fn clean_sweep(sweep: &SweepData, product: Product, tdbz_kernel_size: usize) -> 
         }
     }
 
-    const TDBZ_THRESHOLD: f32 = 25.0;
-    for radial in &mut cleaned.radials {
-        let n = radial.gates.len();
-        let half = tdbz_kernel_size / 2;
-        let mut tdbz = vec![0.0f32; n];
-        for (i, tdbz_slot) in tdbz.iter_mut().enumerate() {
-            let start = i.saturating_sub(half);
-            let end = (i + half + 1).min(n);
-            if end - start < 2 {
-                continue;
-            }
-            let mut sum_sq = 0.0f32;
-            let mut count = 0u32;
-            for j in start..end - 1 {
-                if let (Some(a), Some(b)) = (radial.gates[j], radial.gates[j + 1]) {
-                    sum_sq += (a - b).powi(2);
-                    count += 1;
+    // TDBZ texture filter is a Reflectivity-only QC pass (D5): ZDR/CC/PhiDP are
+    // not intensity fields, so running an intensity-oriented texture filter on
+    // them would punch holes in valid dual-pol data.
+    if product == Product::Reflectivity {
+        const TDBZ_THRESHOLD: f32 = 25.0;
+        // Only null a high-texture gate when the surrounding reflectivity is also
+        // LOW. Clutter/AP is high-texture-at-low-dBZ; a real convective core has a
+        // sharp gradient (high texture) at high dBZ and must be preserved. This
+        // mirrors the WSR-88D CMD/REC "SPIN reflectivity threshold" — texture tests
+        // are gated on local mean signal so they don't punch holes in storm cores.
+        // (FMH-11 Part C §3.2.10 / §4.2.4.3; see docs/research.)
+        const LOW_DBZ_GATE: f32 = 35.0;
+        for radial in &mut cleaned.radials {
+            let n = radial.gates.len();
+            let half = tdbz_kernel_size / 2;
+            let mut tdbz = vec![0.0f32; n];
+            let mut mean = vec![f32::MAX; n]; // MAX = unknown → never counts as "low"
+            for i in 0..n {
+                let start = i.saturating_sub(half);
+                let end = (i + half + 1).min(n);
+                if end - start < 2 {
+                    continue;
+                }
+                let mut sum_sq = 0.0f32;
+                let mut diff_count = 0u32;
+                let mut sum = 0.0f32;
+                let mut val_count = 0u32;
+                for j in start..end {
+                    if let Some(v) = radial.gates[j] {
+                        sum += v;
+                        val_count += 1;
+                        if j + 1 < end
+                            && let Some(b) = radial.gates[j + 1]
+                        {
+                            sum_sq += (v - b).powi(2);
+                            diff_count += 1;
+                        }
+                    }
+                }
+                if diff_count > 0 {
+                    tdbz[i] = sum_sq / diff_count as f32;
+                }
+                if val_count > 0 {
+                    mean[i] = sum / val_count as f32;
                 }
             }
-            if count > 0 {
-                *tdbz_slot = sum_sq / count as f32;
-            }
-        }
-        for (i, &tdbz_val) in tdbz.iter().enumerate() {
-            if tdbz_val > TDBZ_THRESHOLD {
-                radial.gates[i] = None;
+            for i in 0..n {
+                if tdbz[i] > TDBZ_THRESHOLD && mean[i] < LOW_DBZ_GATE {
+                    radial.gates[i] = None;
+                }
             }
         }
     }
@@ -90,8 +162,18 @@ pub fn rasterize(
     size_px: usize,
     max_range_km: f32,
     tdbz_kernel_size: usize,
+    cc_sweep: Option<&SweepData>,
+    cc_gate_enabled: bool,
+    cc_gate_threshold: f32,
 ) -> Vec<u8> {
-    let sweep = clean_sweep(sweep, product, tdbz_kernel_size);
+    let sweep = clean_sweep(
+        sweep,
+        product,
+        tdbz_kernel_size,
+        cc_sweep,
+        cc_gate_enabled,
+        cc_gate_threshold,
+    );
     let mut pixels = vec![0u8; size_px * size_px * 4];
 
     if sweep.radials.is_empty() {
@@ -113,6 +195,9 @@ pub fn rasterize(
         Product::Reflectivity => colors::dbz_color as fn(f32) -> [u8; 4],
         Product::Velocity => colors::velocity_color as fn(f32) -> [u8; 4],
         Product::SpectrumWidth => colors::spectrum_width_color as fn(f32) -> [u8; 4],
+        Product::DifferentialReflectivity => colors::zdr_color as fn(f32) -> [u8; 4],
+        Product::CorrelationCoefficient => colors::cc_color as fn(f32) -> [u8; 4],
+        Product::DifferentialPhase => colors::phidp_color as fn(f32) -> [u8; 4],
     };
 
     let center = size_px as f32 / 2.0;
@@ -151,10 +236,71 @@ pub fn rasterize(
         }
     }
 
-    morphological_close(&mut pixels, size_px, 2);
-    despeckle(&mut pixels, size_px, 2);
+    // Speckle/close QC passes are Reflectivity-only (D5): ZDR/CC/PhiDP are not
+    // intensity fields, so morphological close/despeckle/region-area filtering
+    // (tuned for dBZ clutter) would punch holes in valid dual-pol data.
+    if product == Product::Reflectivity {
+        morphological_close(&mut pixels, size_px, 2);
+        despeckle(&mut pixels, size_px, 2);
+        // Region-area speckle filter: a fixed 3×3 density check passes small
+        // *clumps* (a 2×2 clutter blob has 3 live neighbours per pixel). Flood-fill
+        // 8-connected blobs and drop any below a minimum pixel area — the standard
+        // shape-independent "isolated echo removal" (JMA QC; see docs/research).
+        // ponytail: constant area threshold at the current 1024px/230km raster;
+        // make it scale with size_px/max_range_km if the raster geometry changes.
+        remove_small_regions(&mut pixels, size_px, 8);
+    }
 
     pixels
+}
+
+/// Zero out 8-connected blobs of live (alpha≠0) pixels smaller than `min_area`.
+fn remove_small_regions(pixels: &mut [u8], size_px: usize, min_area: usize) {
+    let n = size_px * size_px;
+    let mut visited = vec![false; n];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut blob: Vec<usize> = Vec::new();
+    for start in 0..n {
+        if visited[start] || pixels[start * 4 + 3] == 0 {
+            continue;
+        }
+        // Flood-fill this blob.
+        stack.clear();
+        blob.clear();
+        stack.push(start);
+        visited[start] = true;
+        while let Some(idx) = stack.pop() {
+            blob.push(idx);
+            let x = (idx % size_px) as i32;
+            let y = (idx / size_px) as i32;
+            for dy in -1..=1i32 {
+                for dx in -1..=1i32 {
+                    if dx == 0 && dy == 0 {
+                        continue;
+                    }
+                    let nx = x + dx;
+                    let ny = y + dy;
+                    if nx < 0 || ny < 0 || nx >= size_px as i32 || ny >= size_px as i32 {
+                        continue;
+                    }
+                    let nidx = (ny as usize) * size_px + nx as usize;
+                    if !visited[nidx] && pixels[nidx * 4 + 3] != 0 {
+                        visited[nidx] = true;
+                        stack.push(nidx);
+                    }
+                }
+            }
+        }
+        if blob.len() < min_area {
+            for &idx in &blob {
+                let p = idx * 4;
+                pixels[p] = 0;
+                pixels[p + 1] = 0;
+                pixels[p + 2] = 0;
+                pixels[p + 3] = 0;
+            }
+        }
+    }
 }
 
 fn morphological_close(pixels: &mut [u8], size_px: usize, radius: usize) {
@@ -401,10 +547,11 @@ pub fn draw_scope_to_texture(
     pan_km: (f32, f32),
     zoom: f32,
     borders: Option<(&[Ring], bool)>,
-    alerts: Option<(&[Alert], bool)>,
+    alerts: Option<(&[Alert], bool, bool)>,
     nhc: Option<(&NhcBundle, &NhcOverlayState)>,
     user: Option<Coords>,
     show_sites: bool,
+    show_rings: bool,
 ) {
     let side = screen_width().min(screen_height());
     let px_per_km = (side / 2.0) / MAX_RANGE_KM * zoom;
@@ -432,40 +579,43 @@ pub fn draw_scope_to_texture(
     let grid_color = MacroquadColor::from_rgba(0x2a, 0x3a, 0x2f, 255);
     let grid_text_color = MacroquadColor::from_rgba(0x5f, 0x8a, 0x6a, 255);
 
-    // Range rings every 50 km
-    let mut ring_km = 50.0;
-    while ring_km <= MAX_RANGE_KM {
-        draw_circle_lines(center_x, center_y, ring_km * px_per_km, 1.0, grid_color);
-        draw_text(
-            format!("{ring_km:.0} km"),
-            center_x + 4.0,
-            center_y - ring_km * px_per_km,
-            18.0,
-            grid_text_color,
-        );
-        ring_km += 50.0;
-    }
+    // Range rings + cardinal crosshairs (optional).
+    if show_rings {
+        // Range rings every 50 km
+        let mut ring_km = 50.0;
+        while ring_km <= MAX_RANGE_KM {
+            draw_circle_lines(center_x, center_y, ring_km * px_per_km, 1.0, grid_color);
+            draw_text(
+                format!("{ring_km:.0} km"),
+                center_x + 4.0,
+                center_y - ring_km * px_per_km,
+                18.0,
+                grid_text_color,
+            );
+            ring_km += 50.0;
+        }
 
-    // Cardinal spokes
-    for (azimuth, label) in [(0.0, "N"), (90.0, "E"), (180.0, "S"), (270.0, "W")] {
-        let (dx, dy) = geo::polar_to_offset(azimuth, MAX_RANGE_KM, px_per_km);
-        draw_line(
-            center_x,
-            center_y,
-            center_x + dx,
-            center_y + dy,
-            1.0,
-            grid_color,
-        );
-        let (lx, ly) = geo::polar_to_offset(azimuth, MAX_RANGE_KM * 0.96, px_per_km);
-        let text_dims = measure_text(label, None, 18, 1.0);
-        draw_text(
-            label,
-            center_x + lx - text_dims.width / 2.0,
-            center_y + ly - text_dims.height / 2.0,
-            18.0,
-            grid_text_color,
-        );
+        // Cardinal spokes
+        for (azimuth, label) in [(0.0, "N"), (90.0, "E"), (180.0, "S"), (270.0, "W")] {
+            let (dx, dy) = geo::polar_to_offset(azimuth, MAX_RANGE_KM, px_per_km);
+            draw_line(
+                center_x,
+                center_y,
+                center_x + dx,
+                center_y + dy,
+                1.0,
+                grid_color,
+            );
+            let (lx, ly) = geo::polar_to_offset(azimuth, MAX_RANGE_KM * 0.96, px_per_km);
+            let text_dims = measure_text(label, None, 18, 1.0);
+            draw_text(
+                label,
+                center_x + lx - text_dims.width / 2.0,
+                center_y + ly - text_dims.height / 2.0,
+                18.0,
+                grid_text_color,
+            );
+        }
     }
 
     // Station marker at center
@@ -529,7 +679,7 @@ pub fn draw_scope_to_texture(
     }
 
     // ── Radar site markers (double-click to select) ─────────────
-    // Shown only while the Radar panel is open (mirrors `show_sites`).
+    // Shown only while the Radar side panel is open (mirrors `show_sites`).
     if show_sites {
         let sw = screen_width();
         let sh = screen_height();
@@ -565,10 +715,18 @@ pub fn draw_scope_to_texture(
     }
 
     // ── Alert overlays (Stage 4) ─────────────────────────────────
-    if let Some((alerts, show)) = alerts
-        && show
+    if let Some((alerts, show_watches, show_warnings)) = alerts
+        && (show_watches || show_warnings)
     {
-        draw_alerts(alerts, site, center_x, center_y, px_per_km);
+        draw_alerts(
+            alerts,
+            show_watches,
+            show_warnings,
+            site,
+            center_x,
+            center_y,
+            px_per_km,
+        );
     }
 
     // ── NHC overlays (Stage 5) ──────────────────────────────────
@@ -620,20 +778,36 @@ fn draw_borders(rings: &[Ring], site: &RadarSite, center_x: f32, center_y: f32, 
 
 /// Draw active NWS warning/watch polygons across the full screen.
 /// Each alert gets its NWS color and a label near the polygon centroid.
-fn draw_alerts(alerts: &[Alert], site: &RadarSite, center_x: f32, center_y: f32, px_per_km: f32) {
+fn draw_alerts(
+    alerts: &[Alert],
+    show_watches: bool,
+    show_warnings: bool,
+    site: &RadarSite,
+    center_x: f32,
+    center_y: f32,
+    px_per_km: f32,
+) {
     let sw = screen_width();
     let sh = screen_height();
     let margin = 50.0;
 
+    // ponytail: tuned by eye — below this px/km, zoomed-out labels are just
+    // clutter; outlines still draw, labels reappear once you zoom back in.
+    const MIN_PX_PER_KM_FOR_LABELS: f32 = 1.5;
+
+    // ── Pass 1: draw every outline, no labels ────────────────────
     for alert in alerts {
+        // Skip whichever category the user has toggled off.
+        if crate::alerts::is_watch(&alert.event) {
+            if !show_watches {
+                continue;
+            }
+        } else if !show_warnings {
+            continue;
+        }
+
         let line_color =
             MacroquadColor::from_rgba(alert.color[0], alert.color[1], alert.color[2], 255);
-        let label_color =
-            MacroquadColor::from_rgba(alert.color[0], alert.color[1], alert.color[2], 255);
-
-        let mut sum_x = 0.0f32;
-        let mut sum_y = 0.0f32;
-        let mut point_count = 0u32;
 
         for ring in &alert.rings {
             if ring.len() < 3 {
@@ -663,9 +837,36 @@ fn draw_alerts(alerts: &[Alert], site: &RadarSite, center_x: f32, center_y: f32,
                 }
                 draw_line(ax, ay, bx, by, 2.0, line_color);
             }
+        }
+    }
 
-            // Accumulate centroid from on-screen points
-            for &(px, py) in &pts_px {
+    // ── Pass 2: one label candidate per alert, collision-placed ──
+    if px_per_km < MIN_PX_PER_KM_FOR_LABELS {
+        return; // zoomed too far out — outlines only.
+    }
+
+    let mut candidates: Vec<(&str, f32, f32, [u8; 4])> = Vec::new();
+    for alert in alerts {
+        if crate::alerts::is_watch(&alert.event) {
+            if !show_watches {
+                continue;
+            }
+        } else if !show_warnings {
+            continue;
+        }
+
+        let mut sum_x = 0.0f32;
+        let mut sum_y = 0.0f32;
+        let mut point_count = 0u32;
+
+        for ring in &alert.rings {
+            if ring.len() < 3 {
+                continue;
+            }
+            for &(lat, lon) in ring {
+                let km = geo::point_to_km_offset(site.lat, site.lon, (lat, lon));
+                let px = center_x + km.x * px_per_km;
+                let py = center_y + km.y * px_per_km;
                 if px >= 0.0 && px <= sw && py >= 0.0 && py <= sh {
                     sum_x += px;
                     sum_y += py;
@@ -674,17 +875,39 @@ fn draw_alerts(alerts: &[Alert], site: &RadarSite, center_x: f32, center_y: f32,
             }
         }
 
-        // Draw a short label near the polygon centroid
         if point_count > 0 {
             let cx = sum_x / point_count as f32;
             let cy = sum_y / point_count as f32;
             let label = if alert.event.len() > 30 {
                 &alert.event[..30]
             } else {
-                &alert.event
+                &alert.event[..]
             };
-            draw_text(label, cx, cy, 14.0, label_color);
+            candidates.push((label, cx, cy, alert.color));
         }
+    }
+
+    // Deterministic order for the collision pass.
+    candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then(a.2.total_cmp(&b.2)));
+
+    let label_margin = 6.0; // safe-zone padding around each label
+    let label_font = 14.0;
+    let mut placed: Vec<(f32, f32, f32, f32)> = Vec::new();
+    for (label, cx, cy, color) in &candidates {
+        let text_dims = measure_text(label, None, label_font as u16, 1.0);
+        let bw = text_dims.width + label_margin * 2.0;
+        let bh = text_dims.height + label_margin * 2.0;
+        let box_x = cx - label_margin;
+        let box_y = cy - label_margin;
+        let collides = placed.iter().any(|&(px0, py0, px1, py1)| {
+            box_x < px1 && box_x + bw > px0 && box_y < py1 && box_y + bh > py0
+        });
+        if collides {
+            continue;
+        }
+        let label_color = MacroquadColor::from_rgba(color[0], color[1], color[2], 255);
+        draw_text(label, *cx, *cy, label_font, label_color);
+        placed.push((box_x, box_y, box_x + bw, box_y + bh));
     }
 }
 
@@ -1060,6 +1283,25 @@ mod tests {
     }
 
     #[test]
+    fn remove_small_regions_drops_speckle_keeps_blob() {
+        // 8×8 RGBA image: a lone pixel (area 1) and a 3×3 block (area 9).
+        let size = 8;
+        let mut px = vec![0u8; size * size * 4];
+        let set = |px: &mut [u8], x: usize, y: usize| {
+            px[(y * size + x) * 4 + 3] = 255;
+        };
+        set(&mut px, 0, 0); // isolated speckle
+        for y in 4..7 {
+            for x in 4..7 {
+                set(&mut px, x, y); // 3×3 blob
+            }
+        }
+        remove_small_regions(&mut px, size, 8);
+        assert_eq!(px[3], 0, "lone pixel at (0,0) removed");
+        assert_eq!(px[(5 * size + 5) * 4 + 3], 255, "9-px blob kept");
+    }
+
+    #[test]
     fn tdbz_kernel_size_widens_clutter_removal_footprint() {
         // A single spike gate surrounded by uniform reflectivity: a wider
         // TDBZ kernel averages over more gate-pairs per position, so the
@@ -1072,7 +1314,15 @@ mod tests {
         };
 
         let removed_count = |kernel_size: usize| {
-            clean_sweep(&sweep, Product::Reflectivity, kernel_size).radials[0]
+            clean_sweep(
+                &sweep,
+                Product::Reflectivity,
+                kernel_size,
+                None,
+                false,
+                0.80,
+            )
+            .radials[0]
                 .gates
                 .iter()
                 .filter(|g| g.is_none())
@@ -1081,5 +1331,51 @@ mod tests {
 
         assert_eq!(removed_count(5), 5);
         assert_eq!(removed_count(13), 13);
+    }
+
+    #[test]
+    fn cc_gating_nulls_low_cc_ref_gate_and_keeps_high() {
+        // REF radial: two live gates. CC radial (same azimuth): gate0 low
+        // (0.55 — birds), gate1 high (0.98 — precip). Both dBZ values (30/40)
+        // are above the dBZ floor (20.0 within 20km) and far enough apart in
+        // range that the 2-gate TDBZ pass's `end - start < 2` guard keeps out
+        // of the way, isolating the CC-gating effect.
+        let ref_sweep = SweepData {
+            elevation_deg: 0.5,
+            radials: vec![radial(0.0, vec![Some(30.0), Some(40.0)])],
+        };
+        let cc_sweep = SweepData {
+            elevation_deg: 0.5,
+            radials: vec![radial(0.0, vec![Some(0.55), Some(0.98)])],
+        };
+        let cleaned = clean_sweep(
+            &ref_sweep,
+            Product::Reflectivity,
+            9,
+            Some(&cc_sweep),
+            true,
+            0.80,
+        );
+        assert_eq!(cleaned.radials[0].gates[0], None, "low-CC gate suppressed");
+        assert_eq!(
+            cleaned.radials[0].gates[1],
+            Some(40.0),
+            "high-CC gate preserved"
+        );
+
+        // Disabled → both preserved.
+        let ungated = clean_sweep(
+            &ref_sweep,
+            Product::Reflectivity,
+            9,
+            Some(&cc_sweep),
+            false,
+            0.80,
+        );
+        assert_eq!(ungated.radials[0].gates[0], Some(30.0));
+
+        // Fail-open: no CC sweep → both preserved.
+        let no_cc = clean_sweep(&ref_sweep, Product::Reflectivity, 9, None, true, 0.80);
+        assert_eq!(no_cc.radials[0].gates[0], Some(30.0));
     }
 }

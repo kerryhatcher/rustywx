@@ -55,6 +55,49 @@ pub const SPECTRUM_WIDTH_LEGEND: &[(f32, [u8; 4])] = &[
     (15.0, [0xbc, 0x00, 0x00, 0xff]),
 ];
 
+/// Differential reflectivity (ZDR) in dB. Diverging ramp: negative (oblate-
+/// down / small drops, hail) cool blues → near-zero neutral gray → positive
+/// (large oblate drops, melting) greens→yellows→reds. Range ~ -4..+6 dB.
+pub const ZDR_LEGEND: &[(f32, [u8; 4])] = &[
+    (-4.0, [0x40, 0x00, 0x80, 0xff]), // deep purple
+    (-2.0, [0x00, 0x40, 0xc0, 0xff]), // blue
+    (-0.5, [0x40, 0x80, 0xc0, 0xff]), // pale blue
+    (0.0, [0x80, 0x80, 0x80, 0xff]),  // neutral gray (ZDR ~ 0)
+    (0.5, [0x00, 0x80, 0x00, 0xff]),  // green
+    (1.5, [0x00, 0xe0, 0x00, 0xff]),  // bright green
+    (3.0, [0xfd, 0xf8, 0x02, 0xff]),  // yellow
+    (4.5, [0xfd, 0x95, 0x00, 0xff]),  // orange
+    (6.0, [0xfd, 0x00, 0x00, 0xff]),  // red
+];
+
+/// Correlation coefficient (RhoHV / CC), unitless. The meteorologically useful
+/// band is 0.80-1.00; below ~0.80 is non-meteorological (birds, chaff, AP,
+/// ground clutter). First anchor 0.2 so anything lower draws transparent; the
+/// 0.80-1.00 range gets most of the color resolution.
+pub const CC_LEGEND: &[(f32, [u8; 4])] = &[
+    (0.20, [0x30, 0x30, 0x30, 0xff]), // very low — biology/clutter
+    (0.45, [0x60, 0x00, 0x80, 0xff]), // purple
+    (0.65, [0x00, 0x40, 0xc0, 0xff]), // blue
+    (0.80, [0x00, 0xc0, 0xc0, 0xff]), // cyan — gating threshold
+    (0.90, [0x00, 0xe0, 0x00, 0xff]), // green
+    (0.95, [0xfd, 0xf8, 0x02, 0xff]), // yellow
+    (0.98, [0xfd, 0x95, 0x00, 0xff]), // orange
+    (1.00, [0xfd, 0x00, 0x00, 0xff]), // red — highest correlation (uniform precip)
+    (1.05, [0xfd, 0xfd, 0xfd, 0xff]), // white cap (clamp guard above 1.0)
+];
+
+/// Differential phase (PhiDP) in degrees, 0..360. Cyclic-ish quantity; use a
+/// perceptually even hue sweep so the wrap at 360->0 is not jarring.
+pub const PHIDP_LEGEND: &[(f32, [u8; 4])] = &[
+    (0.0, [0x00, 0x00, 0x80, 0xff]),   // navy
+    (60.0, [0x00, 0x80, 0xc0, 0xff]),  // blue-cyan
+    (120.0, [0x00, 0xc0, 0x40, 0xff]), // green
+    (180.0, [0xe0, 0xe0, 0x00, 0xff]), // yellow
+    (240.0, [0xf0, 0x80, 0x00, 0xff]), // orange
+    (300.0, [0xd0, 0x00, 0x00, 0xff]), // red
+    (360.0, [0x80, 0x00, 0x80, 0xff]), // purple (wraps toward navy)
+];
+
 /// Catmull-Rom spline (Cardinal spline with tension 0) interpolation of
 /// a single channel. Interpolates between `p1` and `p2` using the
 /// neighbouring control points `p0` and `p3` for tangent estimation.
@@ -132,11 +175,24 @@ pub fn spectrum_width_color(ms: f32) -> [u8; 4] {
     spline_color(SPECTRUM_WIDTH_LEGEND, ms)
 }
 
+pub fn zdr_color(db: f32) -> [u8; 4] {
+    spline_color(ZDR_LEGEND, db)
+}
+
+pub fn cc_color(cc: f32) -> [u8; 4] {
+    spline_color(CC_LEGEND, cc)
+}
+
+pub fn phidp_color(deg: f32) -> [u8; 4] {
+    spline_color(PHIDP_LEGEND, deg)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        DBZ_LEGEND, SPECTRUM_WIDTH_LEGEND, VELOCITY_LEGEND, catmull_rom, dbz_color,
-        spectrum_width_color, velocity_color,
+        CC_LEGEND, DBZ_LEGEND, PHIDP_LEGEND, SPECTRUM_WIDTH_LEGEND, VELOCITY_LEGEND, ZDR_LEGEND,
+        catmull_rom, cc_color, dbz_color, phidp_color, spectrum_width_color, velocity_color,
+        zdr_color,
     };
 
     #[test]
@@ -240,6 +296,9 @@ mod tests {
         assert!(DBZ_LEGEND.windows(2).all(|w| w[0].0 < w[1].0));
         assert!(VELOCITY_LEGEND.windows(2).all(|w| w[0].0 < w[1].0));
         assert!(SPECTRUM_WIDTH_LEGEND.windows(2).all(|w| w[0].0 < w[1].0));
+        assert!(ZDR_LEGEND.windows(2).all(|w| w[0].0 < w[1].0));
+        assert!(CC_LEGEND.windows(2).all(|w| w[0].0 < w[1].0));
+        assert!(PHIDP_LEGEND.windows(2).all(|w| w[0].0 < w[1].0));
     }
 
     #[test]
@@ -268,6 +327,30 @@ mod tests {
         let low = spectrum_width_color(2.0);
         let high = spectrum_width_color(10.0);
         assert!(high[0] > low[0], "red channel should rise with width");
+    }
+
+    #[test]
+    fn dualpol_legends_pass_through_anchors() {
+        // The spline hits every anchor exactly at its threshold value.
+        for &(threshold, color) in ZDR_LEGEND {
+            assert_eq!(zdr_color(threshold), color);
+        }
+        for &(threshold, color) in CC_LEGEND {
+            assert_eq!(cc_color(threshold), color);
+        }
+        for &(threshold, color) in PHIDP_LEGEND {
+            assert_eq!(phidp_color(threshold), color);
+        }
+    }
+
+    #[test]
+    fn cc_below_minimum_is_transparent() {
+        assert_eq!(cc_color(0.1), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn zdr_below_minimum_is_transparent() {
+        assert_eq!(zdr_color(-5.0), [0, 0, 0, 0]);
     }
 
     #[test]

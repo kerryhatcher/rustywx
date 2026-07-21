@@ -293,6 +293,9 @@ fn scan_to_bytes(scan: &ScanData) -> Vec<u8> {
     encode_sweeps(&mut buf, &scan.reflectivity);
     encode_sweeps(&mut buf, &scan.velocity);
     encode_sweeps(&mut buf, &scan.spectrum_width);
+    encode_sweeps(&mut buf, &scan.differential_reflectivity);
+    encode_sweeps(&mut buf, &scan.correlation_coefficient);
+    encode_sweeps(&mut buf, &scan.differential_phase);
     buf
 }
 
@@ -330,11 +333,17 @@ fn bytes_to_scan(bytes: &[u8]) -> Result<ScanData, String> {
     let reflectivity = decode_sweeps(&mut r)?;
     let velocity = decode_sweeps(&mut r)?;
     let spectrum_width = decode_sweeps(&mut r)?;
+    let differential_reflectivity = decode_sweeps(&mut r)?;
+    let correlation_coefficient = decode_sweeps(&mut r)?;
+    let differential_phase = decode_sweeps(&mut r)?;
     Ok(ScanData {
         timestamp,
         reflectivity,
         velocity,
         spectrum_width,
+        differential_reflectivity,
+        correlation_coefficient,
+        differential_phase,
         vcp_number,
     })
 }
@@ -430,6 +439,9 @@ mod tests {
             }],
             velocity: vec![],
             spectrum_width: vec![],
+            differential_reflectivity: vec![],
+            correlation_coefficient: vec![],
+            differential_phase: vec![],
             vcp_number: 12,
         }
     }
@@ -504,6 +516,9 @@ mod tests {
             reflectivity: sweeps,
             velocity: vec![],
             spectrum_width: vec![],
+            differential_reflectivity: vec![],
+            correlation_coefficient: vec![],
+            differential_phase: vec![],
             vcp_number: 12,
         };
 

@@ -23,6 +23,9 @@ fn bench_rasterize(c: &mut Criterion) {
                         size_px,
                         MAX_RANGE_KM,
                         TDBZ_KERNEL_SIZE,
+                        None,  // cc_sweep
+                        false, // cc_gate_enabled
+                        0.80,  // cc_gate_threshold
                     ))
                 });
             });

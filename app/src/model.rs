@@ -19,6 +19,9 @@ pub enum Product {
     Reflectivity,
     Velocity,
     SpectrumWidth,
+    DifferentialReflectivity,
+    CorrelationCoefficient,
+    DifferentialPhase,
 }
 
 impl Product {
@@ -27,6 +30,9 @@ impl Product {
             Product::Reflectivity => "Reflectivity",
             Product::Velocity => "Velocity",
             Product::SpectrumWidth => "Spectrum Width",
+            Product::DifferentialReflectivity => "Differential Reflectivity",
+            Product::CorrelationCoefficient => "Correlation Coefficient",
+            Product::DifferentialPhase => "Differential Phase",
         }
     }
 
@@ -35,6 +41,9 @@ impl Product {
         match self {
             Product::Reflectivity => "dBZ",
             Product::Velocity | Product::SpectrumWidth => "m/s",
+            Product::DifferentialReflectivity => "dB",
+            Product::CorrelationCoefficient => "",
+            Product::DifferentialPhase => "°",
         }
     }
 }
@@ -105,6 +114,12 @@ pub struct ScanData {
     pub reflectivity: Vec<SweepData>,
     pub velocity: Vec<SweepData>,
     pub spectrum_width: Vec<SweepData>,
+    #[serde(default)]
+    pub differential_reflectivity: Vec<SweepData>,
+    #[serde(default)]
+    pub correlation_coefficient: Vec<SweepData>,
+    #[serde(default)]
+    pub differential_phase: Vec<SweepData>,
     pub vcp_number: u16,
 }
 
@@ -114,6 +129,9 @@ impl ScanData {
             Product::Reflectivity => &self.reflectivity,
             Product::Velocity => &self.velocity,
             Product::SpectrumWidth => &self.spectrum_width,
+            Product::DifferentialReflectivity => &self.differential_reflectivity,
+            Product::CorrelationCoefficient => &self.correlation_coefficient,
+            Product::DifferentialPhase => &self.differential_phase,
         }
     }
 
@@ -126,12 +144,24 @@ impl ScanData {
         let mut reflectivity = Vec::new();
         let mut velocity = Vec::new();
         let mut spectrum_width = Vec::new();
+        let mut differential_reflectivity = Vec::new();
+        let mut correlation_coefficient = Vec::new();
+        let mut differential_phase = Vec::new();
 
         for sweep in sweeps {
             for (product, out) in [
                 (Product::Reflectivity, &mut reflectivity),
                 (Product::Velocity, &mut velocity),
                 (Product::SpectrumWidth, &mut spectrum_width),
+                (
+                    Product::DifferentialReflectivity,
+                    &mut differential_reflectivity,
+                ),
+                (
+                    Product::CorrelationCoefficient,
+                    &mut correlation_coefficient,
+                ),
+                (Product::DifferentialPhase, &mut differential_phase),
             ] {
                 let radials: Vec<RadialData> = sweep
                     .radials()
@@ -141,6 +171,9 @@ impl ScanData {
                             Product::Reflectivity => radial.reflectivity(),
                             Product::Velocity => radial.velocity(),
                             Product::SpectrumWidth => radial.spectrum_width(),
+                            Product::DifferentialReflectivity => radial.differential_reflectivity(),
+                            Product::CorrelationCoefficient => radial.correlation_coefficient(),
+                            Product::DifferentialPhase => radial.differential_phase(),
                         }?;
                         Some(RadialData {
                             azimuth_deg: radial.azimuth_angle_degrees(),
@@ -173,12 +206,18 @@ impl ScanData {
         sort_and_dedup(&mut reflectivity);
         sort_and_dedup(&mut velocity);
         sort_and_dedup(&mut spectrum_width);
+        sort_and_dedup(&mut differential_reflectivity);
+        sort_and_dedup(&mut correlation_coefficient);
+        sort_and_dedup(&mut differential_phase);
 
         ScanData {
             timestamp,
             reflectivity,
             velocity,
             spectrum_width,
+            differential_reflectivity,
+            correlation_coefficient,
+            differential_phase,
             vcp_number,
         }
     }
@@ -209,12 +248,22 @@ mod tests {
         MomentData::from_fixed_point(gate_count, 2125, 250, 8, 2.0, 129.0, raws)
     }
 
+    /// A CC-encoded moment (RhoHV, unitless 0..1): value = (raw - 2) / 300.
+    fn cc_moment(raws: Vec<u8>) -> MomentData {
+        let gate_count = raws.len() as u16;
+        MomentData::from_fixed_point(gate_count, 2125, 250, 8, 300.0, 2.0, raws)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn radial(
         az: f32,
         elev_num: u8,
         elev_deg: f32,
         refl: Option<MomentData>,
         vel: Option<MomentData>,
+        zdr: Option<MomentData>,
+        cc: Option<MomentData>,
+        phi: Option<MomentData>,
     ) -> Radial {
         Radial::new(
             0,
@@ -226,11 +275,11 @@ mod tests {
             elev_deg,
             refl,
             vel,
-            None,
-            None,
-            None,
-            None,
-            None,
+            None, // spectrum_width
+            zdr,  // differential_reflectivity
+            phi,  // differential_phase  ← NOTE order: phi BEFORE cc
+            cc,   // correlation_coefficient
+            None, // clutter_filter_power
         )
     }
 
@@ -239,14 +288,41 @@ mod tests {
         let s1 = Sweep::new(
             1,
             vec![
-                radial(0.0, 1, 0.5, Some(ref_moment(vec![0, 130, 190])), None),
-                radial(0.5, 1, 0.5, Some(ref_moment(vec![0, 130, 190])), None),
+                radial(
+                    0.0,
+                    1,
+                    0.5,
+                    Some(ref_moment(vec![0, 130, 190])),
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+                radial(
+                    0.5,
+                    1,
+                    0.5,
+                    Some(ref_moment(vec![0, 130, 190])),
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
             ],
         );
         // Sweep 2 (0.5 deg): velocity only (split-cut CD).
         let s2 = Sweep::new(
             2,
-            vec![radial(0.0, 2, 0.5, None, Some(vel_moment(vec![0, 1, 65])))],
+            vec![radial(
+                0.0,
+                2,
+                0.5,
+                None,
+                Some(vel_moment(vec![0, 1, 65])),
+                None,
+                None,
+                None,
+            )],
         );
         // Sweep 3 (1.45 deg): both moments.
         let s3 = Sweep::new(
@@ -257,6 +333,9 @@ mod tests {
                 1.45,
                 Some(ref_moment(vec![130])),
                 Some(vel_moment(vec![193])),
+                None,
+                None,
+                None,
             )],
         );
         vec![s1, s2, s3]
@@ -300,11 +379,29 @@ mod tests {
         // Two reflectivity sweeps both at ~0.5 deg -> keep only the first.
         let s1 = Sweep::new(
             1,
-            vec![radial(0.0, 1, 0.48, Some(ref_moment(vec![130])), None)],
+            vec![radial(
+                0.0,
+                1,
+                0.48,
+                Some(ref_moment(vec![130])),
+                None,
+                None,
+                None,
+                None,
+            )],
         );
         let s2 = Sweep::new(
             2,
-            vec![radial(0.0, 2, 0.52, Some(ref_moment(vec![190])), None)],
+            vec![radial(
+                0.0,
+                2,
+                0.52,
+                Some(ref_moment(vec![190])),
+                None,
+                None,
+                None,
+                None,
+            )],
         );
         let scan_data =
             ScanData::from_sweeps(&[s1, s2], Utc::now(), VCPNumber::Precipitation12.into());
@@ -317,6 +414,28 @@ mod tests {
         let scan_data = ScanData::from_sweeps(&synthetic_sweeps(), Utc::now(), 12);
         assert_eq!(scan_data.sweeps(Product::Reflectivity).len(), 2);
         assert_eq!(scan_data.sweeps(Product::Velocity).len(), 2);
+        assert_eq!(scan_data.sweeps(Product::CorrelationCoefficient).len(), 0);
+    }
+
+    #[test]
+    fn dualpol_moments_convert_to_gates() {
+        // CC raws: 0 -> BelowThreshold -> None; 242 -> (242-2)/300 = 0.8.
+        let s1 = Sweep::new(
+            1,
+            vec![radial(
+                0.0,
+                1,
+                0.5,
+                None,
+                None,
+                None,
+                Some(cc_moment(vec![0, 242])),
+                None,
+            )],
+        );
+        let scan_data = ScanData::from_sweeps(&[s1], Utc::now(), 12);
+        let sweep = &scan_data.correlation_coefficient[0];
+        assert_eq!(sweep.radials[0].gates, vec![None, Some(0.8)]);
     }
 
     #[test]
