@@ -14,9 +14,11 @@ use rustywx::geo;
 use rustywx::model::{Product, RadialData, SweepData};
 use rustywx::nhc;
 use rustywx::scope;
+use rustywx::settings::Settings;
 use rustywx::state::{AppState, NhcModal};
 use rustywx::widgets::dropdown::{DropdownConfig, DropdownOption, DropdownState};
 use rustywx::widgets::glass_panel;
+use rustywx::widgets::settings as settings_widget;
 use rustywx::widgets::toggle::{self, ToggleOption};
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -296,6 +298,9 @@ async fn main() {
     // Load the persisted site preference (None on very first launch).
     let pending_site_load = Some(cache.load_site());
 
+    // Load persisted settings (None on very first launch — defaults apply).
+    let pending_settings_load = Some(cache.load_settings());
+
     // ── Load cached borders (if any) ───────────────────────────
     let mut pending_borders = {
         let storage = cache.storage();
@@ -353,7 +358,18 @@ async fn main() {
         hovered_ids: Vec::new(),
         last_click_time: 0.0,
         last_click_pos: (0.0, 0.0),
+        settings: Settings::default(),
+        pending_settings_load,
+        show_settings_panel: false,
     };
+
+    // Boot-time bookkeeping for applying loaded settings exactly once, and
+    // only overriding the default site if no explicit site preference was
+    // found (see the settings-apply block below). Local to `main`, not
+    // `AppState` — this isn't state the rest of the app needs to see.
+    let mut had_explicit_site_pref = false;
+    let mut site_pref_resolved = false;
+    let mut settings_applied = false;
 
     loop {
         clear_background(MacroquadColor::new(0.031, 0.039, 0.059, 1.0));
@@ -386,11 +402,18 @@ async fn main() {
         // isn't ready yet, put the receiver back to poll again next frame.
         let restore_site = if let Some(mut rx) = state.pending_site_load.take() {
             match rx.try_recv() {
-                Ok(Some(site_id)) => geo::RADAR_SITES
-                    .iter()
-                    .position(|s| s.id == site_id)
-                    .filter(|&i| i != state.site_index),
-                Ok(None) => None,
+                Ok(Some(site_id)) => {
+                    site_pref_resolved = true;
+                    had_explicit_site_pref = true;
+                    geo::RADAR_SITES
+                        .iter()
+                        .position(|s| s.id == site_id)
+                        .filter(|&i| i != state.site_index)
+                }
+                Ok(None) => {
+                    site_pref_resolved = true;
+                    None
+                }
                 Err(_) => {
                     state.pending_site_load = Some(rx);
                     None
@@ -401,6 +424,33 @@ async fn main() {
         };
         if let Some(index) = restore_site {
             select_site(&mut state, index);
+        }
+
+        // ── Poll persisted settings (Stage 7) ───────────────────────
+        if let Some(mut rx) = state.pending_settings_load.take() {
+            match rx.try_recv() {
+                Ok(Some(loaded)) => state.settings = loaded,
+                Ok(None) => {}
+                Err(_) => state.pending_settings_load = Some(rx),
+            }
+        }
+
+        // Apply settings-seeded defaults exactly once, after both the site
+        // preference and settings loads have resolved (order between the
+        // two is not guaranteed — both are independent oneshot loads).
+        if !settings_applied && site_pref_resolved && state.pending_settings_load.is_none() {
+            settings_applied = true;
+            if !had_explicit_site_pref
+                && let Some(index) = geo::RADAR_SITES
+                    .iter()
+                    .position(|s| s.id == state.settings.default_site)
+                && index != state.site_index
+            {
+                select_site(&mut state, index);
+            }
+            state.show_borders = state.settings.show_borders;
+            state.show_alerts = state.settings.show_alerts;
+            state.nhc_show_panel = state.settings.show_nhc;
         }
 
         // ── Poll worker messages ──────────────────────────────────
@@ -775,6 +825,28 @@ async fn main() {
                             ui.text(&format!("{nhc_label}{nhc_badge}"), |text| {
                                 text.font_size(12).color(0xE8E0DC)
                             });
+                        });
+
+                    // ── Settings gear button (Stage 7) ──────────────
+                    let gear_bg = hover_tint(
+                        &state.hovered_ids,
+                        "btn-settings",
+                        if state.show_settings_panel {
+                            0x0dc5b8
+                        } else {
+                            0x1E1B1B
+                        },
+                        0x1E1B1B,
+                    );
+                    ui.element()
+                        .id("btn-settings")
+                        .width(fit!())
+                        .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                        .background_color(gear_bg)
+                        .corner_radius(4.0)
+                        .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
+                        .children(|ui| {
+                            ui.text("⚙", |text| text.font_size(14).color(0xE8E0DC));
                         });
                 });
 
@@ -1235,6 +1307,12 @@ async fn main() {
                         });
                 }
 
+                // ── Settings modal (Stage 7) ────────────────────────────
+                if state.show_settings_panel {
+                    let site = &geo::RADAR_SITES[state.site_index];
+                    settings_widget::draw(ui, &state.settings, site.id);
+                }
+
                 // ── Radar scope (transparent — drawn directly to screen) ──
                 // Loading skeleton: pulsing indicator while first scan loads.
                 if state.scan.is_none() {
@@ -1402,7 +1480,7 @@ fn handle_input(
     }
 
     let dropdown_open = state.site_dropdown.is_open() || state.tilt_dropdown.is_open();
-    let modal_open = !matches!(state.nhc_modal, NhcModal::None);
+    let modal_open = !matches!(state.nhc_modal, NhcModal::None) || state.show_settings_panel;
     let over_nhc_panel = state.nhc_show_panel && ply.pointer_over("nhc-panel");
 
     if !dropdown_open && !modal_open && !over_nhc_panel && is_mouse_button_down(MouseButton::Left) {
@@ -1523,6 +1601,43 @@ fn handle_input(
     }
     if !dropdown_open && is_key_pressed(KeyCode::N) {
         state.nhc_show_panel = !state.nhc_show_panel;
+    }
+
+    // ── Settings gear button and modal (Stage 7) ──────────────────
+    if ply.is_just_pressed("btn-settings") {
+        state.show_settings_panel = !state.show_settings_panel;
+    }
+    if state.show_settings_panel {
+        if ply.is_just_pressed(settings_widget::CLOSE_ID)
+            || ply.is_just_pressed(settings_widget::BACKDROP_ID)
+            || is_key_pressed(KeyCode::Escape)
+        {
+            state.show_settings_panel = false;
+        }
+        if ply.is_just_pressed(settings_widget::BORDERS_TOGGLE_ID) {
+            state.settings.show_borders = !state.settings.show_borders;
+            state.cache.save_settings(&state.settings);
+        }
+        if ply.is_just_pressed(settings_widget::ALERTS_TOGGLE_ID) {
+            state.settings.show_alerts = !state.settings.show_alerts;
+            state.cache.save_settings(&state.settings);
+        }
+        if ply.is_just_pressed(settings_widget::NHC_TOGGLE_ID) {
+            state.settings.show_nhc = !state.settings.show_nhc;
+            state.cache.save_settings(&state.settings);
+        }
+        if ply.is_just_pressed(settings_widget::ANIMATION_CYCLE_ID) {
+            state.settings.animation_level = state.settings.animation_level.next();
+            state.cache.save_settings(&state.settings);
+        }
+        if ply.is_just_pressed(settings_widget::TDBZ_CYCLE_ID) {
+            state.settings.tdbz_kernel = state.settings.tdbz_kernel.next();
+            state.cache.save_settings(&state.settings);
+        }
+        if ply.is_just_pressed(settings_widget::USE_CURRENT_SITE_ID) {
+            state.settings.default_site = geo::RADAR_SITES[state.site_index].id.to_string();
+            state.cache.save_settings(&state.settings);
+        }
     }
 
     // ── NHC storm selector dropdown ──────────────────────────────

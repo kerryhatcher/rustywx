@@ -167,6 +167,49 @@ impl Cache {
         rx
     }
 
+    // ── Settings (Stage 7) ──────────────────────────────────────
+
+    /// Key used for the persisted [`crate::settings::Settings`] JSON blob.
+    const SETTINGS_KEY: &str = "settings.json";
+
+    /// Serialize `settings` to JSON and persist in the background.
+    ///
+    /// Fire-and-forget, same pattern as [`Self::save_scan`]/[`Self::save_site`].
+    pub fn save_settings(&self, settings: &crate::settings::Settings) {
+        let storage = self.storage.clone();
+        let key = Self::SETTINGS_KEY.to_string();
+        match serde_json::to_vec(settings) {
+            Ok(json) => {
+                tokio::spawn(async move {
+                    let _ = storage.save_bytes(&key, &json).await;
+                });
+            }
+            Err(_) => {
+                // Serialization failure — settings stay at their in-memory value.
+            }
+        }
+    }
+
+    /// Spawn a background task to load the persisted [`crate::settings::Settings`].
+    ///
+    /// Returns a `oneshot::Receiver` that yields `None` when no settings
+    /// have been saved yet (first launch) or the stored JSON is corrupt.
+    pub fn load_settings(&self) -> oneshot::Receiver<Option<crate::settings::Settings>> {
+        let storage = self.storage.clone();
+        let key = Self::SETTINGS_KEY.to_string();
+        let (tx, rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let result = storage
+                .load_bytes(&key)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+            let _ = tx.send(result);
+        });
+        rx
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────
 
     /// Remove the cached scan for `site` (e.g. after a corrupt read).

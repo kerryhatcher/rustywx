@@ -9,6 +9,7 @@ use crate::cache::Cache;
 use crate::data::WorkerMessage;
 use crate::model::{Product, ScanData};
 use crate::nhc::{NhcBundle, NhcFetchState};
+use crate::settings::Settings;
 use crate::widgets::dropdown::DropdownState;
 use ply_engine::prelude::Texture2D;
 use std::collections::HashMap;
@@ -138,4 +139,12 @@ pub struct AppState {
     pub last_click_time: f64,
     /// Screen position of the last single mouse click.
     pub last_click_pos: (f32, f32),
+
+    // ── Settings (Stage 7) ──────────────────────────────────────
+    /// Current user settings (defaults until the persisted copy loads).
+    pub settings: Settings,
+    /// Pending settings load in flight (first launch: yields `None`).
+    pub pending_settings_load: Option<oneshot::Receiver<Option<Settings>>>,
+    /// Whether the settings panel modal is visible.
+    pub show_settings_panel: bool,
 }

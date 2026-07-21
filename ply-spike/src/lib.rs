@@ -13,5 +13,6 @@ pub mod model;
 pub mod nhc;
 pub mod rle;
 pub mod scope;
+pub mod settings;
 pub mod state;
 pub mod widgets;
