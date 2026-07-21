@@ -1437,6 +1437,41 @@ async fn main() {
                                                 });
                                         }
                                     });
+
+                                // Hourly rain chance (next 24h). Wraps to
+                                // multiple rows at narrow widths.
+                                if !fc.hours.is_empty() {
+                                    ui.text("Hourly rain chance", |t| {
+                                        t.font_size(14).color(0xC8C0BC)
+                                    });
+                                    ui.element()
+                                        .width(grow!())
+                                        .height(fit!())
+                                        .layout(|layout| {
+                                            layout
+                                                .direction(LeftToRight)
+                                                .gap(6)
+                                                .align(CenterX, Top)
+                                                .wrap()
+                                                .wrap_gap(6)
+                                        })
+                                        .children(|ui| {
+                                            for hour in &fc.hours {
+                                                ui.element()
+                                                    .width(fixed!(44.0))
+                                                    .height(fit!())
+                                                    .background_color(0x1E1B1B)
+                                                    .corner_radius(4.0)
+                                                    .layout(|layout| {
+                                                        layout.direction(TopToBottom).padding(6).gap(4).align(CenterX, Top)
+                                                    })
+                                                    .children(|ui| {
+                                                        ui.text(&hour.label, |t| t.font_size(11).color(0x9A9490));
+                                                        ui.text(&format!("{}%", hour.precip_pct), |t| t.font_size(13).color(0x6F9FE0));
+                                                    });
+                                            }
+                                        });
+                                }
                             } else if state.user_location.is_none() {
                                 ui.text("Detecting location…", |t| t.font_size(14).color(0xC8C0BC));
                             } else {

@@ -34,12 +34,23 @@ pub struct Day {
     pub precip_pct: i64,
 }
 
+/// One hour of the rain-chance outlook.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Hour {
+    /// Short 12-hour label, e.g. "4p".
+    pub label: String,
+    /// Precipitation probability (%).
+    pub precip_pct: i64,
+}
+
 /// A full forecast for one place.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Forecast {
     pub place: String,
     pub current: Current,
     pub days: Vec<Day>,
+    /// Next 24 hours of rain chance, starting at the current hour.
+    pub hours: Vec<Hour>,
 }
 
 /// A geocoding search result.
@@ -65,6 +76,7 @@ fn forecast_url(c: Coords) -> String {
         "{FORECAST_BASE}?latitude={:.4}&longitude={:.4}\
 &current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,is_day\
 &daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max\
+&hourly=precipitation_probability\
 &temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto&forecast_days=7",
         c.lat, c.lon
     )
@@ -112,6 +124,18 @@ pub fn poll_geo(query: &str) -> Option<Result<Vec<GeoHit>>> {
         Ok(r) => Some(parse_geo(r.text())),
         Err(e) => Some(Err(anyhow!("geocoding: {e}"))),
     }
+}
+
+/// "YYYY-MM-DDTHH:MM" → short 12-hour label ("4p", "12a"). Reads the hour
+/// field positionally; falls back to "12a" if it can't be parsed.
+pub fn hour_label(iso: &str) -> String {
+    let h: i64 = iso.get(11..13).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let period = if h < 12 { "a" } else { "p" };
+    let h12 = match h % 12 {
+        0 => 12,
+        n => n,
+    };
+    format!("{h12}{period}")
 }
 
 /// "YYYY-MM-DD" → short weekday ("Mon"). Empty string if unparseable.
@@ -187,7 +211,41 @@ pub fn parse_forecast(json: &str) -> Result<Forecast> {
         });
     }
 
-    Ok(Forecast { place: String::new(), current, days })
+    // Hourly rain chance: next 24 hours starting at the hour containing "now"
+    // (matched against `current.time`; falls back to the start of the array).
+    let mut hours = Vec::new();
+    if let Some(hourly) = root.get("hourly") {
+        let times = hourly
+            .get("time")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let probs = hourly
+            .get("precipitation_probability")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let now_hour = cur.get("time").and_then(Value::as_str).unwrap_or("");
+        // ISO-8601 hour prefixes ("YYYY-MM-DDTHH") sort lexically, so the first
+        // hourly slot whose prefix is >= now's prefix is the current hour.
+        let start = now_hour
+            .get(..13)
+            .and_then(|nh| {
+                times
+                    .iter()
+                    .position(|t| t.as_str().and_then(|s| s.get(..13)).is_some_and(|h| h >= nh))
+            })
+            .unwrap_or(0);
+        for idx in start..(start + 24).min(times.len()) {
+            let ts = times[idx].as_str().unwrap_or("");
+            hours.push(Hour {
+                label: hour_label(ts),
+                precip_pct: probs.get(idx).and_then(Value::as_i64).unwrap_or(0),
+            });
+        }
+    }
+
+    Ok(Forecast { place: String::new(), current, days, hours })
 }
 
 /// Parse an Open-Meteo geocoding response into up to 5 hits.
@@ -224,6 +282,7 @@ mod tests {
 
     const FORECAST_FIXTURE: &str = r#"{
       "current": {
+        "time": "2026-07-21T16:45",
         "temperature_2m": 72.4,
         "apparent_temperature": 74.1,
         "relative_humidity_2m": 55,
@@ -237,6 +296,10 @@ mod tests {
         "temperature_2m_max": [75.0, 73.2, 68.9],
         "temperature_2m_min": [55.1, 54.0, 60.3],
         "precipitation_probability_max": [10, 60, 80]
+      },
+      "hourly": {
+        "time": ["2026-07-21T15:00", "2026-07-21T16:00", "2026-07-21T17:00", "2026-07-21T18:00"],
+        "precipitation_probability": [5, 20, 45, 70]
       }
     }"#;
 
@@ -263,6 +326,27 @@ mod tests {
         assert_eq!(f.days[1].lo, 54.0);
         assert_eq!(f.days[1].precip_pct, 60);
         assert_eq!(f.place, "");
+    }
+
+    #[test]
+    fn parse_forecast_reads_hourly_from_current_hour() {
+        let f = parse_forecast(FORECAST_FIXTURE).unwrap();
+        // current.time is 16:45, so the window starts at the 16:00 slot,
+        // skipping the earlier 15:00 slot.
+        assert_eq!(f.hours.len(), 3);
+        assert_eq!(f.hours[0].label, "4p");
+        assert_eq!(f.hours[0].precip_pct, 20);
+        assert_eq!(f.hours[2].label, "6p");
+        assert_eq!(f.hours[2].precip_pct, 70);
+    }
+
+    #[test]
+    fn hour_label_formats_12h() {
+        assert_eq!(hour_label("2026-07-21T16:00"), "4p");
+        assert_eq!(hour_label("2026-07-21T00:00"), "12a");
+        assert_eq!(hour_label("2026-07-21T12:00"), "12p");
+        assert_eq!(hour_label("2026-07-21T09:00"), "9a");
+        assert_eq!(hour_label("garbage"), "12a");
     }
 
     #[test]
