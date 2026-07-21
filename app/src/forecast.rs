@@ -271,10 +271,10 @@ pub fn render_hourly_chart(hours: &[Hour], w: usize, h: usize) -> Vec<u8> {
         return buf;
     }
 
-    const LINE: [u8; 4] = [0x8F, 0xC0, 0xFF, 0xFF]; // bright blue line/dots
-    const FILL: [u8; 4] = [0x6F, 0x9F, 0xE0, 0x55]; // translucent area under line
-    const GRID: [u8; 4] = [0xFF, 0xFF, 0xFF, 0x22]; // faint horizontal quartiles
-    const DAY: [u8; 4] = [0x0d, 0xc5, 0xb8, 0x66]; // teal day-boundary verticals
+    const LINE: [u8; 4] = [0xBF, 0xDC, 0xFF, 0xFF]; // bright line/dots
+    const FILL: [u8; 4] = [0x4F, 0x8F, 0xE0, 0xC8]; // strong area under the line
+    const GRID: [u8; 4] = [0xFF, 0xFF, 0xFF, 0x2E]; // horizontal quartiles
+    const DAY: [u8; 4] = [0x0d, 0xc5, 0xb8, 0x99]; // teal day-boundary verticals
     let margin = 8usize;
     let plot_w = w.saturating_sub(2 * margin).max(1);
     let plot_h = h.saturating_sub(2 * margin).max(1);
@@ -342,8 +342,9 @@ pub fn render_hourly_chart(hours: &[Hour], w: usize, h: usize) -> Vec<u8> {
             for fy in top..=bot {
                 blend(&mut buf, x, fy, FILL);
             }
+            blend(&mut buf, x, y - 1, LINE);
             blend(&mut buf, x, y, LINE);
-            blend(&mut buf, x, y + 1, LINE); // 2px thick
+            blend(&mut buf, x, y + 1, LINE); // 3px thick for visibility
         }
     }
 
