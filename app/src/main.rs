@@ -2466,6 +2466,10 @@ fn handle_input(
     let over_nhc_panel = state.nhc_show_panel && ply.pointer_over("nhc-panel");
     let over_radar_panel = state.radar_panel_open && ply.pointer_over("radar-panel");
 
+    // Scope-specific input (pan/zoom, hit-testing, radar keyboard shortcuts)
+    // only applies while the radar scope is actually visible. In Forecast
+    // mode the scope is hidden, so this whole region is gated off.
+    if state.view_mode == ViewMode::Radar {
     if !dropdown_open
         && !modal_open
         && !over_nhc_panel
@@ -2604,6 +2608,7 @@ fn handle_input(
             state.show_warnings = !state.show_warnings;
         }
     }
+    } // state.view_mode == ViewMode::Radar
 
     if let Some(product) = toggle::pressed(ply, &PRODUCT_OPTIONS) {
         select_product(state, product);
@@ -2793,6 +2798,9 @@ fn handle_input(
                     state.user_location = Some(c);
                     state.settings.user_lat = Some(c.lat);
                     state.settings.user_lon = Some(c.lon);
+                    // Relocating clears the stale place label so the Forecast
+                    // fetch block recomputes it from the new coordinates.
+                    state.forecast_place = String::new();
                     if state.settings.center_on_location {
                         recenter_on_user(state);
                     }
@@ -2811,6 +2819,9 @@ fn handle_input(
                 state.user_location = Some(c);
                 state.settings.user_lat = Some(c.lat);
                 state.settings.user_lon = Some(c.lon);
+                // Relocating clears the stale place label so the Forecast
+                // fetch block recomputes it from the new coordinates.
+                state.forecast_place = String::new();
                 if state.settings.center_on_location {
                     recenter_on_user(state);
                 }
