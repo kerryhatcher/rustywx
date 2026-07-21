@@ -787,15 +787,7 @@ async fn main() {
                                 .map(|option| option.source_index),
                         );
 
-                        if !is_mobile {
-                            ui.text(
-                                &format!(
-                                    "Zoom: {:.1}x  Pan: ({:.0}, {:.0}) km",
-                                    state.zoom, state.pan_km.0, state.pan_km.1
-                                ),
-                                |text| text.font_size(11).font(&MONO_FONT).color(0x9E9590),
-                            );
-                        }
+                        // Zoom/Pan readout lives in the bottom status bar.
 
                         // ── Overlay toggles (Stage 4) ──────────────────
                         let borders_active = state.show_borders;
@@ -1398,13 +1390,14 @@ async fn main() {
                     ui.element().width(grow!()).height(grow!()).empty();
                 }
 
-                // ── Bottom status bar (frosted glass, mono data) ────────
-                glass_panel::glass(ui.element().width(grow!()).height(fixed!(24.0)))
+                // ── Bottom status bar: 2 rows (color key on top, data below);
+                //    settings gear spans both rows on the right ────────────
+                glass_panel::glass(ui.element().width(grow!()).height(fixed!(46.0)))
                     .layout(|layout| {
                         layout
                             .direction(LeftToRight)
-                            .padding(8)
-                            .gap(12)
+                            .padding(6)
+                            .gap(8)
                             .align(Left, CenterY)
                     })
                     .children(|ui| {
@@ -1424,31 +1417,66 @@ async fn main() {
                         } else {
                             base_status
                         };
-                        ui.text(&state.status_text, |text| {
-                            text.font_size(11).font(&MONO_FONT).color(status_color)
-                        });
                         let legend: &[(f32, [u8; 4])] = match state.product {
                             Product::Reflectivity => colors::DBZ_LEGEND,
                             Product::Velocity => colors::VELOCITY_LEGEND,
                             Product::SpectrumWidth => colors::SPECTRUM_WIDTH_LEGEND,
                         };
-                        for &(_threshold, color) in legend.iter().step_by(2) {
-                            let hex = (color[0] as u32) << 16
-                                | (color[1] as u32) << 8
-                                | (color[2] as u32);
-                            ui.element()
-                                .width(fixed!(14.0))
-                                .height(fixed!(10.0))
-                                .background_color(hex)
-                                .empty();
-                        }
-                        ui.text(state.product.units(), |text| {
-                            text.font_size(10).font(&MONO_FONT).color(0x5F8A6A)
-                        });
 
-                        // Spacer pushes the settings gear to the far right.
-                        ui.element().width(grow!()).height(fixed!(1.0)).empty();
+                        // Left: two stacked rows.
+                        ui.element()
+                            .width(grow!())
+                            .height(grow!())
+                            .layout(|layout| {
+                                layout.direction(TopToBottom).gap(4).align(Left, CenterY)
+                            })
+                            .children(|ui| {
+                                // Row 1 — color key.
+                                ui.element()
+                                    .width(grow!())
+                                    .height(fit!())
+                                    .layout(|layout| {
+                                        layout.direction(LeftToRight).gap(8).align(Left, CenterY)
+                                    })
+                                    .children(|ui| {
+                                        for &(_threshold, color) in legend.iter().step_by(2) {
+                                            let hex = (color[0] as u32) << 16
+                                                | (color[1] as u32) << 8
+                                                | (color[2] as u32);
+                                            ui.element()
+                                                .width(fixed!(14.0))
+                                                .height(fixed!(10.0))
+                                                .background_color(hex)
+                                                .empty();
+                                        }
+                                        ui.text(state.product.units(), |text| {
+                                            text.font_size(10).font(&MONO_FONT).color(0x5F8A6A)
+                                        });
+                                    });
+                                // Row 2 — status + zoom/pan.
+                                ui.element()
+                                    .width(grow!())
+                                    .height(fit!())
+                                    .layout(|layout| {
+                                        layout.direction(LeftToRight).gap(12).align(Left, CenterY)
+                                    })
+                                    .children(|ui| {
+                                        ui.text(&state.status_text, |text| {
+                                            text.font_size(11).font(&MONO_FONT).color(status_color)
+                                        });
+                                        ui.text(
+                                            &format!(
+                                                "Zoom: {:.1}x  Pan: ({:.0}, {:.0}) km",
+                                                state.zoom, state.pan_km.0, state.pan_km.1
+                                            ),
+                                            |text| {
+                                                text.font_size(11).font(&MONO_FONT).color(0x9E9590)
+                                            },
+                                        );
+                                    });
+                            });
 
+                        // Settings gear — spans both rows (full bar height).
                         let gear_bg = hover_tint(
                             &state.hovered_ids,
                             "btn-settings",
@@ -1461,15 +1489,15 @@ async fn main() {
                         );
                         ui.element()
                             .id("btn-settings")
-                            .width(fixed!(22.0))
-                            .height(fixed!(18.0))
+                            .width(fixed!(34.0))
+                            .height(grow!())
                             .background_color(gear_bg)
                             .corner_radius(4.0)
                             .layout(|layout| layout.align(CenterX, CenterY))
                             .accessibility(|a| a.button("Settings"))
                             .children(|ui| {
                                 ui.text("⚙", |text| {
-                                    text.font_size(13).font(&SYMBOL_FONT).color(0xE8E0DC)
+                                    text.font_size(20).font(&SYMBOL_FONT).color(0xE8E0DC)
                                 });
                             });
                     });
