@@ -3,7 +3,12 @@ name = "rustywx"
 version = "0.4.0"
 edition = "2024"
 license = "AGPL-3.0-only"
-publish = false
+description = "NEXRAD Level II weather radar scope — a live Doppler radar viewer with alerts and tropical-cyclone overlays."
+repository = "https://github.com/kerryhatcher/rustywx"
+homepage = "https://github.com/kerryhatcher/rustywx"
+keywords = ["weather", "radar", "nexrad", "meteorology", "gui"]
+categories = ["visualization", "gui", "science"]
+publish = true
 
 [dependencies]
 ply-engine = { version = "1.1", features = ["net", "net-json", "storage", "built-in-shaders", "text-styling"] }
