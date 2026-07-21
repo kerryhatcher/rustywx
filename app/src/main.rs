@@ -703,6 +703,30 @@ async fn main() {
             }
         }
 
+        // ── Poll the location resolver (Detect in progress) ───────
+        if let Some(coords) = state.location_resolver.poll(now) {
+            state.user_location = Some(coords);
+            state.settings.user_lat = Some(coords.lat);
+            state.settings.user_lon = Some(coords.lon);
+            state.cache.save_settings(&state.settings);
+            if state.settings.center_on_location {
+                recenter_on_user(&mut state);
+            }
+        }
+        // Surface resolver failures as a toast (once, until the next detect).
+        if !state.location_error_shown {
+            let msg = match state.location_resolver.status() {
+                rustywx::location::LocationStatus::Offline => Some("Location: offline"),
+                rustywx::location::LocationStatus::Denied => Some("Location permission denied"),
+                rustywx::location::LocationStatus::NotFound => Some("ZIP not found"),
+                _ => None,
+            };
+            if let Some(msg) = msg {
+                state.toast = Some(toast_widget::Toast::new(msg, now));
+                state.location_error_shown = true;
+            }
+        }
+
         // ── Get current sweep ─────────────────────────────────────
         let sweep: SweepData = if let Some(ref scan) = state.scan {
             let sweeps = scan.sweeps(state.product);
@@ -2115,6 +2139,15 @@ fn show_toast(state: &mut AppState, now: f64, kind: toast_widget::ErrorKind) {
         toast_widget::friendly_message(kind),
         now,
     ));
+}
+
+/// Set pan so the user's location sits at screen center. No-op if unknown.
+fn recenter_on_user(state: &mut AppState) {
+    if let Some(user) = state.user_location {
+        let site = &geo::RADAR_SITES[state.site_index];
+        let off = geo::point_to_km_offset(site.lat, site.lon, (user.lat, user.lon));
+        state.pan_km = (-off.x, -off.y);
+    }
 }
 
 fn select_site(state: &mut AppState, index: usize) {
