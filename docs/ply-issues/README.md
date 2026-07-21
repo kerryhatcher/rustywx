@@ -23,6 +23,7 @@ files marked “needs revalidation” should not be filed unchanged.
 | 10 | `10-scrollable-list-container.md` | Feature / docs | Low-medium | Confirm gap | Virtualized list support and scroll-to-item guidance |
 | 11 | `11-color-i32-overflow.md` | Ergonomics | Low | Revalidate | Color literals use i32; values above 0x7FFFFFFF overflow |
 | 12 | `12-storage-new-signature-docs.md` | Docs gap | Low | Revalidate | Storage::new() signature mismatch in docs |
+| 13 | `13-borderless-window-conf.md` | Feature request | Medium | Ready | Borderless/undecorated window option in Conf (macOS style mask hardcoded) |
 
 ## Stage 3 corrections
 
