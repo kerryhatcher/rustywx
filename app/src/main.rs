@@ -287,7 +287,14 @@ async fn main() {
     static DEFAULT_FONT: FontAsset = FontAsset::Path("assets/fonts/Inter-Regular.ttf");
     static INTER_BOLD: FontAsset = FontAsset::Path("assets/fonts/Inter-Bold.ttf");
     static MONO_FONT: FontAsset = FontAsset::Path("assets/fonts/Inter-Regular.ttf");
+    // Optional dyslexia-friendly body font (accessibility). The default (body)
+    // font is fixed at Ply::new, so switching means rebuilding Ply (see loop).
+    static DYSLEXIC_FONT: FontAsset =
+        FontAsset::Path("assets/fonts/OpenDyslexicNerdFont-Regular.otf");
+    static DYSLEXIC_BOLD: FontAsset = FontAsset::Path("assets/fonts/OpenDyslexicNerdFont-Bold.otf");
     let mut ply = Ply::<()>::new(&DEFAULT_FONT).await;
+    // Which body font Ply was last built with, so we can detect setting changes.
+    let mut active_dyslexic = false;
 
     // Secondary fonts (Inter Bold, JetBrains Mono) are lazy-loaded on
     // first use via .font(&ASSET) on TextConfig — no explicit loading needed.
@@ -406,6 +413,18 @@ async fn main() {
 
     loop {
         clear_background(MacroquadColor::new(0.031, 0.039, 0.059, 1.0));
+
+        // Rebuild Ply if the dyslexia-friendly body font was toggled — the
+        // default font is bound at construction and has no runtime setter.
+        if state.settings.dyslexic_font != active_dyslexic {
+            active_dyslexic = state.settings.dyslexic_font;
+            ply = Ply::<()>::new(if active_dyslexic {
+                &DYSLEXIC_FONT
+            } else {
+                &DEFAULT_FONT
+            })
+            .await;
+        }
 
         let now = get_time();
         // `None` renders the settled/final state immediately; `Subtle` and
@@ -950,8 +969,13 @@ async fn main() {
                                 ui.text(nf::HURRICANE, |text| {
                                     text.font_size(15).font(&SYMBOL_FONT).color(0x0dc5b8)
                                 });
+                                let bold = if active_dyslexic {
+                                    &DYSLEXIC_BOLD
+                                } else {
+                                    &INTER_BOLD
+                                };
                                 ui.text("NHC Tropical Cyclones", |text| {
-                                    text.font_size(14).font(&INTER_BOLD).color(0xE8E0DC)
+                                    text.font_size(14).font(bold).color(0xE8E0DC)
                                 });
                             });
 
@@ -1769,6 +1793,10 @@ fn handle_input(
         }
         if ply.is_just_pressed(settings_widget::BORDERS_TOGGLE_ID) {
             state.settings.show_borders = !state.settings.show_borders;
+            state.cache.save_settings(&state.settings);
+        }
+        if ply.is_just_pressed(settings_widget::DYSLEXIC_TOGGLE_ID) {
+            state.settings.dyslexic_font = !state.settings.dyslexic_font;
             state.cache.save_settings(&state.settings);
         }
         if ply.is_just_pressed(settings_widget::ALERTS_TOGGLE_ID) {

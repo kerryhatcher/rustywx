@@ -17,6 +17,7 @@ pub const NHC_TOGGLE_ID: &str = "settings-toggle-nhc";
 pub const ANIMATION_CYCLE_ID: &str = "settings-cycle-animation";
 pub const TDBZ_CYCLE_ID: &str = "settings-cycle-tdbz";
 pub const USE_CURRENT_SITE_ID: &str = "settings-use-current-site";
+pub const DYSLEXIC_TOGGLE_ID: &str = "settings-toggle-dyslexic";
 
 const ROW_HEIGHT: f32 = 32.0;
 const TEXT_COLOR: u32 = 0xE8E0DC;
@@ -83,7 +84,7 @@ fn cycle_button(ui: &mut Ui<'_, ()>, id: &'static str, label: &str) {
 /// doesn't want it shown — check `state.show_settings_panel` before calling.
 pub fn draw(ui: &mut Ui<'_, ()>, settings: &Settings, current_site_id: &str) {
     let modal_w = 420.0;
-    let modal_h = 340.0;
+    let modal_h = 380.0;
     let modal_x = (screen_width() - modal_w) / 2.0;
     let modal_y = (screen_height() - modal_h) / 2.0;
 
@@ -181,6 +182,14 @@ pub fn draw(ui: &mut Ui<'_, ()>, settings: &Settings, current_site_id: &str) {
                             NHC_TOGGLE_ID,
                             "Show tropical panel on startup",
                             settings.show_nhc,
+                        );
+                    });
+                    row(ui, "Dyslexia-friendly font", |ui| {
+                        bool_toggle(
+                            ui,
+                            DYSLEXIC_TOGGLE_ID,
+                            "Dyslexia-friendly font",
+                            settings.dyslexic_font,
                         );
                     });
                     row(ui, "Animation level", |ui| {

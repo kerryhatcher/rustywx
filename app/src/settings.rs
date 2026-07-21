@@ -106,6 +106,9 @@ pub struct Settings {
     pub animation_level: AnimationLevel,
     /// TDBZ clutter-filter kernel size preset.
     pub tdbz_kernel: TdbzKernel,
+    /// Render body/label text with the OpenDyslexic font (accessibility).
+    #[serde(default)]
+    pub dyslexic_font: bool,
 }
 
 impl Default for Settings {
@@ -119,6 +122,7 @@ impl Default for Settings {
             show_nhc: false,
             animation_level: AnimationLevel::default(),
             tdbz_kernel: TdbzKernel::default(),
+            dyslexic_font: false,
         }
     }
 }
@@ -150,6 +154,7 @@ mod tests {
             show_nhc: true,
             animation_level: AnimationLevel::Subtle,
             tdbz_kernel: TdbzKernel::Aggressive,
+            dyslexic_font: true,
         };
         let json = serde_json::to_string(&settings).expect("serialize");
         let restored: Settings = serde_json::from_str(&json).expect("deserialize");
