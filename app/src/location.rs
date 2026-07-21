@@ -114,6 +114,130 @@ pub fn poll_zip() -> Option<Result<Coords, String>> {
     }
 }
 
+use crate::system_location::{SystemFix, SystemLocator};
+
+/// Detect status, surfaced in the settings status line.
+#[derive(Clone, PartialEq, Debug)]
+pub enum LocationStatus {
+    Idle,
+    Detecting,
+    Resolved(Coords, Source),
+    Denied,
+    Offline,
+    NotFound,
+    Invalid,
+}
+
+enum Phase {
+    Idle,
+    SystemWait { start: f64, locator: SystemLocator },
+    IpWait,
+    ZipWait,
+}
+
+/// System-location timeout before falling back to IP (seconds).
+const SYSTEM_TIMEOUT_SECS: f64 = 5.0;
+
+pub struct LocationResolver {
+    phase: Phase,
+    status: LocationStatus,
+}
+
+impl LocationResolver {
+    pub fn new() -> Self {
+        LocationResolver { phase: Phase::Idle, status: LocationStatus::Idle }
+    }
+
+    pub fn status(&self) -> &LocationStatus {
+        &self.status
+    }
+
+    /// Begin resolution. Manual coords resolve instantly; ZIP fires a lookup;
+    /// empty/other input runs the system → IP auto chain.
+    pub fn detect(&mut self, input: &str, now: f64) -> Option<Coords> {
+        match parse_location_input(input) {
+            LocationInput::Coords(c) => {
+                self.phase = Phase::Idle;
+                self.status = LocationStatus::Resolved(c, Source::Manual);
+                Some(c)
+            }
+            LocationInput::Zip(zip) => {
+                fire_zip(&zip);
+                self.phase = Phase::ZipWait;
+                self.status = LocationStatus::Detecting;
+                None
+            }
+            LocationInput::Invalid => {
+                // Empty input → auto chain; non-empty junk → invalid.
+                if input.trim().is_empty() {
+                    self.phase = Phase::SystemWait { start: now, locator: SystemLocator::start() };
+                    self.status = LocationStatus::Detecting;
+                } else {
+                    self.phase = Phase::Idle;
+                    self.status = LocationStatus::Invalid;
+                }
+                None
+            }
+        }
+    }
+
+    /// Advance the state machine. Returns `Some(coords)` on the frame a fix
+    /// is newly resolved (system/IP/ZIP); updates `status` regardless.
+    pub fn poll(&mut self, now: f64) -> Option<Coords> {
+        match &mut self.phase {
+            Phase::Idle => None,
+            Phase::SystemWait { start, locator } => {
+                match locator.poll() {
+                    SystemFix::Ready(c) => {
+                        self.phase = Phase::Idle;
+                        self.status = LocationStatus::Resolved(c, Source::System);
+                        Some(c)
+                    }
+                    SystemFix::Pending if now - *start < SYSTEM_TIMEOUT_SECS => None,
+                    _ => {
+                        // Unavailable or timed out → fall back to IP.
+                        fire_ip();
+                        self.phase = Phase::IpWait;
+                        None
+                    }
+                }
+            }
+            Phase::IpWait => match poll_ip() {
+                None => None,
+                Some(Ok(c)) => {
+                    self.phase = Phase::Idle;
+                    self.status = LocationStatus::Resolved(c, Source::Ip);
+                    Some(c)
+                }
+                Some(Err(_)) => {
+                    self.phase = Phase::Idle;
+                    self.status = LocationStatus::Offline;
+                    None
+                }
+            },
+            Phase::ZipWait => match poll_zip() {
+                None => None,
+                Some(Ok(c)) => {
+                    self.phase = Phase::Idle;
+                    self.status = LocationStatus::Resolved(c, Source::Manual);
+                    Some(c)
+                }
+                Some(Err(_)) => {
+                    self.phase = Phase::Idle;
+                    self.status = LocationStatus::NotFound;
+                    None
+                }
+            },
+        }
+    }
+}
+
+impl Default for LocationResolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,5 +274,20 @@ mod tests {
         assert_eq!(parse_zippopotam_json(body), Some(Coords { lat: 33.7490, lon: -84.3880 }));
         assert_eq!(parse_zippopotam_json(r#"{"places":[]}"#), None);
         assert_eq!(parse_zippopotam_json("not json"), None);
+    }
+
+    #[test]
+    fn detect_manual_coords_resolves_instantly() {
+        let mut r = LocationResolver::new();
+        let got = r.detect("40.0, -75.0", 0.0);
+        assert_eq!(got, Some(Coords { lat: 40.0, lon: -75.0 }));
+        assert!(matches!(r.status(), LocationStatus::Resolved(_, Source::Manual)));
+    }
+
+    #[test]
+    fn detect_junk_is_invalid() {
+        let mut r = LocationResolver::new();
+        assert_eq!(r.detect("banana", 0.0), None);
+        assert_eq!(*r.status(), LocationStatus::Invalid);
     }
 }
