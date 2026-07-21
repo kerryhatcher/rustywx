@@ -795,6 +795,7 @@ async fn main() {
                         .background_color(borders_bg)
                         .corner_radius(4.0)
                         .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
+                        .accessibility(|a| a.button(borders_label).checked(borders_active))
                         .children(|ui| {
                             ui.text(borders_label, |text| text.font_size(12).color(0xE8E0DC));
                         });
@@ -828,6 +829,7 @@ async fn main() {
                         .background_color(alerts_bg)
                         .corner_radius(4.0)
                         .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
+                        .accessibility(|a| a.button(alerts_label).checked(state.show_alerts))
                         .children(|ui| {
                             ui.text(&format!("{alerts_label}{alerts_count}"), |text| {
                                 text.font_size(12).color(0xE8E0DC)
@@ -869,6 +871,7 @@ async fn main() {
                         .background_color(nhc_bg)
                         .corner_radius(4.0)
                         .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
+                        .accessibility(|a| a.button(nhc_label).checked(state.nhc_show_panel))
                         .children(|ui| {
                             ui.text(&format!("{nhc_label}{nhc_badge}"), |text| {
                                 text.font_size(12).color(0xE8E0DC)
@@ -893,6 +896,7 @@ async fn main() {
                         .background_color(gear_bg)
                         .corner_radius(4.0)
                         .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
+                        .accessibility(|a| a.button("Settings"))
                         .children(|ui| {
                             ui.text("⚙", |text| text.font_size(14).color(0xE8E0DC));
                         });
@@ -1063,6 +1067,7 @@ async fn main() {
                                         .layout(|layout| {
                                             layout.padding((0, 8, 0, 8)).align(CenterX, CenterY)
                                         })
+                                        .accessibility(|a| a.link("NHC Graphics Page"))
                                         .children(|ui| {
                                             ui.text("🌐 NHC Graphics Page", |t| {
                                                 t.font_size(11).color(0x4a90d9)
@@ -1514,6 +1519,7 @@ fn nhc_toggle_button(ui: &mut Ui<'_, ()>, id: &'static str, label: &str, active:
                 .gap(6)
                 .align(Left, CenterY)
         })
+        .accessibility(|a| a.checkbox(label).checked(active))
         .children(|ui| {
             ui.text(marker, |t| t.font_size(11).color(0xE8E0DC));
             ui.text(label, |t| t.font_size(11).color(0xE8E0DC));

@@ -46,7 +46,7 @@ fn row(ui: &mut Ui<'_, ()>, label: &str, children: impl FnOnce(&mut Ui<'_, ()>))
         });
 }
 
-fn bool_toggle(ui: &mut Ui<'_, ()>, id: &'static str, value: bool) {
+fn bool_toggle(ui: &mut Ui<'_, ()>, id: &'static str, label: &str, value: bool) {
     ui.element()
         .id(id)
         .width(fit!())
@@ -54,6 +54,7 @@ fn bool_toggle(ui: &mut Ui<'_, ()>, id: &'static str, value: bool) {
         .background_color(if value { ACTIVE_BG } else { INACTIVE_BG })
         .corner_radius(4.0)
         .layout(|l| l.padding((0, 10, 0, 10)).align(CenterX, CenterY))
+        .accessibility(|a| a.checkbox(label).checked(value))
         .children(|ui| {
             ui.text(if value { "On" } else { "Off" }, |t| {
                 t.font_size(12).color(TEXT_COLOR)
@@ -69,6 +70,7 @@ fn cycle_button(ui: &mut Ui<'_, ()>, id: &'static str, label: &str) {
         .background_color(INACTIVE_BG)
         .corner_radius(4.0)
         .layout(|l| l.padding((0, 10, 0, 10)).align(CenterX, CenterY))
+        .accessibility(|a| a.button(label))
         .children(|ui| {
             ui.text(&format!("{label}  ↻"), |t| {
                 t.font_size(12).color(TEXT_COLOR)
@@ -119,6 +121,7 @@ pub fn draw(ui: &mut Ui<'_, ()>, settings: &Settings, current_site_id: &str) {
                         .background_color(0x3a1a1a)
                         .corner_radius(4.0)
                         .layout(|l| l.align(CenterX, CenterY))
+                        .accessibility(|a| a.button("Close settings"))
                         .children(|ui| {
                             ui.text("✕", |t| t.font_size(14).color(TEXT_COLOR));
                         });
@@ -137,6 +140,8 @@ pub fn draw(ui: &mut Ui<'_, ()>, settings: &Settings, current_site_id: &str) {
                         });
                     });
                     row(ui, "", |ui| {
+                        let use_current_site_label =
+                            format!("Use current site ({current_site_id})");
                         ui.element()
                             .id(USE_CURRENT_SITE_ID)
                             .width(fit!())
@@ -144,20 +149,36 @@ pub fn draw(ui: &mut Ui<'_, ()>, settings: &Settings, current_site_id: &str) {
                             .background_color(INACTIVE_BG)
                             .corner_radius(4.0)
                             .layout(|l| l.padding((0, 10, 0, 10)).align(CenterX, CenterY))
+                            .accessibility(|a| a.button(&use_current_site_label))
                             .children(|ui| {
-                                ui.text(&format!("Use current site ({current_site_id})"), |t| {
+                                ui.text(&use_current_site_label, |t| {
                                     t.font_size(11).color(TEXT_COLOR)
                                 });
                             });
                     });
                     row(ui, "Show borders on startup", |ui| {
-                        bool_toggle(ui, BORDERS_TOGGLE_ID, settings.show_borders);
+                        bool_toggle(
+                            ui,
+                            BORDERS_TOGGLE_ID,
+                            "Show borders on startup",
+                            settings.show_borders,
+                        );
                     });
                     row(ui, "Show alerts on startup", |ui| {
-                        bool_toggle(ui, ALERTS_TOGGLE_ID, settings.show_alerts);
+                        bool_toggle(
+                            ui,
+                            ALERTS_TOGGLE_ID,
+                            "Show alerts on startup",
+                            settings.show_alerts,
+                        );
                     });
                     row(ui, "Show tropical panel on startup", |ui| {
-                        bool_toggle(ui, NHC_TOGGLE_ID, settings.show_nhc);
+                        bool_toggle(
+                            ui,
+                            NHC_TOGGLE_ID,
+                            "Show tropical panel on startup",
+                            settings.show_nhc,
+                        );
                     });
                     row(ui, "Animation level", |ui| {
                         cycle_button(ui, ANIMATION_CYCLE_ID, settings.animation_level.label());

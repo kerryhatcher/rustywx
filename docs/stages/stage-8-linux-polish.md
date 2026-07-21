@@ -1,7 +1,28 @@
 # Stage 8: "Desktop Polish" — Performance & Accessibility
 
-**Status:** 🔲 Not started
-**Tag:** `v1.0.0-stage8`
+**Status:** 🚧 In progress — automated work complete, hardware validation pending
+**Tag:** `v1.0.0-stage8` (not yet tagged)
+
+## What shipped
+
+- **Rasterization benchmarks** — `app/benches/rasterize.rs` (criterion): `scope::rasterize`
+  over resolutions 128/256/512/1024 × sparse (30) and full (360) radial sweeps.
+  Run with `cargo bench`. Fixtures via new `model::synthetic_sweep(...)`.
+- **Release profile** — workspace `[profile.release]` (opt-level 3, thin LTO,
+  codegen-units 1, strip). `panic=abort` deliberately omitted (no `catch_unwind`).
+- **Accessibility** — ply-engine 1.1.1 exposes a real per-widget a11y builder
+  (`.accessibility(|a| a.button(...).checked(...))`, `AccessibilityRole`,
+  live regions). Wired roles/labels into dropdowns, product toggle, collapsing
+  headers, settings toggles/buttons, overlay toggles, NHC link, and gave the
+  alert toast an assertive live region so fetch failures are announced.
+- **Texture cache** — verified already handled by the `needs_reraster` flag
+  (scope rasterizes only on change, not per frame); no new caching needed.
+- **Rename** — the crate directory `ply-spike/` (a leftover from the ply-engine
+  porting spike) was renamed to `app/`.
+
+Hardware-gated validation (HiDPI, Wayland, Finder launch, screen-reader
+announcement, live frame-time) is documented in
+[`docs/stage-8-manual-validation.md`](../stage-8-manual-validation.md).
 
 ## Goal
 
@@ -48,14 +69,15 @@ Optimized Linux and macOS desktop builds with full accessibility support.
 
 ## Validation
 
-- [ ] Frame time <16ms (60fps) on target hardware (Linux and macOS)
-- [ ] Texture cache hit rate >90% (scope not re-rendered when static)
-- [ ] HiDPI renders correctly, no blurry UI (Linux fractional scale + macOS Retina)
-- [ ] Wayland native — no X11 warnings or fallback (Linux)
-- [ ] macOS native window works, incl. launch from Finder/dock (assets resolve)
-- [ ] Screen reader announces controls correctly (Orca on Linux, VoiceOver on macOS)
-- [ ] Tab navigation works through all interactive elements
-- [ ] Release build runs without debug overhead (both platforms)
-- [ ] (Optional) Alert-status indicator: system tray (Linux) / menu bar (macOS)
-- [ ] Rasterization benchmarks exist and run in CI (or documented as manual)
-- [ ] `git push` → CI passes → `git tag v1.0.0-stage8` → `git push --tags`
+- [~] Texture cache hit rate >90% — satisfied by `needs_reraster` design (rasterize only on change)
+- [x] Release build runs without debug overhead — `[profile.release]` added
+- [x] Rasterization benchmarks exist — `app/benches/rasterize.rs`, run via `cargo bench` (manual, not in CI)
+- [x] Accessibility roles/labels wired into interactive controls (screen-reader announcement to verify on hardware)
+- [ ] Frame time <16ms (60fps) on target hardware — manual, see manual-validation doc
+- [ ] HiDPI renders correctly, no blurry UI (Linux fractional scale + macOS Retina) — manual
+- [ ] Wayland native — no X11 warnings or fallback (Linux) — manual
+- [ ] macOS native window works, incl. launch from Finder/dock (assets resolve) — manual
+- [ ] Screen reader announces controls correctly (Orca on Linux, VoiceOver on macOS) — manual
+- [ ] Tab navigation works through all interactive elements — manual
+- [ ] (Optional) Alert-status indicator: system tray (Linux) / menu bar (macOS) — deferred
+- [ ] `git push` → CI passes → `git tag v1.0.0-stage8` → `git push --tags` (awaiting go-ahead)

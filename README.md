@@ -29,9 +29,9 @@ with the ply-engine graphics framework.
 
 Or manually:
 
-    cd ply-spike && cargo run --release
+    cd app && cargo run --release
 
-**Note:** The current working directory matters — assets are loaded from the `ply-spike/` 
+**Note:** The current working directory matters — assets are loaded from the `app/` 
 directory, so the above paths are required.
 
 Requires network access. No AWS credentials needed — the bucket is public.
@@ -46,20 +46,20 @@ controls, how to read the display, and configuring settings.
 
 ## Architecture
 
-The app is the `rustywx` crate under `ply-spike/` (ply-engine backend):
+The app is the `rustywx` crate under `app/` (ply-engine backend):
 
-- `ply-spike/src/main.rs` — app entry, async game loop, and frame drawing
-- `ply-spike/src/state.rs` — app state (selected site, overlays, animation)
-- `ply-spike/src/data.rs` — background worker: poll S3 → download → decode → channel
-- `ply-spike/src/model.rs` — thin scan model (product → sweeps → radials → gates)
-- `ply-spike/src/scope.rs` — PPI rasterizer and overlay painting
-- `ply-spike/src/colors.rs` — NWS-style color tables
-- `ply-spike/src/geo.rs` — range/bearing and polar→screen projection
-- `ply-spike/src/cities.rs` — city markers for the scope overlay
-- `ply-spike/src/borders.rs` — fetches/caches US state boundary lines for the overlay
-- `ply-spike/src/alerts.rs`, `nhc.rs` — NWS alerts and NHC tropical overlays
-- `ply-spike/src/cache.rs`, `rle.rs` — Ply-storage scan cache + RLE compression
-- `ply-spike/src/widgets/` — reusable glass-panel UI widgets
+- `app/src/main.rs` — app entry, async game loop, and frame drawing
+- `app/src/state.rs` — app state (selected site, overlays, animation)
+- `app/src/data.rs` — background worker: poll S3 → download → decode → channel
+- `app/src/model.rs` — thin scan model (product → sweeps → radials → gates)
+- `app/src/scope.rs` — PPI rasterizer and overlay painting
+- `app/src/colors.rs` — NWS-style color tables
+- `app/src/geo.rs` — range/bearing and polar→screen projection
+- `app/src/cities.rs` — city markers for the scope overlay
+- `app/src/borders.rs` — fetches/caches US state boundary lines for the overlay
+- `app/src/alerts.rs`, `nhc.rs` — NWS alerts and NHC tropical overlays
+- `app/src/cache.rs`, `rle.rs` — Ply-storage scan cache + RLE compression
+- `app/src/widgets/` — reusable glass-panel UI widgets
 
 Design docs live in `docs/superpowers/`. For build/test/lint commands, the
 module map, and how to extend the app, see

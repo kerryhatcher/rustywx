@@ -40,6 +40,7 @@ impl CollapsingState {
                     .background_color(HEADER_BACKGROUND)
                     .corner_radius(4.0)
                     .layout(|layout| layout.padding((0, 8, 0, 8)).align(Left, CenterY))
+                    .accessibility(|a| a.button(title).checked(self.open))
                     .children(|ui| {
                         let arrow = if self.open { '▾' } else { '▸' };
                         ui.text(&format!("{arrow} {title}"), |text| {

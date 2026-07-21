@@ -27,6 +27,7 @@ pub fn draw<T: Copy + PartialEq>(ui: &mut Ui<'_, ()>, selected: T, options: &[To
             })
             .corner_radius(4.0)
             .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
+            .accessibility(|a| a.button(option.label).checked(selected == option.value))
             .children(|ui| {
                 ui.text(option.label, |text| text.font_size(12).color(TEXT_COLOR));
             });

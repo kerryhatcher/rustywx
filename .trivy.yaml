@@ -20,7 +20,7 @@ filesystem:
 # Skip binary and generated files
 skip-files:
   - "target/**"
-  - "ply-spike/target/**"
+  - "app/target/**"
   - "*.wasm"
   - "*.bin"
   - "*.png"

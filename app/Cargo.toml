@@ -17,3 +17,10 @@ serde_json = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
 webbrowser = "0.8"
 zip = "2"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "rasterize"
+harness = false

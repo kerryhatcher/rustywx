@@ -74,6 +74,7 @@ impl DropdownState {
             .background_color(BUTTON_BACKGROUND)
             .corner_radius(4.0)
             .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
+            .accessibility(|a| a.button(button_label))
             .children(|ui| {
                 let arrow = if self.open { '▴' } else { '▾' };
                 ui.text(&format!("{button_label} {arrow}"), |text| {
@@ -150,6 +151,7 @@ impl DropdownState {
                         })
                         .corner_radius(3.0)
                         .layout(|layout| layout.padding((0, 6, 0, 6)).align(Left, CenterY))
+                        .accessibility(|a| a.button(&option.label))
                         .children(|ui| {
                             ui.text(&option.label, |text| text.font_size(12).color(TEXT_COLOR));
                         });

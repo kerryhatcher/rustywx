@@ -103,6 +103,7 @@ pub fn draw(ui: &mut Ui<'_, ()>) {
                         .background_color(0x3a1a1a)
                         .corner_radius(4.0)
                         .layout(|l| l.align(CenterX, CenterY))
+                        .accessibility(|a| a.button("Close shortcuts"))
                         .children(|ui| {
                             ui.text("✕", |t| t.font_size(14).color(TEXT_COLOR));
                         });

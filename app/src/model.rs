@@ -74,6 +74,30 @@ pub struct SweepData {
     pub radials: Vec<RadialData>,
 }
 
+/// Build a synthetic sweep for tests/benchmarks: `n_radials` evenly spaced
+/// azimuths, each with `gates_per_radial` gates of varying dBZ-like values
+/// (some `None` to exercise the missing-gate paths).
+pub fn synthetic_sweep(n_radials: usize, gates_per_radial: usize) -> SweepData {
+    let mut radials = Vec::with_capacity(n_radials);
+    for i in 0..n_radials {
+        let azimuth = i as f32 * 360.0 / n_radials as f32;
+        let mut gates = Vec::with_capacity(gates_per_radial);
+        for g in 0..gates_per_radial {
+            let angle = (azimuth + g as f32 * 0.5).to_radians();
+            let value = 30.0 + 20.0 * angle.sin();
+            gates.push(if value > 5.0 { Some(value) } else { None });
+        }
+        radials.push(RadialData {
+            azimuth_deg: azimuth,
+            gates,
+        });
+    }
+    SweepData {
+        elevation_deg: 0.5,
+        radials,
+    }
+}
+
 /// A decoded volume scan, split per product, sweeps sorted by elevation.
 #[derive(Serialize, Deserialize)]
 pub struct ScanData {

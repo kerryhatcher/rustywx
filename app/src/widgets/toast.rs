@@ -101,6 +101,11 @@ pub fn draw(ui: &mut Ui<'_, ()>, toast: &Toast, opacity: f32) {
                 .gap(8)
                 .align(Left, CenterY)
         })
+        .accessibility(|a| {
+            a.role(AccessibilityRole::AlertDialog)
+                .label(&toast.message)
+                .live_region_assertive()
+        })
         .children(|ui| {
             ui.text("⚠", |t| t.font_size(14).color(accent));
             ui.text(&toast.message, |t| t.font_size(12).color(text_color));

@@ -11,7 +11,7 @@ just run
 Or manually:
 
 ```bash
-cd ply-spike && cargo run --release
+cd app && cargo run --release
 ```
 
 The app will start on the default site (KJGX by default, or your last selected site if you've saved settings).
