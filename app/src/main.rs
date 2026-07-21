@@ -244,11 +244,19 @@ fn hover_tint(hovered: &[Id], id: &str, active: i32, _idle: i32) -> i32 {
 // ---------------------------------------------------------------------------
 
 fn window_conf() -> macroquad::conf::Conf {
+    // Optional startup size override for window-size / HiDPI testing:
+    // RUSTYWX_WIN_W / RUSTYWX_WIN_H.
+    let env_i32 = |k: &str, default: i32| {
+        std::env::var(k)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default)
+    };
     macroquad::conf::Conf {
         miniquad_conf: miniquad::conf::Conf {
             window_title: "rustywx — NEXRAD Radar Scope".to_owned(),
-            window_width: 900,
-            window_height: 960,
+            window_width: env_i32("RUSTYWX_WIN_W", 900),
+            window_height: env_i32("RUSTYWX_WIN_H", 960),
             high_dpi: true,
             sample_count: 4,
             platform: miniquad::conf::Platform {
@@ -735,172 +743,179 @@ async fn main() {
             .layout(|layout| layout.direction(TopToBottom))
             .children(|ui| {
                 // ── Controls bar (frosted glass) ────────────────────
-                glass_panel::glass(ui.element().width(grow!()).height(fixed!(if is_mobile {
-                    48.0
-                } else {
-                    36.0
-                })))
-                .layout(|layout| {
-                    layout
-                        .direction(LeftToRight)
-                        .padding(8)
-                        .gap(12)
-                        .align(Left, CenterY)
-                })
-                .children(|ui| {
-                    state.site_dropdown.draw(
-                        ui,
-                        SITE_DROPDOWN,
-                        site.id,
-                        &site_options,
-                        Some(state.site_index),
-                    );
+                // Height fits content so the bar can grow to multiple rows at
+                // narrow widths (layout.wrap) instead of squeezing controls to
+                // slivers / spilling text. Wide desktop stays a single row.
+                glass_panel::glass(ui.element().width(grow!()).height(fit!()))
+                    .layout(|layout| {
+                        layout
+                            .direction(LeftToRight)
+                            .padding(8)
+                            .gap(12)
+                            .align(Left, CenterY)
+                            .wrap()
+                            .wrap_gap(6)
+                    })
+                    .children(|ui| {
+                        state.site_dropdown.draw(
+                            ui,
+                            SITE_DROPDOWN,
+                            site.id,
+                            &site_options,
+                            Some(state.site_index),
+                        );
 
-                    ui.text(&format!("— {}", site.name), |text| {
-                        text.font_size(14).color(0xE8E0DC)
+                        // Wide, low-priority readouts are hidden on narrow windows
+                        // (the site id is still shown in the dropdown above).
+                        if !is_mobile {
+                            ui.text(&format!("— {}", site.name), |text| {
+                                text.font_size(14).color(0xE8E0DC)
+                            });
+                        }
+
+                        toggle::draw(ui, state.product, &PRODUCT_OPTIONS);
+
+                        state.tilt_dropdown.draw(
+                            ui,
+                            TILT_DROPDOWN,
+                            tilt_label,
+                            &tilt_options,
+                            tilt_options
+                                .get(state.tilt_index)
+                                .map(|option| option.source_index),
+                        );
+
+                        if !is_mobile {
+                            ui.text(
+                                &format!(
+                                    "Zoom: {:.1}x  Pan: ({:.0}, {:.0}) km",
+                                    state.zoom, state.pan_km.0, state.pan_km.1
+                                ),
+                                |text| text.font_size(11).font(&MONO_FONT).color(0x9E9590),
+                            );
+                        }
+
+                        // ── Overlay toggles (Stage 4) ──────────────────
+                        let borders_active = state.show_borders;
+                        let borders_bg = if borders_active { 0x0dc5b8 } else { 0x1E1B1B };
+                        let borders_label = if borders_active {
+                            "Borders ✓"
+                        } else {
+                            "Borders"
+                        };
+                        ui.element()
+                            .id("btn-borders")
+                            .width(fit!())
+                            .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                            .background_color(borders_bg)
+                            .corner_radius(4.0)
+                            .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
+                            .accessibility(|a| a.button(borders_label).checked(borders_active))
+                            .children(|ui| {
+                                ui.text(borders_label, |text| text.font_size(12).color(0xE8E0DC));
+                            });
+
+                        let alerts_bg = hover_tint(
+                            &state.hovered_ids,
+                            "btn-alerts",
+                            if state.show_alerts {
+                                0x0dc5b8
+                            } else {
+                                0x1E1B1B
+                            },
+                            0x1E1B1B,
+                        );
+                        let alerts_label = if state.show_alerts {
+                            "Alerts ✓"
+                        } else {
+                            "Alerts"
+                        };
+                        let alerts_count = if state.alerts_loaded {
+                            format!(" ({})", state.alerts.len())
+                        } else if state.alerts_fetch_fired {
+                            " (…)".to_string()
+                        } else {
+                            String::new()
+                        };
+                        ui.element()
+                            .id("btn-alerts")
+                            .width(fit!())
+                            .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                            .background_color(alerts_bg)
+                            .corner_radius(4.0)
+                            .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
+                            .accessibility(|a| a.button(alerts_label).checked(state.show_alerts))
+                            .children(|ui| {
+                                ui.text(&format!("{alerts_label}{alerts_count}"), |text| {
+                                    text.font_size(12).color(0xE8E0DC)
+                                });
+                            });
+
+                        // ── NHC toggle button (Stage 5) ──────────────────
+                        let nhc_bg = hover_tint(
+                            &state.hovered_ids,
+                            "btn-nhc",
+                            if state.nhc_show_panel {
+                                0x0dc5b8
+                            } else {
+                                0x1E1B1B
+                            },
+                            0x1E1B1B,
+                        );
+                        let nhc_label = if state.nhc_show_panel {
+                            "Tropical ✓"
+                        } else {
+                            "Tropical"
+                        };
+                        let storm_count = state
+                            .nhc_bundle
+                            .as_ref()
+                            .map(|b| b.metas.len())
+                            .unwrap_or(0);
+                        let nhc_badge = if storm_count > 0 {
+                            format!(" ({storm_count})")
+                        } else if state.nhc_fetch_fired {
+                            " (…)".to_string()
+                        } else {
+                            String::new()
+                        };
+                        ui.element()
+                            .id("btn-nhc")
+                            .width(fit!())
+                            .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                            .background_color(nhc_bg)
+                            .corner_radius(4.0)
+                            .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
+                            .accessibility(|a| a.button(nhc_label).checked(state.nhc_show_panel))
+                            .children(|ui| {
+                                ui.text(&format!("{nhc_label}{nhc_badge}"), |text| {
+                                    text.font_size(12).color(0xE8E0DC)
+                                });
+                            });
+
+                        // ── Settings gear button (Stage 7) ──────────────
+                        let gear_bg = hover_tint(
+                            &state.hovered_ids,
+                            "btn-settings",
+                            if state.show_settings_panel {
+                                0x0dc5b8
+                            } else {
+                                0x1E1B1B
+                            },
+                            0x1E1B1B,
+                        );
+                        ui.element()
+                            .id("btn-settings")
+                            .width(fit!())
+                            .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                            .background_color(gear_bg)
+                            .corner_radius(4.0)
+                            .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
+                            .accessibility(|a| a.button("Settings"))
+                            .children(|ui| {
+                                ui.text("⚙", |text| text.font_size(14).color(0xE8E0DC));
+                            });
                     });
-
-                    toggle::draw(ui, state.product, &PRODUCT_OPTIONS);
-
-                    state.tilt_dropdown.draw(
-                        ui,
-                        TILT_DROPDOWN,
-                        tilt_label,
-                        &tilt_options,
-                        tilt_options
-                            .get(state.tilt_index)
-                            .map(|option| option.source_index),
-                    );
-
-                    ui.text(
-                        &format!(
-                            "Zoom: {:.1}x  Pan: ({:.0}, {:.0}) km",
-                            state.zoom, state.pan_km.0, state.pan_km.1
-                        ),
-                        |text| text.font_size(11).font(&MONO_FONT).color(0x9E9590),
-                    );
-
-                    // ── Overlay toggles (Stage 4) ──────────────────
-                    let borders_active = state.show_borders;
-                    let borders_bg = if borders_active { 0x0dc5b8 } else { 0x1E1B1B };
-                    let borders_label = if borders_active {
-                        "Borders ✓"
-                    } else {
-                        "Borders"
-                    };
-                    ui.element()
-                        .id("btn-borders")
-                        .width(fit!())
-                        .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
-                        .background_color(borders_bg)
-                        .corner_radius(4.0)
-                        .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
-                        .accessibility(|a| a.button(borders_label).checked(borders_active))
-                        .children(|ui| {
-                            ui.text(borders_label, |text| text.font_size(12).color(0xE8E0DC));
-                        });
-
-                    let alerts_bg = hover_tint(
-                        &state.hovered_ids,
-                        "btn-alerts",
-                        if state.show_alerts {
-                            0x0dc5b8
-                        } else {
-                            0x1E1B1B
-                        },
-                        0x1E1B1B,
-                    );
-                    let alerts_label = if state.show_alerts {
-                        "Alerts ✓"
-                    } else {
-                        "Alerts"
-                    };
-                    let alerts_count = if state.alerts_loaded {
-                        format!(" ({})", state.alerts.len())
-                    } else if state.alerts_fetch_fired {
-                        " (…)".to_string()
-                    } else {
-                        String::new()
-                    };
-                    ui.element()
-                        .id("btn-alerts")
-                        .width(fit!())
-                        .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
-                        .background_color(alerts_bg)
-                        .corner_radius(4.0)
-                        .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
-                        .accessibility(|a| a.button(alerts_label).checked(state.show_alerts))
-                        .children(|ui| {
-                            ui.text(&format!("{alerts_label}{alerts_count}"), |text| {
-                                text.font_size(12).color(0xE8E0DC)
-                            });
-                        });
-
-                    // ── NHC toggle button (Stage 5) ──────────────────
-                    let nhc_bg = hover_tint(
-                        &state.hovered_ids,
-                        "btn-nhc",
-                        if state.nhc_show_panel {
-                            0x0dc5b8
-                        } else {
-                            0x1E1B1B
-                        },
-                        0x1E1B1B,
-                    );
-                    let nhc_label = if state.nhc_show_panel {
-                        "Tropical ✓"
-                    } else {
-                        "Tropical"
-                    };
-                    let storm_count = state
-                        .nhc_bundle
-                        .as_ref()
-                        .map(|b| b.metas.len())
-                        .unwrap_or(0);
-                    let nhc_badge = if storm_count > 0 {
-                        format!(" ({storm_count})")
-                    } else if state.nhc_fetch_fired {
-                        " (…)".to_string()
-                    } else {
-                        String::new()
-                    };
-                    ui.element()
-                        .id("btn-nhc")
-                        .width(fit!())
-                        .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
-                        .background_color(nhc_bg)
-                        .corner_radius(4.0)
-                        .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
-                        .accessibility(|a| a.button(nhc_label).checked(state.nhc_show_panel))
-                        .children(|ui| {
-                            ui.text(&format!("{nhc_label}{nhc_badge}"), |text| {
-                                text.font_size(12).color(0xE8E0DC)
-                            });
-                        });
-
-                    // ── Settings gear button (Stage 7) ──────────────
-                    let gear_bg = hover_tint(
-                        &state.hovered_ids,
-                        "btn-settings",
-                        if state.show_settings_panel {
-                            0x0dc5b8
-                        } else {
-                            0x1E1B1B
-                        },
-                        0x1E1B1B,
-                    );
-                    ui.element()
-                        .id("btn-settings")
-                        .width(fit!())
-                        .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
-                        .background_color(gear_bg)
-                        .corner_radius(4.0)
-                        .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
-                        .accessibility(|a| a.button("Settings"))
-                        .children(|ui| {
-                            ui.text("⚙", |text| text.font_size(14).color(0xE8E0DC));
-                        });
-                });
 
                 // ── NHC slide-in panel (Stage 5) ────────────────────────
                 if state.nhc_show_panel {
