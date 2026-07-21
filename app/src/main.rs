@@ -1452,13 +1452,34 @@ async fn main() {
                                         .corner_radius(6.0)
                                         .image(chart.clone())
                                         .empty();
+                                    // Day labels aligned to the day-boundary
+                                    // delimiters in the graph (teal), using the
+                                    // same per-hour proportional-spacer trick as
+                                    // the time ticks below.
+                                    let n = fc.hours.len();
+                                    ui.element()
+                                        .width(fixed!(600.0))
+                                        .height(fit!())
+                                        .layout(|layout| layout.direction(LeftToRight).align(Left, CenterY))
+                                        .children(|ui| {
+                                            for k in 0..n {
+                                                let new_day = k == 0
+                                                    || fc.hours[k].date != fc.hours[k - 1].date;
+                                                if new_day {
+                                                    let wd = forecast::weekday_from_iso(&fc.hours[k].date);
+                                                    ui.text(&wd, |t| t.font_size(12).color(0x0dc5b8));
+                                                }
+                                                if k != n - 1 {
+                                                    ui.element().width(grow!()).height(fixed!(1.0)).empty();
+                                                }
+                                            }
+                                        });
                                     // Sparse time ticks (every ~6h) under the graph.
                                     ui.element()
                                         .width(fixed!(600.0))
                                         .height(fit!())
                                         .layout(|layout| layout.direction(LeftToRight).align(Left, CenterY))
                                         .children(|ui| {
-                                            let n = fc.hours.len();
                                             for k in 0..n {
                                                 if k % 6 == 0 || k == n - 1 {
                                                     ui.text(&fc.hours[k].label, |t| {

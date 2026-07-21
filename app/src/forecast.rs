@@ -39,6 +39,8 @@ pub struct Day {
 pub struct Hour {
     /// Short 12-hour label, e.g. "4p".
     pub label: String,
+    /// Calendar date "YYYY-MM-DD" (for day grouping / delimiters).
+    pub date: String,
     /// Precipitation probability (%).
     pub precip_pct: i64,
 }
@@ -240,6 +242,7 @@ pub fn parse_forecast(json: &str) -> Result<Forecast> {
             let ts = times[idx].as_str().unwrap_or("");
             hours.push(Hour {
                 label: hour_label(ts),
+                date: ts.get(..10).unwrap_or("").to_string(),
                 precip_pct: probs.get(idx).and_then(Value::as_i64).unwrap_or(0),
             });
         }
@@ -261,21 +264,36 @@ pub fn render_hourly_chart(hours: &[Hour], w: usize, h: usize) -> Vec<u8> {
         return buf;
     }
 
-    const LINE: [u8; 4] = [0x6F, 0x9F, 0xE0, 0xFF];
-    const GRID: [u8; 4] = [0xFF, 0xFF, 0xFF, 0x24];
+    const LINE: [u8; 4] = [0x8F, 0xC0, 0xFF, 0xFF]; // bright blue line/dots
+    const FILL: [u8; 4] = [0x6F, 0x9F, 0xE0, 0x3A]; // translucent area under line
+    const GRID: [u8; 4] = [0xFF, 0xFF, 0xFF, 0x16]; // faint horizontal quartiles
+    const DAY: [u8; 4] = [0xFF, 0xFF, 0xFF, 0x40]; // day-boundary verticals
     let margin = 8usize;
     let plot_w = w.saturating_sub(2 * margin).max(1);
     let plot_h = h.saturating_sub(2 * margin).max(1);
 
-    let put = |buf: &mut [u8], x: i64, y: i64, c: [u8; 4]| {
+    // Alpha-blend a pixel (src over dst) so translucent fill/grid layer visibly.
+    let blend = |buf: &mut [u8], x: i64, y: i64, c: [u8; 4]| {
         if x < 0 || y < 0 || x as usize >= w || y as usize >= h {
             return;
         }
         let idx = ((y as usize) * w + x as usize) * 4;
-        buf[idx..idx + 4].copy_from_slice(&c);
+        let a = c[3] as u32;
+        if a == 0 {
+            return;
+        }
+        if a == 255 {
+            buf[idx..idx + 4].copy_from_slice(&c);
+            return;
+        }
+        for k in 0..3 {
+            let src = c[k] as u32;
+            let dst = buf[idx + k] as u32;
+            buf[idx + k] = ((src * a + dst * (255 - a)) / 255) as u8;
+        }
+        buf[idx + 3] = (a + buf[idx + 3] as u32 * (255 - a) / 255) as u8;
     };
 
-    // x for hour i, y for a given percent (clamped 0..=100).
     let n = hours.len();
     let px = |i: usize| -> i64 {
         (margin + if n > 1 { i * plot_w / (n - 1) } else { plot_w / 2 }) as i64
@@ -284,16 +302,27 @@ pub fn render_hourly_chart(hours: &[Hour], w: usize, h: usize) -> Vec<u8> {
         let p = pct.clamp(0, 100) as usize;
         (margin + plot_h - p * plot_h / 100) as i64
     };
+    let baseline = py(0);
 
-    // Gridlines at 0/50/100%.
-    for pct in [0i64, 50, 100] {
+    // Horizontal gridlines at 0/25/50/75/100% for vertical scale context.
+    for pct in [0i64, 25, 50, 75, 100] {
         let y = py(pct);
         for x in margin..(w - margin) {
-            put(&mut buf, x as i64, y, GRID);
+            blend(&mut buf, x as i64, y, GRID);
         }
     }
 
-    // Connect consecutive points (integer DDA).
+    // Vertical day-boundary delimiters (where the date changes).
+    for i in 1..n {
+        if hours[i].date != hours[i - 1].date {
+            let x = px(i);
+            for y in margin..(h - margin) {
+                blend(&mut buf, x, y as i64, DAY);
+            }
+        }
+    }
+
+    // Area fill + line, segment by segment (integer DDA).
     for i in 0..n.saturating_sub(1) {
         let (x0, y0) = (px(i), py(hours[i].precip_pct));
         let (x1, y1) = (px(i + 1), py(hours[i + 1].precip_pct));
@@ -301,18 +330,23 @@ pub fn render_hourly_chart(hours: &[Hour], w: usize, h: usize) -> Vec<u8> {
         for s in 0..=steps {
             let x = x0 + (x1 - x0) * s / steps;
             let y = y0 + (y1 - y0) * s / steps;
-            put(&mut buf, x, y, LINE);
-            put(&mut buf, x, y + 1, LINE); // 2px thick for visibility
+            // Fill column from the curve down to the baseline.
+            let (top, bot) = if y <= baseline { (y, baseline) } else { (baseline, y) };
+            for fy in top..=bot {
+                blend(&mut buf, x, fy, FILL);
+            }
+            blend(&mut buf, x, y, LINE);
+            blend(&mut buf, x, y + 1, LINE); // 2px thick
         }
     }
 
-    // Dots (filled 3x3-ish disc) per hour.
+    // Dots per hour.
     for i in 0..n {
         let (cx, cy) = (px(i), py(hours[i].precip_pct));
         for dy in -2..=2i64 {
             for dx in -2..=2i64 {
                 if dx * dx + dy * dy <= 4 {
-                    put(&mut buf, cx + dx, cy + dy, LINE);
+                    blend(&mut buf, cx + dx, cy + dy, LINE);
                 }
             }
         }
@@ -416,8 +450,8 @@ mod tests {
     #[test]
     fn render_hourly_chart_dims_and_plots() {
         let hours = vec![
-            Hour { label: "4p".into(), precip_pct: 0 },
-            Hour { label: "5p".into(), precip_pct: 100 },
+            Hour { label: "4p".into(), date: "2026-07-21".into(), precip_pct: 0 },
+            Hour { label: "5p".into(), date: "2026-07-21".into(), precip_pct: 100 },
         ];
         let (w, h) = (120, 60);
         let buf = render_hourly_chart(&hours, w, h);
