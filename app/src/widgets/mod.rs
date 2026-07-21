@@ -13,6 +13,19 @@ pub mod nf {
     pub const GEAR: &str = "\u{f013}"; // fa-gear
     pub const WARNING: &str = "\u{f071}"; // fa-warning
     pub const HURRICANE: &str = "\u{f0898}"; // md-weather-hurricane
+
+    // Weather glyphs (Material Design Icons — same set as HURRICANE).
+    // Verify rendering against the SYMBOL_FONT; the paired text label in
+    // `forecast::wmo_icon` carries meaning even if a glyph shows as tofu.
+    pub const WX_SUNNY: &str = "\u{f0599}"; // md-weather-sunny
+    pub const WX_NIGHT: &str = "\u{f0594}"; // md-weather-night
+    pub const WX_PARTLY: &str = "\u{f0595}"; // md-weather-partly-cloudy
+    pub const WX_CLOUDY: &str = "\u{f0590}"; // md-weather-cloudy
+    pub const WX_FOG: &str = "\u{f0591}"; // md-weather-fog
+    pub const WX_RAINY: &str = "\u{f0597}"; // md-weather-rainy
+    pub const WX_POURING: &str = "\u{f0596}"; // md-weather-pouring
+    pub const WX_SNOWY: &str = "\u{f0598}"; // md-weather-snowy
+    pub const WX_LIGHTNING: &str = "\u{f0593}"; // md-weather-lightning
     pub const EXTERNAL_LINK: &str = "\u{f08e}"; // fa-external-link
     pub const REFRESH: &str = "\u{f021}"; // fa-refresh
     pub const RADAR: &str = "\u{f0bce}"; // md-radar

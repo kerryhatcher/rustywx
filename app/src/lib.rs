@@ -8,6 +8,7 @@ pub mod cache;
 pub mod cities;
 pub mod colors;
 pub mod data;
+pub mod forecast;
 pub mod geo;
 pub mod location;
 pub mod model;
