@@ -12,12 +12,16 @@ use ply_engine::prelude::*;
 pub const BACKDROP_ID: &str = "settings-modal-backdrop";
 pub const CLOSE_ID: &str = "settings-modal-close";
 pub const BORDERS_TOGGLE_ID: &str = "settings-toggle-borders";
-pub const ALERTS_TOGGLE_ID: &str = "settings-toggle-alerts";
+pub const WATCHES_TOGGLE_ID: &str = "settings-toggle-watches";
+pub const WARNINGS_TOGGLE_ID: &str = "settings-toggle-warnings";
 pub const NHC_TOGGLE_ID: &str = "settings-toggle-nhc";
 pub const ANIMATION_CYCLE_ID: &str = "settings-cycle-animation";
 pub const TDBZ_CYCLE_ID: &str = "settings-cycle-tdbz";
 pub const USE_CURRENT_SITE_ID: &str = "settings-use-current-site";
 pub const DYSLEXIC_TOGGLE_ID: &str = "settings-toggle-dyslexic";
+pub const SWEEP_TOGGLE_ID: &str = "settings-toggle-sweep";
+pub const SCOPE_RINGS_TOGGLE_ID: &str = "settings-toggle-scope-rings";
+pub const CC_GATE_TOGGLE_ID: &str = "settings-toggle-cc-gate";
 pub const LOCATION_INPUT_ID: &str = "settings-location-input";
 pub const LOCATION_DETECT_ID: &str = "settings-location-detect";
 pub const CENTER_TOGGLE_ID: &str = "settings-toggle-center";
@@ -94,7 +98,7 @@ pub fn draw(
     location_status: &str,
 ) {
     let modal_w = 420.0;
-    let modal_h = 470.0;
+    let modal_h = 510.0;
     let modal_x = (screen_width() - modal_w) / 2.0;
     let modal_y = (screen_height() - modal_h) / 2.0;
 
@@ -178,12 +182,20 @@ pub fn draw(
                             settings.show_borders,
                         );
                     });
-                    row(ui, "Show alerts on startup", |ui| {
+                    row(ui, "Show watches on startup", |ui| {
                         bool_toggle(
                             ui,
-                            ALERTS_TOGGLE_ID,
-                            "Show alerts on startup",
-                            settings.show_alerts,
+                            WATCHES_TOGGLE_ID,
+                            "Show watches on startup",
+                            settings.show_watches,
+                        );
+                    });
+                    row(ui, "Show warnings on startup", |ui| {
+                        bool_toggle(
+                            ui,
+                            WARNINGS_TOGGLE_ID,
+                            "Show warnings on startup",
+                            settings.show_warnings,
                         );
                     });
                     row(ui, "Show tropical panel on startup", |ui| {
@@ -200,6 +212,30 @@ pub fn draw(
                             DYSLEXIC_TOGGLE_ID,
                             "Dyslexia-friendly font",
                             settings.dyslexic_font,
+                        );
+                    });
+                    row(ui, "Radar sweep animation", |ui| {
+                        bool_toggle(
+                            ui,
+                            SWEEP_TOGGLE_ID,
+                            "Radar sweep animation",
+                            settings.show_sweep,
+                        );
+                    });
+                    row(ui, "Scope rings & crosshairs", |ui| {
+                        bool_toggle(
+                            ui,
+                            SCOPE_RINGS_TOGGLE_ID,
+                            "Scope rings & crosshairs",
+                            settings.show_scope_rings,
+                        );
+                    });
+                    row(ui, "CC-gate reflectivity", |ui| {
+                        bool_toggle(
+                            ui,
+                            CC_GATE_TOGGLE_ID,
+                            "CC-gate reflectivity",
+                            settings.cc_gate_enabled,
                         );
                     });
                     // ── My Location ──────────────────────────────

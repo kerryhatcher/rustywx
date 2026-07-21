@@ -132,6 +132,9 @@ pub fn draw(ui: &mut Ui<'_, ()>) {
                             shortcut_row(ui, "R", "Reflectivity");
                             shortcut_row(ui, "V", "Velocity");
                             shortcut_row(ui, "W", "Spectrum Width");
+                            shortcut_row(ui, "Z", "Differential Reflectivity");
+                            shortcut_row(ui, "C", "Correlation Coefficient");
+                            shortcut_row(ui, "P", "Differential Phase");
 
                             // Navigation section
                             section_header(ui, "NAVIGATION");
@@ -142,8 +145,9 @@ pub fn draw(ui: &mut Ui<'_, ()>) {
                             // Overlays section
                             section_header(ui, "OVERLAYS");
                             shortcut_row(ui, "B", "Toggle borders");
-                            shortcut_row(ui, "A", "Toggle alerts");
-                            shortcut_row(ui, "N", "Toggle tropical panel");
+                            shortcut_row(ui, "W", "Toggle watches");
+                            shortcut_row(ui, "A", "Toggle warnings");
+                            shortcut_row(ui, "N", "Toggle tropical data");
 
                             // General section
                             section_header(ui, "GENERAL");

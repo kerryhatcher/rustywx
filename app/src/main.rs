@@ -15,7 +15,7 @@ use rustywx::model::{Product, RadialData, SweepData, format_nyquist_velocity, vc
 use rustywx::nhc;
 use rustywx::scope;
 use rustywx::settings::{AnimationLevel, Settings};
-use rustywx::state::{AppState, NhcModal};
+use rustywx::state::{AlertModal, AppState, NhcModal};
 use rustywx::widgets::dropdown::{DropdownConfig, DropdownOption, DropdownState};
 use rustywx::widgets::glass_panel;
 use rustywx::widgets::settings as settings_widget;
@@ -48,7 +48,10 @@ const TILT_DROPDOWN: DropdownConfig = DropdownConfig {
     searchable: false,
 };
 
-const PRODUCT_OPTIONS: [ToggleOption<Product>; 3] = [
+// Product buttons stack vertically in the radar side panel (TopToBottom
+// layout, panel scrolls if needed) rather than sitting in a horizontal row,
+// so six buttons just add three more rows — no width-clipping concern.
+const PRODUCT_OPTIONS: [ToggleOption<Product>; 6] = [
     ToggleOption {
         id: "btn-refl",
         label: "Reflectivity",
@@ -64,6 +67,21 @@ const PRODUCT_OPTIONS: [ToggleOption<Product>; 3] = [
         label: "Spectrum Width",
         value: Product::SpectrumWidth,
     },
+    ToggleOption {
+        id: "btn-zdr",
+        label: "ZDR",
+        value: Product::DifferentialReflectivity,
+    },
+    ToggleOption {
+        id: "btn-cc",
+        label: "CC",
+        value: Product::CorrelationCoefficient,
+    },
+    ToggleOption {
+        id: "btn-phidp",
+        label: "PhiDP",
+        value: Product::DifferentialPhase,
+    },
 ];
 
 const STORM_DROPDOWN: DropdownConfig = DropdownConfig {
@@ -78,6 +96,25 @@ const STORM_DROPDOWN: DropdownConfig = DropdownConfig {
 
 const NHC_MODAL_LINE_HEIGHT: f32 = 14.0;
 const NHC_MODAL_TEXT_COLUMNS: usize = 82;
+
+/// Build the full alert-detail modal body: headline, full NWS description, and
+/// precautionary instruction, skipping any part the feed left empty.
+fn alert_modal_body(alert: &rustywx::alerts::Alert) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if !alert.headline.is_empty() {
+        parts.push(alert.headline.clone());
+    }
+    if !alert.description.is_empty() {
+        parts.push(alert.description.clone());
+    }
+    if !alert.instruction.is_empty() {
+        parts.push(format!(
+            "PRECAUTIONARY/PREPAREDNESS ACTIONS:\n\n{}",
+            alert.instruction
+        ));
+    }
+    parts.join("\n\n")
+}
 
 fn wrap_modal_text(content: &str) -> Vec<String> {
     let mut output = Vec::new();
@@ -114,6 +151,20 @@ fn nhc_modal_text_metrics(state: &AppState) -> Option<(usize, usize, f32)> {
     let modal_h = screen_height() * 0.7;
     let content_h = modal_h - 36.0 - 40.0 - 24.0;
     let lines = wrap_modal_text(content);
+    let visible = (content_h / NHC_MODAL_LINE_HEIGHT).floor().max(1.0) as usize;
+    let max_first = lines.len().saturating_sub(visible);
+    Some((
+        lines.len(),
+        visible,
+        max_first as f32 * NHC_MODAL_LINE_HEIGHT,
+    ))
+}
+
+fn alert_modal_text_metrics(state: &AppState) -> Option<(usize, usize, f32)> {
+    let alert_modal = state.alert_modal.as_ref()?;
+    let modal_h = screen_height() * 0.7;
+    let content_h = modal_h - 36.0 - 24.0;
+    let lines = wrap_modal_text(&alert_modal.content);
     let visible = (content_h / NHC_MODAL_LINE_HEIGHT).floor().max(1.0) as usize;
     let max_first = lines.len().saturating_sub(visible);
     Some((
@@ -392,10 +443,13 @@ async fn main() {
         alerts_loaded: false,
         alerts_fetch_fired: false,
         last_alert_poll: 0.0,
-        show_radar: true,
+        radar_panel_open: false,
         radar_anim_start: 0.0,
+        show_radar_data: true,
+        show_nhc_data: true,
         show_borders: true,
-        show_alerts: true,
+        show_watches: true,
+        show_warnings: true,
         fullscreen: false,
         nhc_bundle: None,
         nhc_fetch: nhc::NhcFetchState::new(),
@@ -408,6 +462,8 @@ async fn main() {
         nhc_overlays: scope::NhcOverlayState::default(),
         nhc_modal: NhcModal::None,
         nhc_modal_scroll: 0.0,
+        alert_modal: None,
+        alert_modal_scroll: 0.0,
         last_mouse_pos: None,
         start_time: get_time(),
         nhc_anim_start: 0.0,
@@ -540,9 +596,12 @@ async fn main() {
                 select_site(&mut state, index);
             }
             state.show_borders = state.settings.show_borders;
-            state.show_alerts = state.settings.show_alerts;
+            state.show_watches = state.settings.show_watches;
+            state.show_warnings = state.settings.show_warnings;
             state.nhc_show_panel = state.settings.show_nhc;
-            state.show_radar = state.settings.show_radar;
+            state.radar_panel_open = state.settings.show_radar;
+            state.show_radar_data = state.settings.show_radar_data;
+            state.show_nhc_data = state.settings.show_nhc_data;
             state.show_location = state.settings.show_location;
             // Restore last known location from settings without any
             // network call — the resolver chain runs only on Detect.
@@ -750,6 +809,25 @@ async fn main() {
 
         let site = &geo::RADAR_SITES[state.site_index];
 
+        // For CC-gating: find the CC sweep at the nearest elevation to the REF
+        // sweep we are about to rasterize. Only needed for Reflectivity; None
+        // for every other product (and when there is no dual-pol CC volume).
+        let cc_sweep: Option<SweepData> =
+            if state.product == Product::Reflectivity && state.settings.cc_gate_enabled {
+                state.scan.as_ref().and_then(|scan| {
+                    let cc = &scan.correlation_coefficient;
+                    cc.iter()
+                        .min_by(|a, b| {
+                            (a.elevation_deg - sweep.elevation_deg)
+                                .abs()
+                                .total_cmp(&(b.elevation_deg - sweep.elevation_deg).abs())
+                        })
+                        .cloned()
+                })
+            } else {
+                None
+            };
+
         // Rasterize when needed
         if state.needs_reraster {
             state.needs_reraster = false;
@@ -759,6 +837,9 @@ async fn main() {
                 scope::RASTER_SIZE_PX,
                 scope::MAX_RANGE_KM,
                 state.settings.tdbz_kernel.size() as usize,
+                cc_sweep.as_ref(),
+                state.settings.cc_gate_enabled,
+                state.settings.cc_gate_threshold,
             );
             let tex = Texture2D::from_rgba8(
                 scope::RASTER_SIZE_PX as u16,
@@ -773,24 +854,33 @@ async fn main() {
         // causes a 180° rotation of the content).
         draw_observatory_background();
         scope::draw_scope_to_texture(
-            state.radar_texture.as_ref(),
+            if state.show_radar_data {
+                state.radar_texture.as_ref()
+            } else {
+                None
+            },
             site,
             state.pan_km,
             state.zoom,
             Some((&state.borders, state.show_borders)),
-            Some((&state.alerts, state.show_alerts)),
-            state.nhc_bundle.as_ref().map(|b| (b, &state.nhc_overlays)),
+            Some((&state.alerts, state.show_watches, state.show_warnings)),
+            if state.show_nhc_data {
+                state.nhc_bundle.as_ref().map(|b| (b, &state.nhc_overlays))
+            } else {
+                None
+            },
             if state.show_location {
                 state.user_location
             } else {
                 None
             },
-            state.show_radar,
+            state.radar_panel_open, // show_sites arg — markers shown only while the Radar panel is open
+            state.settings.show_scope_rings,
         );
 
-        // Radar sweep line (optional observatory visual flourish) — dropped
-        // under Subtle and None, kept only at Full.
-        if state.settings.animation_level == AnimationLevel::Full {
+        // Radar sweep line (optional observatory visual flourish) — gated on
+        // its own setting, independent of the range rings/crosshairs.
+        if state.settings.show_sweep {
             draw_radar_sweep(state.pan_km, state.zoom, state.sweep_angle, entrance);
         }
 
@@ -848,30 +938,158 @@ async fn main() {
                             .wrap_gap(6)
                     })
                     .children(|ui| {
-                        // ── Radar toggle button ──────────────────────────
-                        // The radar controls (site / product / tilt) now live
-                        // in the slide-in Radar panel; this button opens it.
-                        let radar_bg = hover_tint(
+                        // ── Panels group ──────────────────────────────────
+                        // Menu-openers for the slide-in side panels. Chevron
+                        // affordance, no ✓ — panel-open is not data-visible.
+                        let radar_panel_bg = hover_tint(
                             &state.hovered_ids,
                             "btn-radar",
-                            if state.show_radar { 0x0dc5b8 } else { 0x1E1B1B },
+                            if state.radar_panel_open {
+                                0x0dc5b8
+                            } else {
+                                0x1E1B1B
+                            },
                             0x1E1B1B,
                         );
-                        let radar_label = if state.show_radar {
+                        ui.element()
+                            .id("btn-radar")
+                            .width(fit!())
+                            .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                            .background_color(radar_panel_bg)
+                            .corner_radius(4.0)
+                            .layout(|layout| {
+                                layout
+                                    .direction(LeftToRight)
+                                    .gap(6)
+                                    .padding((0, 8, 0, 8))
+                                    .align(CenterX, CenterY)
+                            })
+                            .accessibility(|a| {
+                                a.button("Open radar panel").checked(state.radar_panel_open)
+                            })
+                            .children(|ui| {
+                                ui.text("Radar", |text| text.font_size(12).color(0xE8E0DC));
+                                ui.text(nf::CHEVRON_RIGHT, |text| {
+                                    text.font_size(10).font(&SYMBOL_FONT).color(0xE8E0DC)
+                                });
+                            });
+
+                        let tropical_panel_bg = hover_tint(
+                            &state.hovered_ids,
+                            "btn-tropical",
+                            if state.nhc_show_panel {
+                                0x0dc5b8
+                            } else {
+                                0x1E1B1B
+                            },
+                            0x1E1B1B,
+                        );
+                        ui.element()
+                            .id("btn-tropical")
+                            .width(fit!())
+                            .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                            .background_color(tropical_panel_bg)
+                            .corner_radius(4.0)
+                            .layout(|layout| {
+                                layout
+                                    .direction(LeftToRight)
+                                    .gap(6)
+                                    .padding((0, 8, 0, 8))
+                                    .align(CenterX, CenterY)
+                            })
+                            .accessibility(|a| {
+                                a.button("Open tropical panel")
+                                    .checked(state.nhc_show_panel)
+                            })
+                            .children(|ui| {
+                                ui.text("Tropical", |text| text.font_size(12).color(0xE8E0DC));
+                                ui.text(nf::CHEVRON_RIGHT, |text| {
+                                    text.font_size(10).font(&SYMBOL_FONT).color(0xE8E0DC)
+                                });
+                            });
+
+                        // Divider between Panels and Layers groups.
+                        ui.element()
+                            .width(fixed!(1.0))
+                            .height(fixed!(if is_mobile { 28.0 } else { 16.0 }))
+                            .background_color((1.0f32, 1.0f32, 1.0f32, 40.0f32))
+                            .empty();
+
+                        // ── Layers group ──────────────────────────────────
+                        // Pure visibility toggles (✓ idiom).
+                        let radar_data_bg = hover_tint(
+                            &state.hovered_ids,
+                            "btn-radar-data",
+                            if state.show_radar_data {
+                                0x0dc5b8
+                            } else {
+                                0x1E1B1B
+                            },
+                            0x1E1B1B,
+                        );
+                        let radar_data_label = if state.show_radar_data {
                             "Radar ✓"
                         } else {
                             "Radar"
                         };
                         ui.element()
-                            .id("btn-radar")
+                            .id("btn-radar-data")
                             .width(fit!())
                             .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
-                            .background_color(radar_bg)
+                            .background_color(radar_data_bg)
                             .corner_radius(4.0)
                             .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
-                            .accessibility(|a| a.button(radar_label).checked(state.show_radar))
+                            .accessibility(|a| {
+                                a.button(radar_data_label).checked(state.show_radar_data)
+                            })
                             .children(|ui| {
-                                ui.text(radar_label, |text| text.font_size(12).color(0xE8E0DC));
+                                ui.text(radar_data_label, |text| {
+                                    text.font_size(12).color(0xE8E0DC)
+                                });
+                            });
+
+                        // ── Tropical data toggle (Layers group) ──────────
+                        let tropical_data_bg = hover_tint(
+                            &state.hovered_ids,
+                            "btn-tropical-data",
+                            if state.show_nhc_data {
+                                0x0dc5b8
+                            } else {
+                                0x1E1B1B
+                            },
+                            0x1E1B1B,
+                        );
+                        let tropical_data_label = if state.show_nhc_data {
+                            "Tropical ✓"
+                        } else {
+                            "Tropical"
+                        };
+                        let storm_count = state
+                            .nhc_bundle
+                            .as_ref()
+                            .map(|b| b.metas.len())
+                            .unwrap_or(0);
+                        let nhc_badge = if storm_count > 0 {
+                            format!(" ({storm_count})")
+                        } else if state.nhc_fetch_fired {
+                            " (…)".to_string()
+                        } else {
+                            String::new()
+                        };
+                        ui.element()
+                            .id("btn-tropical-data")
+                            .width(fit!())
+                            .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                            .background_color(tropical_data_bg)
+                            .corner_radius(4.0)
+                            .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
+                            .accessibility(|a| {
+                                a.button(tropical_data_label).checked(state.show_nhc_data)
+                            })
+                            .children(|ui| {
+                                ui.text(&format!("{tropical_data_label}{nhc_badge}"), |text| {
+                                    text.font_size(12).color(0xE8E0DC)
+                                });
                             });
 
                         // Zoom/Pan readout lives in the bottom status bar.
@@ -896,82 +1114,84 @@ async fn main() {
                                 ui.text(borders_label, |text| text.font_size(12).color(0xE8E0DC));
                             });
 
-                        let alerts_bg = hover_tint(
+                        // Per-category counts for the Watches/Warnings buttons.
+                        let (watch_n, warn_n) = state.alerts.iter().fold((0, 0), |(w, a), al| {
+                            if alerts::is_watch(&al.event) {
+                                (w + 1, a)
+                            } else {
+                                (w, a + 1)
+                            }
+                        });
+                        let count_suffix = |n: usize| {
+                            if state.alerts_loaded {
+                                format!(" ({n})")
+                            } else if state.alerts_fetch_fired {
+                                " (…)".to_string()
+                            } else {
+                                String::new()
+                            }
+                        };
+
+                        let watches_bg = hover_tint(
                             &state.hovered_ids,
-                            "btn-alerts",
-                            if state.show_alerts {
+                            "btn-watches",
+                            if state.show_watches {
                                 0x0dc5b8
                             } else {
                                 0x1E1B1B
                             },
                             0x1E1B1B,
                         );
-                        let alerts_label = if state.show_alerts {
-                            "Alerts ✓"
+                        let watches_label = if state.show_watches {
+                            "Watches ✓"
                         } else {
-                            "Alerts"
-                        };
-                        let alerts_count = if state.alerts_loaded {
-                            format!(" ({})", state.alerts.len())
-                        } else if state.alerts_fetch_fired {
-                            " (…)".to_string()
-                        } else {
-                            String::new()
+                            "Watches"
                         };
                         ui.element()
-                            .id("btn-alerts")
+                            .id("btn-watches")
                             .width(fit!())
                             .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
-                            .background_color(alerts_bg)
+                            .background_color(watches_bg)
                             .corner_radius(4.0)
                             .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
-                            .accessibility(|a| a.button(alerts_label).checked(state.show_alerts))
+                            .accessibility(|a| a.button(watches_label).checked(state.show_watches))
                             .children(|ui| {
-                                ui.text(&format!("{alerts_label}{alerts_count}"), |text| {
-                                    text.font_size(12).color(0xE8E0DC)
-                                });
+                                ui.text(
+                                    &format!("{watches_label}{}", count_suffix(watch_n)),
+                                    |text| text.font_size(12).color(0xE8E0DC),
+                                );
                             });
 
-                        // ── NHC toggle button (Stage 5) ──────────────────
-                        let nhc_bg = hover_tint(
+                        let warnings_bg = hover_tint(
                             &state.hovered_ids,
-                            "btn-nhc",
-                            if state.nhc_show_panel {
+                            "btn-warnings",
+                            if state.show_warnings {
                                 0x0dc5b8
                             } else {
                                 0x1E1B1B
                             },
                             0x1E1B1B,
                         );
-                        let nhc_label = if state.nhc_show_panel {
-                            "Tropical ✓"
+                        let warnings_label = if state.show_warnings {
+                            "Warnings ✓"
                         } else {
-                            "Tropical"
-                        };
-                        let storm_count = state
-                            .nhc_bundle
-                            .as_ref()
-                            .map(|b| b.metas.len())
-                            .unwrap_or(0);
-                        let nhc_badge = if storm_count > 0 {
-                            format!(" ({storm_count})")
-                        } else if state.nhc_fetch_fired {
-                            " (…)".to_string()
-                        } else {
-                            String::new()
+                            "Warnings"
                         };
                         ui.element()
-                            .id("btn-nhc")
+                            .id("btn-warnings")
                             .width(fit!())
                             .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
-                            .background_color(nhc_bg)
+                            .background_color(warnings_bg)
                             .corner_radius(4.0)
                             .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
-                            .accessibility(|a| a.button(nhc_label).checked(state.nhc_show_panel))
+                            .accessibility(|a| {
+                                a.button(warnings_label).checked(state.show_warnings)
+                            })
                             .children(|ui| {
-                                ui.text(&format!("{nhc_label}{nhc_badge}"), |text| {
-                                    text.font_size(12).color(0xE8E0DC)
-                                });
+                                ui.text(
+                                    &format!("{warnings_label}{}", count_suffix(warn_n)),
+                                    |text| text.font_size(12).color(0xE8E0DC),
+                                );
                             });
 
                         // ── Location toggle button (Task 9) ──────────────
@@ -1059,7 +1279,7 @@ async fn main() {
                     });
 
                 // ── Radar slide-in panel ────────────────────────────────
-                if state.show_radar {
+                if state.radar_panel_open {
                     if state.radar_anim_start == 0.0 {
                         state.radar_anim_start = now;
                     }
@@ -1662,6 +1882,88 @@ async fn main() {
                         });
                 }
 
+                // ── Alert detail modal (click-for-detail) ───────────────────
+                if let Some(alert_modal) = &state.alert_modal {
+                    let modal_w = 640.0;
+                    let modal_h = screen_height() * 0.7;
+                    let modal_x = (screen_width() - modal_w) / 2.0;
+                    let modal_y = (screen_height() - modal_h) / 2.0;
+                    let content_h = modal_h - 36.0 - 24.0;
+
+                    // Semi-transparent backdrop (click to close)
+                    ui.element()
+                        .id("alert-modal-backdrop")
+                        .width(fixed!(screen_width()))
+                        .height(fixed!(screen_height()))
+                        .background_color((0.0f32, 0.0f32, 0.0f32, 220.0f32))
+                        .floating(|f| f.offset((0.0, 0.0)).z_index(200).attach_root())
+                        .empty();
+
+                    // Modal panel (frosted glass)
+                    glass_panel::glass(ui.element().width(fixed!(modal_w)).height(fixed!(modal_h)))
+                        .floating(|f| f.offset((modal_x, modal_y)).z_index(201).attach_root())
+                        .layout(|l| l.direction(TopToBottom).padding(0).gap(0))
+                        .children(|ui| {
+                            // Title bar
+                            ui.element()
+                                .width(grow!())
+                                .height(fixed!(36.0))
+                                .background_color(0x1E1B1B)
+                                .corner_radius(8.0)
+                                .layout(|l| {
+                                    l.direction(LeftToRight)
+                                        .padding((0, 12, 0, 12))
+                                        .gap(8)
+                                        .align(Left, CenterY)
+                                })
+                                .children(|ui| {
+                                    ui.text(&alert_modal.title, |t| {
+                                        t.font_size(14).color(0xE8E0DC)
+                                    });
+                                    ui.element().width(grow!()).height(fixed!(1.0)).empty();
+                                    // Close button
+                                    ui.element()
+                                        .id("alert-modal-close")
+                                        .width(fixed!(28.0))
+                                        .height(fixed!(28.0))
+                                        .background_color(0x3a1a1a)
+                                        .corner_radius(4.0)
+                                        .layout(|l| l.align(CenterX, CenterY))
+                                        .children(|ui| {
+                                            ui.text(nf::CLOSE, |t| {
+                                                t.font_size(14).font(&SYMBOL_FONT).color(0xE8E0DC)
+                                            });
+                                        });
+                                });
+
+                            // Content area
+                            ui.element()
+                                .width(grow!())
+                                .height(grow!())
+                                .background_color(0x0a0d12)
+                                .layout(|l| l.padding(12).gap(8).direction(TopToBottom))
+                                .children(|ui| {
+                                    let lines = wrap_modal_text(&alert_modal.content);
+                                    let visible_count =
+                                        (content_h / NHC_MODAL_LINE_HEIGHT).floor().max(1.0)
+                                            as usize;
+                                    let max_first = lines.len().saturating_sub(visible_count);
+                                    let first = (state.alert_modal_scroll / NHC_MODAL_LINE_HEIGHT)
+                                        .floor()
+                                        as usize;
+                                    let first = first.min(max_first);
+                                    let last = (first + visible_count).min(lines.len());
+                                    let window = lines[first..last].join("\n");
+                                    ui.text(&window, |t| {
+                                        t.font_size(11)
+                                            .color(0x9E9590)
+                                            .line_height(NHC_MODAL_LINE_HEIGHT as u16)
+                                            .wrap_mode(ply_engine::text::WrapMode::Newline)
+                                    });
+                                });
+                        });
+                }
+
                 // ── Settings modal (Stage 7) ────────────────────────────
                 if state.show_settings_panel {
                     let site = &geo::RADAR_SITES[state.site_index];
@@ -1753,6 +2055,9 @@ async fn main() {
                             Product::Reflectivity => colors::DBZ_LEGEND,
                             Product::Velocity => colors::VELOCITY_LEGEND,
                             Product::SpectrumWidth => colors::SPECTRUM_WIDTH_LEGEND,
+                            Product::DifferentialReflectivity => colors::ZDR_LEGEND,
+                            Product::CorrelationCoefficient => colors::CC_LEGEND,
+                            Product::DifferentialPhase => colors::PHIDP_LEGEND,
                         };
 
                         // Left: two stacked rows.
@@ -1784,6 +2089,47 @@ async fn main() {
                                         ui.text(state.product.units(), |text| {
                                             text.font_size(10).font(&MONO_FONT).color(0x5F8A6A)
                                         });
+
+                                        // ── Alert legend (watches/warnings key) ─────
+                                        if (state.show_watches || state.show_warnings)
+                                            && !state.alerts.is_empty()
+                                        {
+                                            const ALERT_LEGEND_CAP: usize = 4;
+                                            let mut seen: Vec<(&str, [u8; 4])> = Vec::new();
+                                            for a in &state.alerts {
+                                                if !seen.iter().any(|(e, _)| *e == a.event) {
+                                                    seen.push((a.event.as_str(), a.color));
+                                                }
+                                            }
+                                            let total = seen.len();
+                                            for &(event, color) in
+                                                seen.iter().take(ALERT_LEGEND_CAP)
+                                            {
+                                                let hex = (color[0] as u32) << 16
+                                                    | (color[1] as u32) << 8
+                                                    | (color[2] as u32);
+                                                ui.element()
+                                                    .width(fixed!(14.0))
+                                                    .height(fixed!(10.0))
+                                                    .background_color(hex)
+                                                    .empty();
+                                                ui.text(event, |text| {
+                                                    text.font_size(10)
+                                                        .font(&MONO_FONT)
+                                                        .color(0x9E9590)
+                                                });
+                                            }
+                                            if total > ALERT_LEGEND_CAP {
+                                                ui.text(
+                                                    &format!("+{} more", total - ALERT_LEGEND_CAP),
+                                                    |text| {
+                                                        text.font_size(10)
+                                                            .font(&MONO_FONT)
+                                                            .color(0x9E9590)
+                                                    },
+                                                );
+                                            }
+                                        }
                                     });
                                 // Row 2 — status + zoom/pan.
                                 ui.element()
@@ -1947,10 +2293,11 @@ fn handle_input(
 
     let dropdown_open = state.site_dropdown.is_open() || state.tilt_dropdown.is_open();
     let modal_open = !matches!(state.nhc_modal, NhcModal::None)
+        || state.alert_modal.is_some()
         || state.show_settings_panel
         || state.show_shortcuts;
     let over_nhc_panel = state.nhc_show_panel && ply.pointer_over("nhc-panel");
-    let over_radar_panel = state.show_radar && ply.pointer_over("radar-panel");
+    let over_radar_panel = state.radar_panel_open && ply.pointer_over("radar-panel");
 
     if !dropdown_open
         && !modal_open
@@ -2006,6 +2353,28 @@ fn handle_input(
                 }
                 if let Some((index, _)) = best {
                     select_site(state, index);
+                } else {
+                    // No site marker hit — double-click on an alert polygon
+                    // opens its detail modal. (Single-click stays free for
+                    // panning, so map drags don't pop modals accidentally.)
+                    let side = screen_width().min(screen_height());
+                    let px_per_km = (side / 2.0) / scope::MAX_RANGE_KM * state.zoom;
+                    let center_x = screen_width() / 2.0 + state.pan_km.0 * px_per_km;
+                    let center_y = screen_height() / 2.0 + state.pan_km.1 * px_per_km;
+                    if let Some(alert) = alerts::hit_test(
+                        &state.alerts,
+                        state.show_watches,
+                        state.show_warnings,
+                        center,
+                        (mx, my),
+                        (center_x, center_y),
+                        px_per_km,
+                    ) {
+                        state.alert_modal = Some(AlertModal {
+                            title: alert.event.clone(),
+                            content: alert_modal_body(alert),
+                        });
+                    }
                 }
                 // Reset so a third click doesn't re-trigger.
                 state.last_click_time = 0.0;
@@ -2025,6 +2394,15 @@ fn handle_input(
         }
         if is_key_pressed(KeyCode::W) {
             select_product(state, Product::SpectrumWidth);
+        }
+        if is_key_pressed(KeyCode::Z) {
+            select_product(state, Product::DifferentialReflectivity);
+        }
+        if is_key_pressed(KeyCode::C) {
+            select_product(state, Product::CorrelationCoefficient);
+        }
+        if is_key_pressed(KeyCode::P) {
+            select_product(state, Product::DifferentialPhase);
         }
         if is_key_pressed(KeyCode::T) {
             let tilt_count = state
@@ -2052,8 +2430,11 @@ fn handle_input(
         if is_key_pressed(KeyCode::B) {
             state.show_borders = !state.show_borders;
         }
+        if is_key_pressed(KeyCode::W) {
+            state.show_watches = !state.show_watches;
+        }
         if is_key_pressed(KeyCode::A) {
-            state.show_alerts = !state.show_alerts;
+            state.show_warnings = !state.show_warnings;
         }
     }
 
@@ -2065,8 +2446,21 @@ fn handle_input(
     if ply.is_just_pressed("btn-borders") {
         state.show_borders = !state.show_borders;
     }
-    if ply.is_just_pressed("btn-alerts") {
-        state.show_alerts = !state.show_alerts;
+    if ply.is_just_pressed("btn-watches") {
+        state.show_watches = !state.show_watches;
+    }
+    if ply.is_just_pressed("btn-warnings") {
+        state.show_warnings = !state.show_warnings;
+    }
+    if ply.is_just_pressed("btn-radar-data") {
+        state.show_radar_data = !state.show_radar_data;
+        state.settings.show_radar_data = state.show_radar_data;
+        state.cache.save_settings(&state.settings);
+    }
+    if ply.is_just_pressed("btn-tropical-data") {
+        state.show_nhc_data = !state.show_nhc_data;
+        state.settings.show_nhc_data = state.show_nhc_data;
+        state.cache.save_settings(&state.settings);
     }
     if ply.is_just_pressed("btn-location") {
         state.show_location = !state.show_location;
@@ -2103,34 +2497,35 @@ fn handle_input(
 
     // ── Radar toggle button ──────────────────────────────────────
     if ply.is_just_pressed("btn-radar") {
-        state.show_radar = !state.show_radar;
+        state.radar_panel_open = !state.radar_panel_open;
         // Replay the slide-in next open; drop open dropdowns on close so
         // their floating popups don't linger.
         state.radar_anim_start = 0.0;
-        if state.show_radar {
+        if state.radar_panel_open {
             state.nhc_show_panel = false; // right-edge panels are exclusive
         } else {
             state.site_dropdown.close();
             state.tilt_dropdown.close();
         }
-        state.settings.show_radar = state.show_radar;
+        state.settings.show_radar = state.radar_panel_open;
         state.cache.save_settings(&state.settings);
     }
 
-    // ── NHC toggle button and keyboard shortcut (Stage 5) ────────
-    if ply.is_just_pressed("btn-nhc") {
+    // ── Tropical panel toggle button (Stage 5) ────────────────────
+    if ply.is_just_pressed("btn-tropical") {
         state.nhc_show_panel = !state.nhc_show_panel;
         if !state.nhc_show_panel {
             state.nhc_anim_start = 0.0;
         } else {
-            state.show_radar = false; // right-edge panels are exclusive
+            state.radar_panel_open = false; // right-edge panels are exclusive
         }
     }
+    // `N` toggles the tropical *data* layer (not the panel), matching the
+    // B/W/A data-toggle family.
     if !dropdown_open && !state.location_input_focused && is_key_pressed(KeyCode::N) {
-        state.nhc_show_panel = !state.nhc_show_panel;
-        if state.nhc_show_panel {
-            state.show_radar = false;
-        }
+        state.show_nhc_data = !state.show_nhc_data;
+        state.settings.show_nhc_data = state.show_nhc_data;
+        state.cache.save_settings(&state.settings);
     }
 
     // ── Settings gear button and modal (Stage 7) ──────────────────
@@ -2152,13 +2547,30 @@ fn handle_input(
             state.settings.dyslexic_font = !state.settings.dyslexic_font;
             state.cache.save_settings(&state.settings);
         }
-        if ply.is_just_pressed(settings_widget::ALERTS_TOGGLE_ID) {
-            state.settings.show_alerts = !state.settings.show_alerts;
+        if ply.is_just_pressed(settings_widget::WATCHES_TOGGLE_ID) {
+            state.settings.show_watches = !state.settings.show_watches;
+            state.cache.save_settings(&state.settings);
+        }
+        if ply.is_just_pressed(settings_widget::WARNINGS_TOGGLE_ID) {
+            state.settings.show_warnings = !state.settings.show_warnings;
             state.cache.save_settings(&state.settings);
         }
         if ply.is_just_pressed(settings_widget::NHC_TOGGLE_ID) {
             state.settings.show_nhc = !state.settings.show_nhc;
             state.cache.save_settings(&state.settings);
+        }
+        if ply.is_just_pressed(settings_widget::SWEEP_TOGGLE_ID) {
+            state.settings.show_sweep = !state.settings.show_sweep;
+            state.cache.save_settings(&state.settings);
+        }
+        if ply.is_just_pressed(settings_widget::SCOPE_RINGS_TOGGLE_ID) {
+            state.settings.show_scope_rings = !state.settings.show_scope_rings;
+            state.cache.save_settings(&state.settings);
+        }
+        if ply.is_just_pressed(settings_widget::CC_GATE_TOGGLE_ID) {
+            state.settings.cc_gate_enabled = !state.settings.cc_gate_enabled;
+            state.cache.save_settings(&state.settings);
+            state.needs_reraster = true;
         }
         if ply.is_just_pressed(settings_widget::ANIMATION_CYCLE_ID) {
             state.settings.animation_level = state.settings.animation_level.next();
@@ -2355,6 +2767,45 @@ fn handle_input(
         if is_key_pressed(KeyCode::Escape) {
             state.nhc_modal = NhcModal::None;
             state.nhc_modal_scroll = 0.0;
+        }
+    }
+
+    // ── Alert modal scrolling / close ──────────────────────────────
+    if state.alert_modal.is_some() {
+        if let Some((_, visible_lines, max_scroll)) = alert_modal_text_metrics(state) {
+            let page = visible_lines.saturating_sub(2).max(1) as f32 * NHC_MODAL_LINE_HEIGHT;
+            let wheel = mouse_wheel().1;
+            if wheel != 0.0 {
+                state.alert_modal_scroll -= wheel * NHC_MODAL_LINE_HEIGHT * 3.0;
+            }
+            if is_key_pressed(KeyCode::Down) {
+                state.alert_modal_scroll += NHC_MODAL_LINE_HEIGHT;
+            }
+            if is_key_pressed(KeyCode::Up) {
+                state.alert_modal_scroll -= NHC_MODAL_LINE_HEIGHT;
+            }
+            if is_key_pressed(KeyCode::PageDown) {
+                state.alert_modal_scroll += page;
+            }
+            if is_key_pressed(KeyCode::PageUp) {
+                state.alert_modal_scroll -= page;
+            }
+            if is_key_pressed(KeyCode::Home) {
+                state.alert_modal_scroll = 0.0;
+            }
+            if is_key_pressed(KeyCode::End) {
+                state.alert_modal_scroll = max_scroll;
+            }
+            state.alert_modal_scroll = state.alert_modal_scroll.clamp(0.0, max_scroll);
+        }
+
+        if ply.is_just_pressed("alert-modal-close") || ply.is_just_pressed("alert-modal-backdrop") {
+            state.alert_modal = None;
+            state.alert_modal_scroll = 0.0;
+        }
+        if is_key_pressed(KeyCode::Escape) {
+            state.alert_modal = None;
+            state.alert_modal_scroll = 0.0;
         }
     }
 

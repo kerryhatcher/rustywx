@@ -31,6 +31,13 @@ pub enum NhcModal {
     /// Showing a graphic product (image texture).
     Image { title: String, url: String },
 }
+
+/// Alert detail modal — event title and headline content.
+#[derive(Clone, Debug)]
+pub struct AlertModal {
+    pub title: String,
+    pub content: String,
+}
 /// Top-level state shared between the game loop, input handler, and worker.
 pub struct AppState {
     /// Index into `geo::RADAR_SITES`.
@@ -89,14 +96,20 @@ pub struct AppState {
     pub alerts_fetch_fired: bool,
     /// Wall-clock time (seconds) of the last alerts refresh.
     pub last_alert_poll: f64,
-    /// Whether the Radar controls side panel is visible.
-    pub show_radar: bool,
+    /// Whether the Radar controls side panel is open.
+    pub radar_panel_open: bool,
     /// Radar panel open/close animation start time (0 = not animating).
     pub radar_anim_start: f64,
+    /// Toggle: draw the radar data texture and radar site markers.
+    pub show_radar_data: bool,
+    /// Master gate: draw NHC tropical overlays (ANDs with `nhc_overlays`).
+    pub show_nhc_data: bool,
     /// Toggle: show state borders on the scope.
     pub show_borders: bool,
-    /// Toggle: show NWS alert polygons on the scope.
-    pub show_alerts: bool,
+    /// Toggle: show NWS watch polygons on the scope.
+    pub show_watches: bool,
+    /// Toggle: show NWS warning polygons on the scope.
+    pub show_warnings: bool,
 
     // ── User location (Stage 8) ───────────────────────────────────
     /// Resolved user location (marker + centering source). `None` until set.
@@ -140,6 +153,10 @@ pub struct AppState {
     pub nhc_modal: NhcModal,
     /// Scroll offset (pixels) for NHC modal text content.
     pub nhc_modal_scroll: f32,
+    /// Currently displayed alert detail modal.
+    pub alert_modal: Option<AlertModal>,
+    /// Scroll offset (pixels) for alert modal text content.
+    pub alert_modal_scroll: f32,
 
     /// Last mouse position for manual pan delta calculation.
     pub last_mouse_pos: Option<(f32, f32)>,

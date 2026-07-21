@@ -83,6 +83,16 @@ fn default_show_radar() -> bool {
     true
 }
 
+/// Serde default for scope-decoration toggles (missing in older config files).
+fn default_true() -> bool {
+    true
+}
+
+/// Serde default for [`Settings::cc_gate_threshold`] (missing in older configs).
+fn default_cc_threshold() -> f32 {
+    0.80
+}
+
 /// User-configurable app settings, persisted as `"settings.json"` via
 /// [`crate::cache::Cache::save_settings`] / [`crate::cache::Cache::load_settings`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -103,8 +113,12 @@ pub struct Settings {
     pub nhc_refresh_secs: u64,
     /// Whether state borders are shown by default at startup.
     pub show_borders: bool,
-    /// Whether NWS alert polygons are shown by default at startup.
-    pub show_alerts: bool,
+    /// Whether NWS watch polygons are shown by default at startup.
+    #[serde(default = "default_true", alias = "show_alerts")]
+    pub show_watches: bool,
+    /// Whether NWS warning polygons are shown by default at startup.
+    #[serde(default = "default_true")]
+    pub show_warnings: bool,
     /// Whether the NHC tropical panel is shown by default at startup.
     pub show_nhc: bool,
     /// Whether the Radar controls side panel is shown by default at startup.
@@ -112,6 +126,18 @@ pub struct Settings {
     /// moving off the main controls bar.
     #[serde(default = "default_show_radar")]
     pub show_radar: bool,
+    /// Whether the radar data layer (texture + site markers) is shown at startup.
+    #[serde(default = "default_true")]
+    pub show_radar_data: bool,
+    /// Whether the tropical (NHC) data layer master-gate is on at startup.
+    #[serde(default = "default_true")]
+    pub show_nhc_data: bool,
+    /// Whether the rotating radar sweep beam is drawn.
+    #[serde(default = "default_true")]
+    pub show_sweep: bool,
+    /// Whether the scope range rings and cardinal crosshairs are drawn.
+    #[serde(default = "default_true")]
+    pub show_scope_rings: bool,
     /// Observatory-look animation intensity.
     pub animation_level: AnimationLevel,
     /// TDBZ clutter-filter kernel size preset.
@@ -134,6 +160,13 @@ pub struct Settings {
     /// Whether the scope recenters on the user's location.
     #[serde(default)]
     pub center_on_location: bool,
+    /// Whether correlation-coefficient gating suppresses non-meteorological
+    /// echo (CC < threshold) from the Reflectivity display. Default on.
+    #[serde(default = "default_true")]
+    pub cc_gate_enabled: bool,
+    /// CC value below which a Reflectivity gate is suppressed when gating is on.
+    #[serde(default = "default_cc_threshold")]
+    pub cc_gate_threshold: f32,
 }
 
 impl Default for Settings {
@@ -143,9 +176,14 @@ impl Default for Settings {
             poll_interval_secs: 120,
             nhc_refresh_secs: 300,
             show_borders: true,
-            show_alerts: true,
+            show_watches: true,
+            show_warnings: true,
             show_nhc: false,
-            show_radar: true,
+            show_radar: false,
+            show_radar_data: true,
+            show_nhc_data: true,
+            show_sweep: true,
+            show_scope_rings: true,
             animation_level: AnimationLevel::default(),
             tdbz_kernel: TdbzKernel::default(),
             dyslexic_font: false,
@@ -154,6 +192,8 @@ impl Default for Settings {
             location_input: String::new(),
             show_location: false,
             center_on_location: false,
+            cc_gate_enabled: true,
+            cc_gate_threshold: 0.80,
         }
     }
 }
@@ -167,12 +207,19 @@ mod tests {
         let settings = Settings::default();
         assert_eq!(settings.default_site, "KFFC");
         assert!(settings.show_borders);
-        assert!(settings.show_alerts);
+        assert!(settings.show_watches);
+        assert!(settings.show_warnings);
         assert!(!settings.show_nhc);
-        assert!(settings.show_radar);
+        assert!(!settings.show_radar);
+        assert!(settings.show_radar_data);
+        assert!(settings.show_nhc_data);
+        assert!(settings.show_sweep);
+        assert!(settings.show_scope_rings);
         assert_eq!(settings.animation_level, AnimationLevel::Full);
         assert_eq!(settings.tdbz_kernel, TdbzKernel::Default);
         assert_eq!(settings.tdbz_kernel.size(), 9);
+        assert!(settings.cc_gate_enabled);
+        assert_eq!(settings.cc_gate_threshold, 0.80);
     }
 
     #[test]
@@ -182,9 +229,14 @@ mod tests {
             poll_interval_secs: 60,
             nhc_refresh_secs: 180,
             show_borders: false,
-            show_alerts: true,
+            show_watches: true,
+            show_warnings: false,
             show_nhc: true,
             show_radar: false,
+            show_radar_data: false,
+            show_nhc_data: true,
+            show_sweep: false,
+            show_scope_rings: false,
             animation_level: AnimationLevel::Subtle,
             tdbz_kernel: TdbzKernel::Aggressive,
             dyslexic_font: true,
@@ -193,6 +245,8 @@ mod tests {
             location_input: "Oklahoma City".to_string(),
             show_location: true,
             center_on_location: true,
+            cc_gate_enabled: false,
+            cc_gate_threshold: 0.85,
         };
         let json = serde_json::to_string(&settings).expect("serialize");
         let restored: Settings = serde_json::from_str(&json).expect("deserialize");
@@ -228,7 +282,19 @@ mod tests {
         let s: Settings = serde_json::from_str(json).expect("back-compat deserialize");
         assert!(s.user_lat.is_none());
         assert!(!s.center_on_location);
+        // Legacy `show_alerts` key aliases into both new toggles.
+        assert!(s.show_watches);
+        assert!(s.show_warnings);
         // Missing show_radar defaults to open.
         assert!(s.show_radar);
+        // Missing data-layer toggles default on.
+        assert!(s.show_radar_data);
+        assert!(s.show_nhc_data);
+        // Missing scope-decoration toggles default on.
+        assert!(s.show_sweep);
+        assert!(s.show_scope_rings);
+        // Missing CC-gate fields default to on/0.80.
+        assert!(s.cc_gate_enabled);
+        assert_eq!(s.cc_gate_threshold, 0.80);
     }
 }
