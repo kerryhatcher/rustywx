@@ -43,7 +43,7 @@ const TILT_DROPDOWN: DropdownConfig = DropdownConfig {
     searchable: false,
 };
 
-const PRODUCT_OPTIONS: [ToggleOption<Product>; 2] = [
+const PRODUCT_OPTIONS: [ToggleOption<Product>; 3] = [
     ToggleOption {
         id: "btn-refl",
         label: "Reflectivity",
@@ -53,6 +53,11 @@ const PRODUCT_OPTIONS: [ToggleOption<Product>; 2] = [
         id: "btn-vel",
         label: "Velocity",
         value: Product::Velocity,
+    },
+    ToggleOption {
+        id: "btn-sw",
+        label: "Spectrum Width",
+        value: Product::SpectrumWidth,
     },
 ];
 
@@ -1354,7 +1359,12 @@ async fn main() {
                         ui.text(&state.status_text, |text| {
                             text.font_size(11).font(&MONO_FONT).color(status_color)
                         });
-                        for &(_threshold, color) in colors::DBZ_LEGEND.iter().step_by(2) {
+                        let legend: &[(f32, [u8; 4])] = match state.product {
+                            Product::Reflectivity => colors::DBZ_LEGEND,
+                            Product::Velocity => colors::VELOCITY_LEGEND,
+                            Product::SpectrumWidth => colors::SPECTRUM_WIDTH_LEGEND,
+                        };
+                        for &(_threshold, color) in legend.iter().step_by(2) {
                             let hex = (color[0] as u32) << 16
                                 | (color[1] as u32) << 8
                                 | (color[2] as u32);
@@ -1364,7 +1374,7 @@ async fn main() {
                                 .background_color(hex)
                                 .empty();
                         }
-                        ui.text("dBZ", |text| {
+                        ui.text(state.product.units(), |text| {
                             text.font_size(10).font(&MONO_FONT).color(0x5F8A6A)
                         });
                     });
@@ -1548,6 +1558,9 @@ fn handle_input(
         }
         if is_key_pressed(KeyCode::V) {
             select_product(state, Product::Velocity);
+        }
+        if is_key_pressed(KeyCode::W) {
+            select_product(state, Product::SpectrumWidth);
         }
         if is_key_pressed(KeyCode::T) {
             let tilt_count = state

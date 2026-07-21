@@ -238,6 +238,7 @@ fn scan_to_bytes(scan: &ScanData) -> Vec<u8> {
     buf.extend_from_slice(&scan.timestamp.timestamp_millis().to_le_bytes());
     encode_sweeps(&mut buf, &scan.reflectivity);
     encode_sweeps(&mut buf, &scan.velocity);
+    encode_sweeps(&mut buf, &scan.spectrum_width);
     buf
 }
 
@@ -273,10 +274,12 @@ fn bytes_to_scan(bytes: &[u8]) -> Result<ScanData, String> {
         .ok_or("cache: invalid timestamp in compressed scan")?;
     let reflectivity = decode_sweeps(&mut r)?;
     let velocity = decode_sweeps(&mut r)?;
+    let spectrum_width = decode_sweeps(&mut r)?;
     Ok(ScanData {
         timestamp,
         reflectivity,
         velocity,
+        spectrum_width,
     })
 }
 
@@ -368,6 +371,7 @@ mod tests {
                 }],
             }],
             velocity: vec![],
+            spectrum_width: vec![],
         }
     }
 
@@ -434,6 +438,7 @@ mod tests {
             timestamp: Utc::now(),
             reflectivity: sweeps,
             velocity: vec![],
+            spectrum_width: vec![],
         };
 
         let raw = scan_to_bytes(&scan);

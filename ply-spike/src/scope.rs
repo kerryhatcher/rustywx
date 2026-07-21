@@ -111,6 +111,7 @@ pub fn rasterize(
     let color_of = match product {
         Product::Reflectivity => colors::dbz_color as fn(f32) -> [u8; 4],
         Product::Velocity => colors::velocity_color as fn(f32) -> [u8; 4],
+        Product::SpectrumWidth => colors::spectrum_width_color as fn(f32) -> [u8; 4],
     };
 
     let center = size_px as f32 / 2.0;

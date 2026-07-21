@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 pub enum Product {
     Reflectivity,
     Velocity,
+    SpectrumWidth,
 }
 
 impl Product {
@@ -19,6 +20,15 @@ impl Product {
         match self {
             Product::Reflectivity => "Reflectivity",
             Product::Velocity => "Velocity",
+            Product::SpectrumWidth => "Spectrum Width",
+        }
+    }
+
+    /// Unit label for the status bar / legend.
+    pub fn units(self) -> &'static str {
+        match self {
+            Product::Reflectivity => "dBZ",
+            Product::Velocity | Product::SpectrumWidth => "m/s",
         }
     }
 }
@@ -43,6 +53,7 @@ pub struct ScanData {
     pub timestamp: DateTime<Utc>,
     pub reflectivity: Vec<SweepData>,
     pub velocity: Vec<SweepData>,
+    pub spectrum_width: Vec<SweepData>,
 }
 
 impl ScanData {
@@ -50,6 +61,7 @@ impl ScanData {
         match product {
             Product::Reflectivity => &self.reflectivity,
             Product::Velocity => &self.velocity,
+            Product::SpectrumWidth => &self.spectrum_width,
         }
     }
 
@@ -60,11 +72,13 @@ impl ScanData {
     pub fn from_sweeps(sweeps: &[Sweep], timestamp: DateTime<Utc>) -> Self {
         let mut reflectivity = Vec::new();
         let mut velocity = Vec::new();
+        let mut spectrum_width = Vec::new();
 
         for sweep in sweeps {
             for (product, out) in [
                 (Product::Reflectivity, &mut reflectivity),
                 (Product::Velocity, &mut velocity),
+                (Product::SpectrumWidth, &mut spectrum_width),
             ] {
                 let radials: Vec<RadialData> = sweep
                     .radials()
@@ -73,6 +87,7 @@ impl ScanData {
                         let moment = match product {
                             Product::Reflectivity => radial.reflectivity(),
                             Product::Velocity => radial.velocity(),
+                            Product::SpectrumWidth => radial.spectrum_width(),
                         }?;
                         Some(RadialData {
                             azimuth_deg: radial.azimuth_angle_degrees(),
@@ -104,11 +119,13 @@ impl ScanData {
 
         sort_and_dedup(&mut reflectivity);
         sort_and_dedup(&mut velocity);
+        sort_and_dedup(&mut spectrum_width);
 
         ScanData {
             timestamp,
             reflectivity,
             velocity,
+            spectrum_width,
         }
     }
 }
