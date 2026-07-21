@@ -286,6 +286,8 @@ async fn main() {
     static DEFAULT_FONT: FontAsset = FontAsset::Path("assets/fonts/Inter-Regular.ttf");
     static INTER_BOLD: FontAsset = FontAsset::Path("assets/fonts/Inter-Bold.ttf");
     static MONO_FONT: FontAsset = FontAsset::Path("assets/fonts/Inter-Regular.ttf");
+    // Inter lacks symbol glyphs (⚙, arrows); DejaVu Sans Mono covers them.
+    static SYMBOL_FONT: FontAsset = FontAsset::Path("assets/fonts/DejaVuSansMono.ttf");
     let mut ply = Ply::<()>::new(&DEFAULT_FONT).await;
 
     // Secondary fonts (Inter Bold, JetBrains Mono) are lazy-loaded on
@@ -893,28 +895,7 @@ async fn main() {
                                 });
                             });
 
-                        // ── Settings gear button (Stage 7) ──────────────
-                        let gear_bg = hover_tint(
-                            &state.hovered_ids,
-                            "btn-settings",
-                            if state.show_settings_panel {
-                                0x0dc5b8
-                            } else {
-                                0x1E1B1B
-                            },
-                            0x1E1B1B,
-                        );
-                        ui.element()
-                            .id("btn-settings")
-                            .width(fit!())
-                            .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
-                            .background_color(gear_bg)
-                            .corner_radius(4.0)
-                            .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
-                            .accessibility(|a| a.button("Settings"))
-                            .children(|ui| {
-                                ui.text("⚙", |text| text.font_size(14).color(0xE8E0DC));
-                            });
+                        // Settings gear lives in the bottom status bar.
                     });
 
                 // ── NHC slide-in panel (Stage 5) ────────────────────────
@@ -1464,6 +1445,33 @@ async fn main() {
                         ui.text(state.product.units(), |text| {
                             text.font_size(10).font(&MONO_FONT).color(0x5F8A6A)
                         });
+
+                        // Spacer pushes the settings gear to the far right.
+                        ui.element().width(grow!()).height(fixed!(1.0)).empty();
+
+                        let gear_bg = hover_tint(
+                            &state.hovered_ids,
+                            "btn-settings",
+                            if state.show_settings_panel {
+                                0x0dc5b8
+                            } else {
+                                0x1E1B1B
+                            },
+                            0x1E1B1B,
+                        );
+                        ui.element()
+                            .id("btn-settings")
+                            .width(fixed!(22.0))
+                            .height(fixed!(18.0))
+                            .background_color(gear_bg)
+                            .corner_radius(4.0)
+                            .layout(|layout| layout.align(CenterX, CenterY))
+                            .accessibility(|a| a.button("Settings"))
+                            .children(|ui| {
+                                ui.text("⚙", |text| {
+                                    text.font_size(13).font(&SYMBOL_FONT).color(0xE8E0DC)
+                                });
+                            });
                     });
             });
 
