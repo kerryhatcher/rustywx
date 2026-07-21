@@ -220,6 +220,9 @@ pub struct AppState {
     pub forecast_error: Option<String>,
     /// Display label for the forecast location (from search pick or settings).
     pub forecast_place: String,
+    /// Cached hourly rain-chance line-graph texture; rebuilt when `forecast`
+    /// changes. `None` until the first forecast arrives.
+    pub forecast_chart: Option<Texture2D>,
     /// Forecast-view search box text.
     pub fc_search_text: String,
     /// Whether the forecast search box is capturing keystrokes.

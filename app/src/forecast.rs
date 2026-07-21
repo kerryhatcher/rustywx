@@ -248,6 +248,79 @@ pub fn parse_forecast(json: &str) -> Result<Forecast> {
     Ok(Forecast { place: String::new(), current, days, hours })
 }
 
+/// Rasterize the hourly rain-chance line graph into a straight-RGBA8 buffer
+/// (`w*h*4` bytes, top-left origin, transparent background). Each hour is a
+/// dot at x = evenly spaced, y = height by precip % (0% bottom, 100% top);
+/// consecutive dots are joined by a line. Faint gridlines mark 0/50/100%.
+///
+/// Pure (no GPU/ply) so it is unit-testable; the caller wraps the bytes in a
+/// `Texture2D` for display. Colors match the forecast view (line `0x6F9FE0`).
+pub fn render_hourly_chart(hours: &[Hour], w: usize, h: usize) -> Vec<u8> {
+    let mut buf = vec![0u8; w * h * 4]; // transparent
+    if hours.is_empty() || w < 8 || h < 8 {
+        return buf;
+    }
+
+    const LINE: [u8; 4] = [0x6F, 0x9F, 0xE0, 0xFF];
+    const GRID: [u8; 4] = [0xFF, 0xFF, 0xFF, 0x24];
+    let margin = 8usize;
+    let plot_w = w.saturating_sub(2 * margin).max(1);
+    let plot_h = h.saturating_sub(2 * margin).max(1);
+
+    let put = |buf: &mut [u8], x: i64, y: i64, c: [u8; 4]| {
+        if x < 0 || y < 0 || x as usize >= w || y as usize >= h {
+            return;
+        }
+        let idx = ((y as usize) * w + x as usize) * 4;
+        buf[idx..idx + 4].copy_from_slice(&c);
+    };
+
+    // x for hour i, y for a given percent (clamped 0..=100).
+    let n = hours.len();
+    let px = |i: usize| -> i64 {
+        (margin + if n > 1 { i * plot_w / (n - 1) } else { plot_w / 2 }) as i64
+    };
+    let py = |pct: i64| -> i64 {
+        let p = pct.clamp(0, 100) as usize;
+        (margin + plot_h - p * plot_h / 100) as i64
+    };
+
+    // Gridlines at 0/50/100%.
+    for pct in [0i64, 50, 100] {
+        let y = py(pct);
+        for x in margin..(w - margin) {
+            put(&mut buf, x as i64, y, GRID);
+        }
+    }
+
+    // Connect consecutive points (integer DDA).
+    for i in 0..n.saturating_sub(1) {
+        let (x0, y0) = (px(i), py(hours[i].precip_pct));
+        let (x1, y1) = (px(i + 1), py(hours[i + 1].precip_pct));
+        let steps = (x1 - x0).abs().max((y1 - y0).abs()).max(1);
+        for s in 0..=steps {
+            let x = x0 + (x1 - x0) * s / steps;
+            let y = y0 + (y1 - y0) * s / steps;
+            put(&mut buf, x, y, LINE);
+            put(&mut buf, x, y + 1, LINE); // 2px thick for visibility
+        }
+    }
+
+    // Dots (filled 3x3-ish disc) per hour.
+    for i in 0..n {
+        let (cx, cy) = (px(i), py(hours[i].precip_pct));
+        for dy in -2..=2i64 {
+            for dx in -2..=2i64 {
+                if dx * dx + dy * dy <= 4 {
+                    put(&mut buf, cx + dx, cy + dy, LINE);
+                }
+            }
+        }
+    }
+
+    buf
+}
+
 /// Parse an Open-Meteo geocoding response into up to 5 hits.
 pub fn parse_geo(json: &str) -> Result<Vec<GeoHit>> {
     let root: Value = serde_json::from_str(json).map_err(|e| anyhow!("parsing geocode: {e}"))?;
@@ -338,6 +411,28 @@ mod tests {
         assert_eq!(f.hours[0].precip_pct, 20);
         assert_eq!(f.hours[2].label, "6p");
         assert_eq!(f.hours[2].precip_pct, 70);
+    }
+
+    #[test]
+    fn render_hourly_chart_dims_and_plots() {
+        let hours = vec![
+            Hour { label: "4p".into(), precip_pct: 0 },
+            Hour { label: "5p".into(), precip_pct: 100 },
+        ];
+        let (w, h) = (120, 60);
+        let buf = render_hourly_chart(&hours, w, h);
+        assert_eq!(buf.len(), w * h * 4);
+        // The 100% hour must paint a blue dot near the top (small y); scan the
+        // top rows for any non-transparent pixel.
+        let top_has_ink = (0..h / 3).any(|y| (0..w).any(|x| buf[(y * w + x) * 4 + 3] != 0));
+        assert!(top_has_ink, "100% hour should ink near the top");
+    }
+
+    #[test]
+    fn render_hourly_chart_empty_is_transparent() {
+        let buf = render_hourly_chart(&[], 120, 60);
+        assert_eq!(buf.len(), 120 * 60 * 4);
+        assert!(buf.iter().all(|&b| b == 0));
     }
 
     #[test]

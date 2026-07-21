@@ -494,6 +494,7 @@ async fn main() {
         forecast_fetch_fired: false,
         forecast_error: None,
         forecast_place: String::new(),
+        forecast_chart: None,
         fc_search_text: String::new(),
         fc_search_focused: false,
         fc_geo_hits: Vec::new(),
@@ -1438,37 +1439,35 @@ async fn main() {
                                         }
                                     });
 
-                                // Hourly rain chance (next 24h). Wraps to
-                                // multiple rows at narrow widths.
-                                if !fc.hours.is_empty() {
+                                // Hourly rain chance (next 24h) as a line graph:
+                                // each dot is an hour, its height the rain %.
+                                if let Some(chart) = &state.forecast_chart {
                                     ui.text("Hourly rain chance", |t| {
                                         t.font_size(14).color(0xC8C0BC)
                                     });
                                     ui.element()
-                                        .width(grow!())
+                                        .width(fixed!(600.0))
+                                        .height(fixed!(140.0))
+                                        .background_color(0x1E1B1B)
+                                        .corner_radius(6.0)
+                                        .image(chart.clone())
+                                        .empty();
+                                    // Sparse time ticks (every ~6h) under the graph.
+                                    ui.element()
+                                        .width(fixed!(600.0))
                                         .height(fit!())
-                                        .layout(|layout| {
-                                            layout
-                                                .direction(LeftToRight)
-                                                .gap(6)
-                                                .align(CenterX, Top)
-                                                .wrap()
-                                                .wrap_gap(6)
-                                        })
+                                        .layout(|layout| layout.direction(LeftToRight).align(Left, CenterY))
                                         .children(|ui| {
-                                            for hour in &fc.hours {
-                                                ui.element()
-                                                    .width(fixed!(44.0))
-                                                    .height(fit!())
-                                                    .background_color(0x1E1B1B)
-                                                    .corner_radius(4.0)
-                                                    .layout(|layout| {
-                                                        layout.direction(TopToBottom).padding(6).gap(4).align(CenterX, Top)
-                                                    })
-                                                    .children(|ui| {
-                                                        ui.text(&hour.label, |t| t.font_size(11).color(0x9A9490));
-                                                        ui.text(&format!("{}%", hour.precip_pct), |t| t.font_size(13).color(0x6F9FE0));
+                                            let n = fc.hours.len();
+                                            for k in 0..n {
+                                                if k % 6 == 0 || k == n - 1 {
+                                                    ui.text(&fc.hours[k].label, |t| {
+                                                        t.font_size(11).color(0x9A9490)
                                                     });
+                                                }
+                                                if k != n - 1 {
+                                                    ui.element().width(grow!()).height(fixed!(1.0)).empty();
+                                                }
                                             }
                                         });
                                 }
@@ -2901,6 +2900,15 @@ fn handle_input(
             match forecast::poll_forecast(coords) {
                 Some(Ok(mut fc)) => {
                     fc.place = state.forecast_place.clone();
+                    // Rasterize the hourly rain-chance line graph once, now, and
+                    // cache the texture (rebuilt only when a new forecast lands).
+                    state.forecast_chart = if fc.hours.is_empty() {
+                        None
+                    } else {
+                        let (cw, ch) = (600usize, 140usize);
+                        let rgba = forecast::render_hourly_chart(&fc.hours, cw, ch);
+                        Some(Texture2D::from_rgba8(cw as u16, ch as u16, &rgba))
+                    };
                     state.forecast = Some(fc);
                     state.forecast_fetch_fired = false;
                 }
