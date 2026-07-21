@@ -20,7 +20,6 @@ pub mod nf {
     pub const CHEVRON_UP: &str = "\u{f077}"; // fa-chevron-up
     pub const EXPAND: &str = "\u{f065}"; // fa-expand (enter fullscreen)
     pub const COMPRESS: &str = "\u{f066}"; // fa-compress (exit fullscreen)
-    pub const LOCATION: &str = "\u{f041}"; // fa-map-marker
 }
 
 pub mod collapsing;

@@ -546,6 +546,9 @@ async fn main() {
                 (Some(lat), Some(lon)) => Some(rustywx::location::Coords { lat, lon }),
                 _ => None,
             };
+            if state.settings.center_on_location && state.user_location.is_some() {
+                recenter_on_user(&mut state);
+            }
             // The initial raster (if any) used the default TDBZ kernel size
             // before this load resolved — redo it with the loaded setting.
             state.needs_reraster = true;
@@ -1941,7 +1944,9 @@ fn handle_input(
     }
 
     // ── Window controls: fullscreen toggle + close ───────────────
-    if ply.is_just_pressed("btn-fullscreen") || (!dropdown_open && is_key_pressed(KeyCode::F)) {
+    if ply.is_just_pressed("btn-fullscreen")
+        || (!dropdown_open && !state.location_input_focused && is_key_pressed(KeyCode::F))
+    {
         state.fullscreen = !state.fullscreen;
         miniquad::window::set_fullscreen(state.fullscreen);
     }
@@ -1956,7 +1961,7 @@ fn handle_input(
             state.nhc_anim_start = 0.0;
         }
     }
-    if !dropdown_open && is_key_pressed(KeyCode::N) {
+    if !dropdown_open && !state.location_input_focused && is_key_pressed(KeyCode::N) {
         state.nhc_show_panel = !state.nhc_show_panel;
     }
 
