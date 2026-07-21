@@ -9,7 +9,9 @@ use crate::cache::Cache;
 use crate::data::WorkerMessage;
 use crate::model::{Product, ScanData};
 use crate::nhc::{NhcBundle, NhcFetchState};
+use crate::settings::Settings;
 use crate::widgets::dropdown::DropdownState;
+use crate::widgets::toast::Toast;
 use ply_engine::prelude::Texture2D;
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -138,4 +140,20 @@ pub struct AppState {
     pub last_click_time: f64,
     /// Screen position of the last single mouse click.
     pub last_click_pos: (f32, f32),
+
+    // ── Settings (Stage 7) ──────────────────────────────────────
+    /// Current user settings (defaults until the persisted copy loads).
+    pub settings: Settings,
+    /// Pending settings load in flight (first launch: yields `None`).
+    pub pending_settings_load: Option<oneshot::Receiver<Option<Settings>>>,
+    /// Whether the settings panel modal is visible.
+    pub show_settings_panel: bool,
+    /// Whether the keyboard shortcuts overlay is visible.
+    pub show_shortcuts: bool,
+
+    // ── Error recovery (Stage 7) ─────────────────────────────────
+    /// Most recent user-facing error banner, if one is still showing.
+    /// Auto-fades per [`crate::widgets::toast::Toast::opacity`]; overwritten
+    /// (not queued) by the next error — see [`crate::widgets::toast`].
+    pub toast: Option<Toast>,
 }

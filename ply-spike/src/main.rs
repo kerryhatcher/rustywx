@@ -11,14 +11,20 @@ use rustywx::cache::Cache;
 use rustywx::colors;
 use rustywx::data::{self, WorkerMessage};
 use rustywx::geo;
-use rustywx::model::{Product, RadialData, SweepData};
+use rustywx::model::{Product, RadialData, SweepData, format_nyquist_velocity, vcp_mode_label};
 use rustywx::nhc;
 use rustywx::scope;
+use rustywx::settings::{AnimationLevel, Settings};
 use rustywx::state::{AppState, NhcModal};
 use rustywx::widgets::dropdown::{DropdownConfig, DropdownOption, DropdownState};
 use rustywx::widgets::glass_panel;
+use rustywx::widgets::settings as settings_widget;
+use rustywx::widgets::shortcuts as shortcuts_widget;
+use rustywx::widgets::toast as toast_widget;
 use rustywx::widgets::toggle::{self, ToggleOption};
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 
 const SITE_DROPDOWN: DropdownConfig = DropdownConfig {
@@ -41,7 +47,7 @@ const TILT_DROPDOWN: DropdownConfig = DropdownConfig {
     searchable: false,
 };
 
-const PRODUCT_OPTIONS: [ToggleOption<Product>; 2] = [
+const PRODUCT_OPTIONS: [ToggleOption<Product>; 3] = [
     ToggleOption {
         id: "btn-refl",
         label: "Reflectivity",
@@ -51,6 +57,11 @@ const PRODUCT_OPTIONS: [ToggleOption<Product>; 2] = [
         id: "btn-vel",
         label: "Velocity",
         value: Product::Velocity,
+    },
+    ToggleOption {
+        id: "btn-sw",
+        label: "Spectrum Width",
+        value: Product::SpectrumWidth,
     },
 ];
 
@@ -283,10 +294,23 @@ async fn main() {
         .position(|s| s.id == "KFFC")
         .unwrap_or(0);
     let initial_site = geo::RADAR_SITES[default_site_index].id.to_string();
-    data::spawn_worker(worker_tx, initial_site.clone(), site_rx);
 
     // ── Open disk cache ────────────────────────────────────────
     let cache = Cache::new().await.expect("Ply storage initialisation");
+
+    // Healthy poll interval (seconds), shared with the worker thread so the
+    // persisted setting — and any live change from the settings panel — takes
+    // effect without a blocking read here. (Awaiting the settings oneshot on
+    // the macroquad executor panics: "does not support waking futures".) The
+    // worker starts on the default; the game loop stores the live value from
+    // `state.settings` each frame once the async settings load resolves.
+    let poll_interval = Arc::new(AtomicU64::new(data::POLL_INTERVAL.as_secs()));
+    data::spawn_worker(
+        worker_tx,
+        initial_site.clone(),
+        site_rx,
+        Arc::clone(&poll_interval),
+    );
 
     // Kick off a non-blocking load of the last-cached scan for the
     // initial site so we have something to show before the first
@@ -295,6 +319,9 @@ async fn main() {
 
     // Load the persisted site preference (None on very first launch).
     let pending_site_load = Some(cache.load_site());
+
+    // Load persisted settings (None on very first launch — defaults apply).
+    let pending_settings_load = Some(cache.load_settings());
 
     // ── Load cached borders (if any) ───────────────────────────
     let mut pending_borders = {
@@ -353,13 +380,32 @@ async fn main() {
         hovered_ids: Vec::new(),
         last_click_time: 0.0,
         last_click_pos: (0.0, 0.0),
+        settings: Settings::default(),
+        pending_settings_load,
+        show_settings_panel: false,
+        show_shortcuts: false,
+        toast: None,
     };
+
+    // Boot-time bookkeeping for applying loaded settings exactly once, and
+    // only overriding the default site if no explicit site preference was
+    // found (see the settings-apply block below). Local to `main`, not
+    // `AppState` — this isn't state the rest of the app needs to see.
+    let mut had_explicit_site_pref = false;
+    let mut site_pref_resolved = false;
+    let mut settings_applied = false;
 
     loop {
         clear_background(MacroquadColor::new(0.031, 0.039, 0.059, 1.0));
 
         let now = get_time();
-        let entrance = ease_out_cubic(((now - state.start_time) / 0.6).clamp(0.0, 1.0) as f32);
+        // `None` renders the settled/final state immediately; `Subtle` and
+        // `Full` both ease in (Subtle just skips the sweep line below).
+        let entrance = if state.settings.animation_level == AnimationLevel::None {
+            1.0
+        } else {
+            ease_out_cubic(((now - state.start_time) / 0.6).clamp(0.0, 1.0) as f32)
+        };
 
         // Stage 6: animation timing + hover tracking.
         state.sweep_angle = (state.sweep_angle + 0.6) % 360.0;
@@ -386,11 +432,18 @@ async fn main() {
         // isn't ready yet, put the receiver back to poll again next frame.
         let restore_site = if let Some(mut rx) = state.pending_site_load.take() {
             match rx.try_recv() {
-                Ok(Some(site_id)) => geo::RADAR_SITES
-                    .iter()
-                    .position(|s| s.id == site_id)
-                    .filter(|&i| i != state.site_index),
-                Ok(None) => None,
+                Ok(Some(site_id)) => {
+                    site_pref_resolved = true;
+                    had_explicit_site_pref = true;
+                    geo::RADAR_SITES
+                        .iter()
+                        .position(|s| s.id == site_id)
+                        .filter(|&i| i != state.site_index)
+                }
+                Ok(None) => {
+                    site_pref_resolved = true;
+                    None
+                }
                 Err(_) => {
                     state.pending_site_load = Some(rx);
                     None
@@ -401,6 +454,40 @@ async fn main() {
         };
         if let Some(index) = restore_site {
             select_site(&mut state, index);
+        }
+
+        // ── Poll persisted settings (Stage 7) ───────────────────────
+        if let Some(mut rx) = state.pending_settings_load.take() {
+            match rx.try_recv() {
+                Ok(Some(loaded)) => state.settings = loaded,
+                Ok(None) => {}
+                Err(_) => state.pending_settings_load = Some(rx),
+            }
+        }
+
+        // Keep the worker's healthy poll interval in sync with the current
+        // setting (floored at 1s to avoid a busy loop). Cheap relaxed store.
+        poll_interval.store(state.settings.poll_interval_secs.max(1), Ordering::Relaxed);
+
+        // Apply settings-seeded defaults exactly once, after both the site
+        // preference and settings loads have resolved (order between the
+        // two is not guaranteed — both are independent oneshot loads).
+        if !settings_applied && site_pref_resolved && state.pending_settings_load.is_none() {
+            settings_applied = true;
+            if !had_explicit_site_pref
+                && let Some(index) = geo::RADAR_SITES
+                    .iter()
+                    .position(|s| s.id == state.settings.default_site)
+                && index != state.site_index
+            {
+                select_site(&mut state, index);
+            }
+            state.show_borders = state.settings.show_borders;
+            state.show_alerts = state.settings.show_alerts;
+            state.nhc_show_panel = state.settings.show_nhc;
+            // The initial raster (if any) used the default TDBZ kernel size
+            // before this load resolved — redo it with the loaded setting.
+            state.needs_reraster = true;
         }
 
         // ── Poll worker messages ──────────────────────────────────
@@ -431,7 +518,11 @@ async fn main() {
                     }
                 }
                 WorkerMessage::Error(e) => {
+                    // `e` already carries the raw anyhow detail + retry
+                    // countdown for the status bar; the toast stays short
+                    // and friendly (see widgets::toast).
                     state.status_text = format!("Error: {e}");
+                    show_toast(&mut state, now, toast_widget::ErrorKind::RadarData);
                 }
             }
         }
@@ -474,6 +565,7 @@ async fn main() {
                 Err(e) => {
                     eprintln!("Warning: border fetch failed: {e}");
                     // Will retry on next frame (borders_fetch_fired is false)
+                    show_toast(&mut state, now, toast_widget::ErrorKind::Network);
                 }
             }
         }
@@ -500,6 +592,7 @@ async fn main() {
                 }
                 Err(e) => {
                     eprintln!("Warning: alert fetch failed: {e}");
+                    show_toast(&mut state, now, toast_widget::ErrorKind::Network);
                 }
             }
         }
@@ -507,7 +600,7 @@ async fn main() {
         // ── Fire NHC fetch if not yet started or refresh interval elapsed ─
         if !state.nhc_fetch_fired
             && (state.nhc_bundle.is_none()
-                || now - state.nhc_last_poll > nhc::POLL_INTERVAL.as_secs() as f64)
+                || now - state.nhc_last_poll > state.settings.nhc_refresh_secs as f64)
         {
             state.nhc_fetch.start();
             state.nhc_fetch_fired = true;
@@ -544,6 +637,7 @@ async fn main() {
                 }
                 Err(e) => {
                     eprintln!("Warning: NHC fetch failed: {e:#}");
+                    show_toast(&mut state, now, toast_widget::ErrorKind::Network);
                 }
             }
         }
@@ -571,6 +665,7 @@ async fn main() {
                 state.product,
                 scope::RASTER_SIZE_PX,
                 scope::MAX_RANGE_KM,
+                state.settings.tdbz_kernel.size() as usize,
             );
             let tex = Texture2D::from_rgba8(
                 scope::RASTER_SIZE_PX as u16,
@@ -594,8 +689,11 @@ async fn main() {
             state.nhc_bundle.as_ref().map(|b| (b, &state.nhc_overlays)),
         );
 
-        // Radar sweep line (optional observatory visual flourish).
-        draw_radar_sweep(state.pan_km, state.zoom, state.sweep_angle, entrance);
+        // Radar sweep line (optional observatory visual flourish) — dropped
+        // under Subtle and None, kept only at Full.
+        if state.settings.animation_level == AnimationLevel::Full {
+            draw_radar_sweep(state.pan_km, state.zoom, state.sweep_angle, entrance);
+        }
 
         // Build frame-local control options before borrowing Ply for layout.
         let site_options: Vec<DropdownOption> = geo::RADAR_SITES
@@ -776,6 +874,28 @@ async fn main() {
                                 text.font_size(12).color(0xE8E0DC)
                             });
                         });
+
+                    // ── Settings gear button (Stage 7) ──────────────
+                    let gear_bg = hover_tint(
+                        &state.hovered_ids,
+                        "btn-settings",
+                        if state.show_settings_panel {
+                            0x0dc5b8
+                        } else {
+                            0x1E1B1B
+                        },
+                        0x1E1B1B,
+                    );
+                    ui.element()
+                        .id("btn-settings")
+                        .width(fit!())
+                        .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                        .background_color(gear_bg)
+                        .corner_radius(4.0)
+                        .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
+                        .children(|ui| {
+                            ui.text("⚙", |text| text.font_size(14).color(0xE8E0DC));
+                        });
                 });
 
                 // ── NHC slide-in panel (Stage 5) ────────────────────────
@@ -791,7 +911,13 @@ async fn main() {
                         screen_height() - 60.0
                     };
                     let slide_t = ((now - state.nhc_anim_start) / 0.5).clamp(0.0, 1.0) as f32;
-                    let slide = ease_out_elastic(slide_t);
+                    // Full = bouncy spring; Subtle = damped (no overshoot);
+                    // None = appear instantly in the final position.
+                    let slide = match state.settings.animation_level {
+                        AnimationLevel::Full => ease_out_elastic(slide_t),
+                        AnimationLevel::Subtle => ease_out_cubic(slide_t),
+                        AnimationLevel::None => 1.0,
+                    };
                     let final_x = if is_mobile {
                         0.0
                     } else {
@@ -1235,6 +1361,24 @@ async fn main() {
                         });
                 }
 
+                // ── Settings modal (Stage 7) ────────────────────────────
+                if state.show_settings_panel {
+                    let site = &geo::RADAR_SITES[state.site_index];
+                    settings_widget::draw(ui, &state.settings, site.id);
+                }
+
+                // ── Keyboard shortcuts overlay (Stage 7) ────────────────────
+                if state.show_shortcuts {
+                    shortcuts_widget::draw(ui);
+                }
+
+                // ── Error toast banner (Stage 7 error recovery) ─────────────
+                if let Some(ref toast) = state.toast
+                    && let Some(opacity) = toast.opacity(now)
+                {
+                    toast_widget::draw(ui, toast, opacity);
+                }
+
                 // ── Radar scope (transparent — drawn directly to screen) ──
                 // Loading skeleton: pulsing indicator while first scan loads.
                 if state.scan.is_none() {
@@ -1266,8 +1410,14 @@ async fn main() {
                         let has_real = state.scan.is_some();
                         let base_status = if has_real { 0x5F8A6A } else { 0x9E9590 };
                         // Pulse toward accent colour for ~1.2s after new data.
-                        let pulse =
+                        // Subtle halves the intensity; None disables it.
+                        let raw_pulse =
                             (1.2 - (now - state.pulse_time).max(0.0)).clamp(0.0, 1.0) as f32;
+                        let pulse = match state.settings.animation_level {
+                            AnimationLevel::Full => raw_pulse,
+                            AnimationLevel::Subtle => raw_pulse * 0.5,
+                            AnimationLevel::None => 0.0,
+                        };
                         let status_color = if pulse > 0.0 && state.pulse_time > 0.0 {
                             blend_hex(base_status, 0x0dc5b8, pulse)
                         } else {
@@ -1276,7 +1426,12 @@ async fn main() {
                         ui.text(&state.status_text, |text| {
                             text.font_size(11).font(&MONO_FONT).color(status_color)
                         });
-                        for &(_threshold, color) in colors::DBZ_LEGEND.iter().step_by(2) {
+                        let legend: &[(f32, [u8; 4])] = match state.product {
+                            Product::Reflectivity => colors::DBZ_LEGEND,
+                            Product::Velocity => colors::VELOCITY_LEGEND,
+                            Product::SpectrumWidth => colors::SPECTRUM_WIDTH_LEGEND,
+                        };
+                        for &(_threshold, color) in legend.iter().step_by(2) {
                             let hex = (color[0] as u32) << 16
                                 | (color[1] as u32) << 8
                                 | (color[2] as u32);
@@ -1286,7 +1441,7 @@ async fn main() {
                                 .background_color(hex)
                                 .empty();
                         }
-                        ui.text("dBZ", |text| {
+                        ui.text(state.product.units(), |text| {
                             text.font_size(10).font(&MONO_FONT).color(0x5F8A6A)
                         });
                     });
@@ -1402,7 +1557,9 @@ fn handle_input(
     }
 
     let dropdown_open = state.site_dropdown.is_open() || state.tilt_dropdown.is_open();
-    let modal_open = !matches!(state.nhc_modal, NhcModal::None);
+    let modal_open = !matches!(state.nhc_modal, NhcModal::None)
+        || state.show_settings_panel
+        || state.show_shortcuts;
     let over_nhc_panel = state.nhc_show_panel && ply.pointer_over("nhc-panel");
 
     if !dropdown_open && !modal_open && !over_nhc_panel && is_mouse_button_down(MouseButton::Left) {
@@ -1471,6 +1628,9 @@ fn handle_input(
         if is_key_pressed(KeyCode::V) {
             select_product(state, Product::Velocity);
         }
+        if is_key_pressed(KeyCode::W) {
+            select_product(state, Product::SpectrumWidth);
+        }
         if is_key_pressed(KeyCode::T) {
             let tilt_count = state
                 .scan
@@ -1523,6 +1683,73 @@ fn handle_input(
     }
     if !dropdown_open && is_key_pressed(KeyCode::N) {
         state.nhc_show_panel = !state.nhc_show_panel;
+    }
+
+    // ── Settings gear button and modal (Stage 7) ──────────────────
+    if ply.is_just_pressed("btn-settings") {
+        state.show_settings_panel = !state.show_settings_panel;
+    }
+    if state.show_settings_panel {
+        if ply.is_just_pressed(settings_widget::CLOSE_ID)
+            || ply.is_just_pressed(settings_widget::BACKDROP_ID)
+            || is_key_pressed(KeyCode::Escape)
+        {
+            state.show_settings_panel = false;
+        }
+        if ply.is_just_pressed(settings_widget::BORDERS_TOGGLE_ID) {
+            state.settings.show_borders = !state.settings.show_borders;
+            state.cache.save_settings(&state.settings);
+        }
+        if ply.is_just_pressed(settings_widget::ALERTS_TOGGLE_ID) {
+            state.settings.show_alerts = !state.settings.show_alerts;
+            state.cache.save_settings(&state.settings);
+        }
+        if ply.is_just_pressed(settings_widget::NHC_TOGGLE_ID) {
+            state.settings.show_nhc = !state.settings.show_nhc;
+            state.cache.save_settings(&state.settings);
+        }
+        if ply.is_just_pressed(settings_widget::ANIMATION_CYCLE_ID) {
+            state.settings.animation_level = state.settings.animation_level.next();
+            state.cache.save_settings(&state.settings);
+        }
+        if ply.is_just_pressed(settings_widget::TDBZ_CYCLE_ID) {
+            state.settings.tdbz_kernel = state.settings.tdbz_kernel.next();
+            state.cache.save_settings(&state.settings);
+            state.needs_reraster = true;
+        }
+        if ply.is_just_pressed(settings_widget::USE_CURRENT_SITE_ID) {
+            state.settings.default_site = geo::RADAR_SITES[state.site_index].id.to_string();
+            state.cache.save_settings(&state.settings);
+        }
+    }
+
+    // ── Keyboard shortcuts overlay (Stage 7) ─────────────────────────
+    // ? key (Shift+/) toggles the shortcuts overlay. If both settings and
+    // shortcuts would be open, close settings first for cleaner UX.
+    if !dropdown_open && is_key_pressed(KeyCode::Slash) && is_key_down(KeyCode::LeftShift) {
+        if state.show_settings_panel {
+            state.show_settings_panel = false;
+        }
+        state.show_shortcuts = !state.show_shortcuts;
+    }
+    if state.show_shortcuts
+        && (ply.is_just_pressed(shortcuts_widget::CLOSE_ID)
+            || ply.is_just_pressed(shortcuts_widget::BACKDROP_ID)
+            || is_key_pressed(KeyCode::Escape))
+    {
+        state.show_shortcuts = false;
+    }
+
+    // ── Error toast dismissal (Stage 7) ──────────────────────────────
+    // Click-to-dismiss, or drop it once fully faded (see `Toast::opacity`).
+    if state.toast.is_some()
+        && (ply.is_just_pressed(toast_widget::DISMISS_ID)
+            || state
+                .toast
+                .as_ref()
+                .is_some_and(|t| t.opacity(get_time()).is_none()))
+    {
+        state.toast = None;
     }
 
     // ── NHC storm selector dropdown ──────────────────────────────
@@ -1681,6 +1908,16 @@ fn select_tilt(state: &mut AppState, index: usize) {
     }
 }
 
+/// Surface a short, friendly error banner (Stage 7 error recovery). The raw
+/// error detail stays in the `eprintln!` log at the call site — only the
+/// canned [`toast_widget::friendly_message`] text reaches the user.
+fn show_toast(state: &mut AppState, now: f64, kind: toast_widget::ErrorKind) {
+    state.toast = Some(toast_widget::Toast::new(
+        toast_widget::friendly_message(kind),
+        now,
+    ));
+}
+
 fn select_site(state: &mut AppState, index: usize) {
     if index >= geo::RADAR_SITES.len() || index == state.site_index {
         return;
@@ -1706,12 +1943,18 @@ fn update_scan_status(state: &mut AppState, suffix: &str) {
             .get(state.tilt_index)
             .map(|sweep| format!(" — {:.1}°", sweep.elevation_deg))
             .unwrap_or_default();
+        let vcp_num_enum = nexrad_model::data::VCPNumber::from_number(scan.vcp_number);
+        let vcp_mode = vcp_mode_label(vcp_num_enum);
+        let nyquist = format_nyquist_velocity();
         state.status_text = format!(
-            "{} — {} — {} tilt(s){}{}",
+            "{} — {} — {} tilt(s){} — VCP {} — {} — {}{}",
             scan.timestamp.format("%Y-%m-%d %H:%M UTC"),
             geo::RADAR_SITES[state.site_index].id,
             sweeps.len(),
             elevation,
+            scan.vcp_number,
+            vcp_mode,
+            nyquist,
             suffix,
         );
     }

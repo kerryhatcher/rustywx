@@ -42,6 +42,19 @@ pub const VELOCITY_LEGEND: &[(f32, [u8; 4])] = &[
     (40.0, [0xff, 0x50, 0x50, 0xff]),
 ];
 
+/// Base spectrum width anchors in m/s. Low values (smooth, laminar flow)
+/// are dark; high values (turbulence, wind shear, mixed targets) rise
+/// through green → yellow → red.
+pub const SPECTRUM_WIDTH_LEGEND: &[(f32, [u8; 4])] = &[
+    (0.0, [0x20, 0x20, 0x20, 0xff]),
+    (2.0, [0x00, 0x80, 0x00, 0xff]),
+    (4.0, [0x00, 0xe0, 0x00, 0xff]),
+    (6.0, [0xfd, 0xf8, 0x02, 0xff]),
+    (8.0, [0xfd, 0x95, 0x00, 0xff]),
+    (10.0, [0xfd, 0x00, 0x00, 0xff]),
+    (15.0, [0xbc, 0x00, 0x00, 0xff]),
+];
+
 /// Catmull-Rom spline (Cardinal spline with tension 0) interpolation of
 /// a single channel. Interpolates between `p1` and `p2` using the
 /// neighbouring control points `p0` and `p3` for tangent estimation.
@@ -115,9 +128,16 @@ pub fn velocity_color(ms: f32) -> [u8; 4] {
     spline_color(VELOCITY_LEGEND, ms.max(-64.0))
 }
 
+pub fn spectrum_width_color(ms: f32) -> [u8; 4] {
+    spline_color(SPECTRUM_WIDTH_LEGEND, ms)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{DBZ_LEGEND, VELOCITY_LEGEND, catmull_rom, dbz_color, velocity_color};
+    use super::{
+        DBZ_LEGEND, SPECTRUM_WIDTH_LEGEND, VELOCITY_LEGEND, catmull_rom, dbz_color,
+        spectrum_width_color, velocity_color,
+    };
 
     #[test]
     fn dbz_below_minimum_is_transparent() {
@@ -219,6 +239,35 @@ mod tests {
     fn legends_are_ascending() {
         assert!(DBZ_LEGEND.windows(2).all(|w| w[0].0 < w[1].0));
         assert!(VELOCITY_LEGEND.windows(2).all(|w| w[0].0 < w[1].0));
+        assert!(SPECTRUM_WIDTH_LEGEND.windows(2).all(|w| w[0].0 < w[1].0));
+    }
+
+    #[test]
+    fn spectrum_width_passes_through_anchors() {
+        // The spline hits every anchor exactly at its threshold value.
+        for &(threshold, color) in SPECTRUM_WIDTH_LEGEND {
+            assert_eq!(spectrum_width_color(threshold), color);
+        }
+    }
+
+    #[test]
+    fn spectrum_width_below_minimum_is_transparent() {
+        assert_eq!(spectrum_width_color(-1.0), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn spectrum_width_above_maximum_clamps_to_last() {
+        let last = SPECTRUM_WIDTH_LEGEND.last().unwrap().1;
+        assert_eq!(spectrum_width_color(30.0), last);
+    }
+
+    #[test]
+    fn spectrum_width_increases_toward_warm_colors() {
+        // Low width (smooth flow) should be darker/greener than high width
+        // (turbulence), which should read hotter (more red than green).
+        let low = spectrum_width_color(2.0);
+        let high = spectrum_width_color(10.0);
+        assert!(high[0] > low[0], "red channel should rise with width");
     }
 
     #[test]

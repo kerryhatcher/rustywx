@@ -1,6 +1,6 @@
 # rustywx → Ply Port — Staged Implementation Plan
 
-**Target Platform:** Linux Desktop (v1.0)
+**Target Platform:** Linux and macOS Desktop (v1.0)
 
 Each stage ships a **runnable, validatable** increment. No stage depends on
 future-stage polish — every one stands on its own as a working app.
@@ -16,7 +16,7 @@ future-stage polish — every one stands on its own as a working app.
 | 5 | Tropical | ✅ Complete | `v0.3.0-stage5` | [stage-5-tropical.md](stages/stage-5-tropical.md) |
 | 6 | Observatory Look | ✅ Complete | `v0.4.0-stage6` | [stage-6-observatory-look.md](stages/stage-6-observatory-look.md) |
 | 7 | Settings & Polish | 🔲 Not started | `v0.5.0-stage7` | [stage-7-settings-polish.md](stages/stage-7-settings-polish.md) |
-| 8 | Linux Polish | 🔲 Not started | `v1.0.0-stage8` | [stage-8-linux-polish.md](stages/stage-8-linux-polish.md) |
+| 8 | Desktop Polish (Linux + macOS) | 🔲 Not started | `v1.0.0-stage8` | [stage-8-linux-polish.md](stages/stage-8-linux-polish.md) |
 | — | **Post-v1** | 📝 Planned | — | [post-v1-multi-site-animation.md](post-v1-multi-site-animation.md) |
 
 ## Pre-Flight: Research Findings
@@ -181,7 +181,7 @@ rustywx/
 | 5 | Tropical | 2 ✅ | NHC data, GIS overlays, panel via Ply net |
 | 6 | Observatory Look | 2–3 ✅ | Visual design, custom blur shader, animations, responsive |
 | 7 | Settings & Polish | 1 | Settings via Ply storage, shortcuts, error handling |
-| 8 | Linux Polish | 2 | HiDPI, Wayland, perf, a11y |
+| 8 | Desktop Polish (Linux + macOS) | 2 | HiDPI/Retina, Wayland, macOS native, perf, a11y |
 
 **Total: ~11–13 days** of stage work. Pre-flight spikes (S1–S8) are complete.
 

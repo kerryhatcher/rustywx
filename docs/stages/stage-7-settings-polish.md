@@ -1,6 +1,6 @@
 # Stage 7: "Settings & Polish" — Configuration + Fit & Finish
 
-**Status:** 🔲 Not started
+**Status:** ✅ Complete (tagged `v0.5.0-stage7`; Nyquist deferred to post-v1)
 **Tag:** `v0.5.0-stage7`
 
 ## Goal
@@ -77,17 +77,21 @@ Polished, configurable app.
 
 ## Validation
 
-- [ ] Settings panel opens via gear icon
-- [ ] Default site setting works (app starts on chosen site)
-- [ ] Animation level can be set to Full/Subtle/None
-- [ ] Overlay defaults respected on startup
-- [ ] ? key shows keyboard shortcuts overlay
-- [ ] Network errors show user-friendly message, not crash
-- [ ] Corrupt cache is handled gracefully
-- [ ] No egui imports remain in codebase
-- [ ] RLE compression achieves ≥90% space savings on cached radar volumes
-- [ ] Spectrum Width product displays with appropriate color table
-- [ ] VCP and scan mode shown in status bar
-- [ ] Nyquist velocity shown for current tilt in status bar
-- [ ] TDBZ kernel size selectable in settings (Sensitive / Default / Aggressive)
-- [ ] `git push` → CI passes → `git tag v0.5.0-stage7` → `git push --tags`
+- [x] Settings panel opens via gear icon
+- [x] Default site setting works (app starts on chosen site)
+- [x] Animation level can be set to Full/Subtle/None
+- [x] Overlay defaults respected on startup
+- [x] ? key shows keyboard shortcuts overlay
+- [x] Network errors show user-friendly message, not crash (toast banner)
+- [x] Corrupt cache is handled gracefully (miss + self-heal, never panics)
+- [x] No egui imports remain in codebase (orphaned root src/ removed)
+- [x] RLE compression achieves ≥90% space savings on cached radar volumes
+- [x] Spectrum Width product displays with appropriate color table
+- [x] VCP and scan mode shown in status bar
+- [~] Nyquist velocity in status bar — shows "Nyquist —". Deferred: neither
+  `nexrad-model` (1.0.0-rc.2) nor `nexrad-data` (1.0.0-rc.7) exposes Nyquist
+  velocity or PRT in their public API; deriving it needs hand-parsing the
+  raw message-31 radial header. Moved to post-v1 rather than fabricate a
+  physical value. Status-bar slot + label plumbing already in place.
+- [x] TDBZ kernel size selectable in settings (Sensitive / Default / Aggressive)
+- [x] `git push` → CI passes → `git tag v0.5.0-stage7` → `git push --tags`  ✅

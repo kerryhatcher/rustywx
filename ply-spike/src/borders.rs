@@ -75,6 +75,11 @@ pub fn poll_and_merge() -> Option<Result<Vec<Ring>>> {
 }
 
 /// Load cached border rings from Ply storage (async).
+///
+/// A corrupt/unparseable cache entry degrades to `Ok(None)` (cache miss —
+/// the caller falls back to a fresh network fetch) rather than an error;
+/// the bad entry is also removed so it self-heals once the fresh fetch
+/// completes and re-saves under the same key.
 pub async fn load_cached(storage: &Storage) -> Result<Option<Vec<Ring>>> {
     let bytes = storage
         .load_bytes(STORAGE_KEY)
@@ -82,11 +87,14 @@ pub async fn load_cached(storage: &Storage) -> Result<Option<Vec<Ring>>> {
         .map_err(|e| anyhow!("loading borders cache: {e}"))?;
 
     match bytes {
-        Some(data) => {
-            let rings: Vec<Ring> = serde_json::from_slice(&data)
-                .map_err(|e| anyhow!("parsing cached borders: {e}"))?;
-            Ok(Some(rings))
-        }
+        Some(data) => match serde_json::from_slice::<Vec<Ring>>(&data) {
+            Ok(rings) => Ok(Some(rings)),
+            Err(e) => {
+                eprintln!("Warning: corrupt cached borders ({e}) — treating as cache miss");
+                let _ = storage.remove(STORAGE_KEY).await;
+                Ok(None)
+            }
+        },
         None => Ok(None),
     }
 }

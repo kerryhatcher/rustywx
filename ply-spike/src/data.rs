@@ -6,6 +6,8 @@ use crate::model::ScanData;
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use nexrad_data::aws::archive::{Identifier, download_file, list_files};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
@@ -20,10 +22,10 @@ pub enum WorkerMessage {
 }
 
 /// Delay before the next poll given the number of consecutive failures:
-/// normal interval when healthy, otherwise 30 s doubling, capped at 600 s.
-fn retry_delay(consecutive_errors: u32) -> Duration {
+/// `healthy_interval` when healthy, otherwise 30 s doubling, capped at 600 s.
+fn retry_delay(consecutive_errors: u32, healthy_interval: Duration) -> Duration {
     if consecutive_errors == 0 {
-        POLL_INTERVAL
+        healthy_interval
     } else {
         let secs = 30u64.saturating_mul(2u64.saturating_pow(consecutive_errors - 1));
         Duration::from_secs(secs.min(600))
@@ -86,7 +88,15 @@ pub async fn fetch_latest_scan(
 /// runtime; all communication with the UI is via `tx`.
 /// `site_rx` delivers site-change requests; `recv_timeout` is used so the
 /// worker wakes immediately when the user selects a new radar.
-pub fn spawn_worker(tx: Sender<WorkerMessage>, initial_site: String, site_rx: Receiver<String>) {
+/// `poll_interval` is the healthy-state delay between checks, in seconds —
+/// a shared atomic the UI updates from `Settings.poll_interval_secs`, so a
+/// changed setting takes effect on the next cycle (see `main.rs`).
+pub fn spawn_worker(
+    tx: Sender<WorkerMessage>,
+    initial_site: String,
+    site_rx: Receiver<String>,
+    poll_interval: Arc<AtomicU64>,
+) {
     std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -128,6 +138,8 @@ pub fn spawn_worker(tx: Sender<WorkerMessage>, initial_site: String, site_rx: Re
                 "Checking {site} for new data…"
             )));
 
+            // Read the live healthy interval (floored at 1s) each cycle.
+            let healthy = Duration::from_secs(poll_interval.load(Ordering::Relaxed).max(1));
             delay = match runtime.block_on(fetch_latest_scan(&site, last_timestamp)) {
                 Ok(Some(scan)) => {
                     consecutive_errors = 0;
@@ -136,16 +148,16 @@ pub fn spawn_worker(tx: Sender<WorkerMessage>, initial_site: String, site_rx: Re
                         site: site.clone(),
                         scan: Box::new(scan),
                     });
-                    retry_delay(consecutive_errors)
+                    retry_delay(consecutive_errors, healthy)
                 }
                 Ok(None) => {
                     consecutive_errors = 0;
                     let _ = tx.send(WorkerMessage::Status("Up to date".to_string()));
-                    retry_delay(consecutive_errors)
+                    retry_delay(consecutive_errors, healthy)
                 }
                 Err(e) => {
                     consecutive_errors += 1;
-                    let d = retry_delay(consecutive_errors);
+                    let d = retry_delay(consecutive_errors, healthy);
                     let _ = tx.send(WorkerMessage::Error(format!(
                         "{e:#} — retrying in {}s",
                         d.as_secs()
@@ -155,4 +167,25 @@ pub fn spawn_worker(tx: Sender<WorkerMessage>, initial_site: String, site_rx: Re
             };
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retry_delay_uses_healthy_interval_when_no_errors() {
+        let custom = Duration::from_secs(45);
+        assert_eq!(retry_delay(0, custom), custom);
+        assert_eq!(retry_delay(0, POLL_INTERVAL), POLL_INTERVAL);
+    }
+
+    #[test]
+    fn retry_delay_backs_off_regardless_of_healthy_interval() {
+        let custom = Duration::from_secs(45);
+        assert_eq!(retry_delay(1, custom), Duration::from_secs(30));
+        assert_eq!(retry_delay(2, custom), Duration::from_secs(60));
+        // Capped at 600s even after many consecutive errors.
+        assert_eq!(retry_delay(10, custom), Duration::from_secs(600));
+    }
 }
