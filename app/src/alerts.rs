@@ -6,6 +6,7 @@
 //! once, then `net::request("alerts")` is polled each frame.
 
 use crate::borders::Ring;
+use crate::geo::{self, RadarSite};
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -29,6 +30,10 @@ pub const NET_ID: &str = "alerts";
 pub struct Alert {
     pub event: String,
     pub headline: String,
+    /// Full NWS alert body (`properties.description`).
+    pub description: String,
+    /// Precautionary/preparedness actions (`properties.instruction`); empty if absent.
+    pub instruction: String,
     pub color: [u8; 4],
     pub rings: Vec<Ring>,
 }
@@ -87,6 +92,18 @@ pub fn parse_alerts(json: &str) -> Result<Vec<Alert>> {
             .unwrap_or(&event)
             .to_string();
 
+        let description = properties
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+
+        let instruction = properties
+            .get("instruction")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+
         let geometry = match feature.get("geometry") {
             Some(g) if !g.is_null() => g,
             _ => continue,
@@ -118,6 +135,8 @@ pub fn parse_alerts(json: &str) -> Result<Vec<Alert>> {
         alerts.push(Alert {
             event: event.clone(),
             headline,
+            description,
+            instruction,
             color: alert_color(&event),
             rings,
         });
@@ -166,6 +185,14 @@ fn is_warning_or_watch(event: &str) -> bool {
     e.contains("warning") || e.contains("watch")
 }
 
+/// Whether an event is a watch. Anything that passed `is_warning_or_watch`
+/// and isn't a watch is treated as a warning. "Warning" wins if a name
+/// somehow contains both.
+pub fn is_watch(event: &str) -> bool {
+    let e = event.to_ascii_lowercase();
+    e.contains("watch") && !e.contains("warning")
+}
+
 /// Map a common NWS event name to a bright warning/watch color. Unknown
 /// warnings default to red, unknown watches to yellow. Returns `[r, g, b, a]`.
 pub fn alert_color(event: &str) -> [u8; 4] {
@@ -193,6 +220,29 @@ pub fn alert_color(event: &str) -> [u8; 4] {
     }
 }
 
+/// Rank an event by hazard severity for hit-test priority. Higher wins when
+/// polygons overlap, so a click inside both a Tornado Warning and a Severe
+/// Thunderstorm Warning opens the tornado. Warnings always outrank watches.
+pub fn severity_rank(event: &str) -> u8 {
+    let e = event.to_ascii_lowercase();
+    if e.contains("tornado emergency") {
+        100
+    } else if e.contains("tornado warning") {
+        90
+    } else if e.contains("flash flood emergency") {
+        80
+    } else if e.contains("severe thunderstorm warning") {
+        70
+    } else if e.contains("flash flood warning") {
+        60
+    } else if e.contains("warning") {
+        50
+    } else {
+        // Watches — all below any warning.
+        10
+    }
+}
+
 /// Check whether any ring of an alert intersects the scope around the
 /// given radar site.
 pub fn alert_affects_scope(alert: &Alert, origin_lat: f64, origin_lon: f64) -> bool {
@@ -200,6 +250,76 @@ pub fn alert_affects_scope(alert: &Alert, origin_lat: f64, origin_lon: f64) -> b
         .rings
         .iter()
         .any(|r| crate::borders::ring_affects_scope(r, origin_lat, origin_lon))
+}
+
+/// Ray-casting point-in-polygon test against a single ring (screen-space).
+///
+// ponytail: NWS alert polygons don't carry holes in practice, so a ring hit
+// is treated as an unconditional "inside" — no even-odd hole subtraction.
+fn point_in_ring(point: (f32, f32), ring: &[(f32, f32)]) -> bool {
+    let (px, py) = point;
+    let mut inside = false;
+    let n = ring.len();
+    for i in 0..n {
+        let (ax, ay) = ring[i];
+        let (bx, by) = ring[(i + 1) % n];
+        if (ay > py) != (by > py) {
+            let x_at_y = ax + (py - ay) / (by - ay) * (bx - ax);
+            if px < x_at_y {
+                inside = !inside;
+            }
+        }
+    }
+    inside
+}
+
+/// Hit-test a click against the currently visible alerts, projecting each
+/// alert's rings to screen space the same way `scope::draw_alerts` does.
+/// Among all alerts whose polygon contains `click_screen`, returns the most
+/// severe (see `severity_rank`) — so a tornado warning wins over a severe
+/// thunderstorm warning it overlaps — breaking ties by draw order (later =
+/// topmost). Returns `None` if nothing was hit.
+pub fn hit_test<'a>(
+    alerts: &'a [Alert],
+    show_watches: bool,
+    show_warnings: bool,
+    site: &RadarSite,
+    click_screen: (f32, f32),
+    center: (f32, f32),
+    px_per_km: f32,
+) -> Option<&'a Alert> {
+    let mut best: Option<&'a Alert> = None;
+
+    for alert in alerts {
+        if is_watch(&alert.event) {
+            if !show_watches {
+                continue;
+            }
+        } else if !show_warnings {
+            continue;
+        }
+
+        let hit = alert.rings.iter().any(|ring| {
+            if ring.len() < 3 {
+                return false;
+            }
+            let pts_px: Vec<(f32, f32)> = ring
+                .iter()
+                .map(|&(lat, lon)| {
+                    let km = geo::point_to_km_offset(site.lat, site.lon, (lat, lon));
+                    (center.0 + km.x * px_per_km, center.1 + km.y * px_per_km)
+                })
+                .collect();
+            point_in_ring(click_screen, &pts_px)
+        });
+
+        // Prefer higher severity; `>=` keeps the later (topmost) alert on ties.
+        if hit && best.is_none_or(|b| severity_rank(&alert.event) >= severity_rank(&b.event)) {
+            best = Some(alert);
+        }
+    }
+
+    best
 }
 
 #[cfg(test)]
@@ -228,6 +348,16 @@ mod tests {
             [0xff, 0x33, 0x33, 0xff]
         );
         assert_eq!(alert_color("Heat Watch"), [0xff, 0xee, 0x00, 0xff]);
+    }
+
+    #[test]
+    fn classifies_watch_vs_warning() {
+        assert!(is_watch("Tornado Watch"));
+        assert!(is_watch("Severe Thunderstorm Watch"));
+        assert!(!is_watch("Tornado Warning"));
+        assert!(!is_watch("Flash Flood Warning"));
+        // "Warning" wins when a name mixes both.
+        assert!(!is_watch("Watch upgraded to Warning"));
     }
 
     #[test]
@@ -277,5 +407,71 @@ mod tests {
         }"#;
         let alerts = parse_alerts(fixture).unwrap();
         assert!(alerts.is_empty());
+    }
+
+    #[test]
+    fn hit_test_finds_click_inside_ring_and_misses_outside() {
+        let site = RadarSite {
+            id: "TEST",
+            name: "Test",
+            lat: 0.0,
+            lon: 0.0,
+        };
+        let alert = Alert {
+            event: "Tornado Warning".to_string(),
+            headline: "Tornado Warning for...".to_string(),
+            description: String::new(),
+            instruction: String::new(),
+            color: alert_color("Tornado Warning"),
+            // A ~111km square (1 degree lat/lon) around the origin site.
+            rings: vec![vec![(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0)]],
+        };
+        let alerts = vec![alert];
+
+        // Site-relative screen projection: north is -y, east is +x, so this
+        // ~111km square (1 degree lat/lon) around the origin site lands at
+        // roughly x in [0, 111], y in [-111, 0] in screen space.
+        let inside = hit_test(&alerts, true, true, &site, (50.0, -50.0), (0.0, 0.0), 1.0);
+        assert!(inside.is_some());
+
+        let outside = hit_test(&alerts, true, true, &site, (500.0, 500.0), (0.0, 0.0), 1.0);
+        assert!(outside.is_none());
+
+        // Toggled-off category never hits, even inside the polygon.
+        let toggled_off = hit_test(&alerts, true, false, &site, (50.0, -50.0), (0.0, 0.0), 1.0);
+        assert!(toggled_off.is_none());
+    }
+
+    #[test]
+    fn hit_test_prefers_more_severe_alert_in_overlap() {
+        let site = RadarSite {
+            id: "TEST",
+            name: "Test",
+            lat: 0.0,
+            lon: 0.0,
+        };
+        let square = || vec![vec![(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0)]];
+        // Tornado listed FIRST — old "last match" logic would return the
+        // severe thunderstorm; severity ranking must still pick the tornado.
+        let alerts = vec![
+            Alert {
+                event: "Tornado Warning".to_string(),
+                headline: String::new(),
+                description: String::new(),
+                instruction: String::new(),
+                color: alert_color("Tornado Warning"),
+                rings: square(),
+            },
+            Alert {
+                event: "Severe Thunderstorm Warning".to_string(),
+                headline: String::new(),
+                description: String::new(),
+                instruction: String::new(),
+                color: alert_color("Severe Thunderstorm Warning"),
+                rings: square(),
+            },
+        ];
+        let hit = hit_test(&alerts, true, true, &site, (50.0, -50.0), (0.0, 0.0), 1.0);
+        assert_eq!(hit.map(|a| a.event.as_str()), Some("Tornado Warning"));
     }
 }
