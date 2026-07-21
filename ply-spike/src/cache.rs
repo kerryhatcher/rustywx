@@ -356,10 +356,7 @@ fn decode_sweeps(r: &mut Reader) -> Result<Vec<SweepData>, String> {
                             other => Err(format!("cache: bad gate tag byte {other}")),
                         })
                         .collect::<Result<Vec<_>, String>>()?;
-                    Ok(RadialData {
-                        azimuth_deg,
-                        gates,
-                    })
+                    Ok(RadialData { azimuth_deg, gates })
                 })
                 .collect::<Result<Vec<_>, String>>()?;
             Ok(SweepData {
@@ -490,7 +487,13 @@ mod tests {
                     .map(|az| RadialData {
                         azimuth_deg: az as f32,
                         gates: (0..500)
-                            .map(|g| if g % 250 == 0 { Some(g as f32 * 0.5) } else { None })
+                            .map(|g| {
+                                if g % 250 == 0 {
+                                    Some(g as f32 * 0.5)
+                                } else {
+                                    None
+                                }
+                            })
                             .collect(),
                     })
                     .collect(),

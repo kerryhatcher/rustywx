@@ -91,9 +91,7 @@ pub fn decompress(data: &[u8]) -> Result<Vec<u8>, String> {
             out.resize(out.len() + count as usize, value);
         } else {
             let len = control as usize; // lower 7 bits == control, since bit 7 is clear
-            let literal = data
-                .get(i..i + len)
-                .ok_or("rle: truncated literal run")?;
+            let literal = data.get(i..i + len).ok_or("rle: truncated literal run")?;
             out.extend_from_slice(literal);
             i += len;
         }

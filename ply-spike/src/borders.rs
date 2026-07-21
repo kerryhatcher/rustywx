@@ -90,9 +90,7 @@ pub async fn load_cached(storage: &Storage) -> Result<Option<Vec<Ring>>> {
         Some(data) => match serde_json::from_slice::<Vec<Ring>>(&data) {
             Ok(rings) => Ok(Some(rings)),
             Err(e) => {
-                eprintln!(
-                    "Warning: corrupt cached borders ({e}) — treating as cache miss"
-                );
+                eprintln!("Warning: corrupt cached borders ({e}) — treating as cache miss");
                 let _ = storage.remove(STORAGE_KEY).await;
                 Ok(None)
             }

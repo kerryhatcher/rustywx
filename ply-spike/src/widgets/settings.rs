@@ -70,7 +70,9 @@ fn cycle_button(ui: &mut Ui<'_, ()>, id: &'static str, label: &str) {
         .corner_radius(4.0)
         .layout(|l| l.padding((0, 10, 0, 10)).align(CenterX, CenterY))
         .children(|ui| {
-            ui.text(&format!("{label}  ↻"), |t| t.font_size(12).color(TEXT_COLOR));
+            ui.text(&format!("{label}  ↻"), |t| {
+                t.font_size(12).color(TEXT_COLOR)
+            });
         });
 }
 

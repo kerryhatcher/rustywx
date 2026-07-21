@@ -55,9 +55,7 @@ fn section_header(ui: &mut Ui<'_, ()>, title: &str) {
         .corner_radius(4.0)
         .layout(|l| l.padding(8).align(Left, CenterY))
         .children(|ui| {
-            ui.text(title, |t| {
-                t.font_size(12).color(MUTED_COLOR)
-            });
+            ui.text(title, |t| t.font_size(12).color(MUTED_COLOR));
         });
 }
 

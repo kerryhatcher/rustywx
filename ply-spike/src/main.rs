@@ -11,7 +11,7 @@ use rustywx::cache::Cache;
 use rustywx::colors;
 use rustywx::data::{self, WorkerMessage};
 use rustywx::geo;
-use rustywx::model::{Product, RadialData, SweepData, vcp_mode_label, format_nyquist_velocity};
+use rustywx::model::{Product, RadialData, SweepData, format_nyquist_velocity, vcp_mode_label};
 use rustywx::nhc;
 use rustywx::scope;
 use rustywx::settings::{AnimationLevel, Settings};
@@ -23,9 +23,9 @@ use rustywx::widgets::shortcuts as shortcuts_widget;
 use rustywx::widgets::toast as toast_widget;
 use rustywx::widgets::toggle::{self, ToggleOption};
 use std::collections::HashMap;
-use std::sync::mpsc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
 
 const SITE_DROPDOWN: DropdownConfig = DropdownConfig {
     button_id: "site-dropdown-btn",
@@ -1736,9 +1736,9 @@ fn handle_input(
         && (ply.is_just_pressed(shortcuts_widget::CLOSE_ID)
             || ply.is_just_pressed(shortcuts_widget::BACKDROP_ID)
             || is_key_pressed(KeyCode::Escape))
-        {
-            state.show_shortcuts = false;
-        }
+    {
+        state.show_shortcuts = false;
+    }
 
     // ── Error toast dismissal (Stage 7) ──────────────────────────────
     // Click-to-dismiss, or drop it once fully faded (see `Toast::opacity`).

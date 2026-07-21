@@ -170,7 +170,7 @@ fn sort_and_dedup(sweeps: &mut Vec<SweepData>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Product, ScanData, vcp_mode_label, format_nyquist_velocity};
+    use super::{Product, ScanData, format_nyquist_velocity, vcp_mode_label};
     use chrono::Utc;
     use nexrad_model::data::{MomentData, Radial, RadialStatus, Sweep, VCPNumber};
 
@@ -282,7 +282,8 @@ mod tests {
             2,
             vec![radial(0.0, 2, 0.52, Some(ref_moment(vec![190])), None)],
         );
-        let scan_data = ScanData::from_sweeps(&[s1, s2], Utc::now(), VCPNumber::Precipitation12.into());
+        let scan_data =
+            ScanData::from_sweeps(&[s1, s2], Utc::now(), VCPNumber::Precipitation12.into());
         assert_eq!(scan_data.reflectivity.len(), 1);
         assert_eq!(scan_data.reflectivity[0].radials[0].gates, vec![Some(32.0)]);
     }

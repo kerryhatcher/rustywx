@@ -73,8 +73,18 @@ pub fn draw(ui: &mut Ui<'_, ()>, toast: &Toast, opacity: f32) {
     let y = 16.0;
 
     let bg = Color::rgba(18.0, 22.0, 30.0, 230.0 * opacity);
-    let border = Color::rgba(GLASS_BORDER.r, GLASS_BORDER.g, GLASS_BORDER.b, 40.0 * opacity);
-    let text_color = Color::rgba(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b, 255.0 * opacity);
+    let border = Color::rgba(
+        GLASS_BORDER.r,
+        GLASS_BORDER.g,
+        GLASS_BORDER.b,
+        40.0 * opacity,
+    );
+    let text_color = Color::rgba(
+        TEXT_PRIMARY.r,
+        TEXT_PRIMARY.g,
+        TEXT_PRIMARY.b,
+        255.0 * opacity,
+    );
     let accent = Color::rgba(ACCENT.r, ACCENT.g, ACCENT.b, 255.0 * opacity);
 
     ui.element()
@@ -85,7 +95,12 @@ pub fn draw(ui: &mut Ui<'_, ()>, toast: &Toast, opacity: f32) {
         .corner_radius(8.0)
         .border(|b| b.color(border).all(1))
         .floating(|f| f.offset((x, y)).z_index(400).attach_root())
-        .layout(|l| l.direction(LeftToRight).padding(12).gap(8).align(Left, CenterY))
+        .layout(|l| {
+            l.direction(LeftToRight)
+                .padding(12)
+                .gap(8)
+                .align(Left, CenterY)
+        })
         .children(|ui| {
             ui.text("⚠", |t| t.font_size(14).color(accent));
             ui.text(&toast.message, |t| t.font_size(12).color(text_color));
@@ -100,7 +115,10 @@ mod tests {
     fn friendly_message_never_leaks_raw_error_text() {
         // Regardless of the underlying anyhow error, the user sees only
         // one of these short canned strings — never the raw `{e}` detail.
-        assert_eq!(friendly_message(ErrorKind::Network), "Network error — retrying…");
+        assert_eq!(
+            friendly_message(ErrorKind::Network),
+            "Network error — retrying…"
+        );
         assert_eq!(
             friendly_message(ErrorKind::RadarData),
             "Radar data unavailable — retrying…"
@@ -113,7 +131,9 @@ mod tests {
         assert_eq!(toast.opacity(100.0), Some(1.0));
         assert_eq!(toast.opacity(100.0 + VISIBLE_SECS - 0.1), Some(1.0));
 
-        let mid_fade = toast.opacity(100.0 + VISIBLE_SECS + FADE_SECS / 2.0).unwrap();
+        let mid_fade = toast
+            .opacity(100.0 + VISIBLE_SECS + FADE_SECS / 2.0)
+            .unwrap();
         assert!(mid_fade > 0.0 && mid_fade < 1.0);
 
         assert_eq!(toast.opacity(100.0 + VISIBLE_SECS + FADE_SECS + 0.1), None);
