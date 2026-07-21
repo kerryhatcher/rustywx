@@ -2005,8 +2005,8 @@ fn handle_input(
         if ply.is_just_pressed(settings_widget::LOCATION_INPUT_ID) {
             state.location_input_focused = true;
         }
-        // Capture typing while focused (runs before the Escape-closes-settings
-        // check above so typing/Enter never closes the modal).
+        // Capture typing while focused (typing and Escape key off disjoint
+        // KeyCodes, so their relative ordering doesn't matter).
         if state.location_input_focused {
             let now = get_time();
             while let Some(ch) = get_char_pressed() {
@@ -2020,9 +2020,17 @@ fn handle_input(
             if is_key_pressed(KeyCode::Enter) {
                 state.location_input_focused = false;
                 state.location_error_shown = false;
-                state
+                if let Some(c) = state
                     .location_resolver
-                    .detect(&state.settings.location_input, now);
+                    .detect(&state.settings.location_input, now)
+                {
+                    state.user_location = Some(c);
+                    state.settings.user_lat = Some(c.lat);
+                    state.settings.user_lon = Some(c.lon);
+                    if state.settings.center_on_location {
+                        recenter_on_user(state);
+                    }
+                }
                 state.cache.save_settings(&state.settings);
             }
         }
