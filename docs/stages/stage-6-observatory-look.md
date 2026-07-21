@@ -205,7 +205,7 @@ pub const BLUR_SHADER: ShaderAsset = ShaderAsset::Source {
 | Ply features added | 2 (`built-in-shaders`, `text-styling`) |
 | Fonts added | 3 (Inter Regular, Inter Bold, JetBrains Mono) |
 | Theme constants | 8 (accent, glass, panel, card, text) |
-| Animations | sweep line, entrance fade, NHC spring slide, data pulse, auto-hide |
+| Animations | sweep line, entrance fade, NHC spring slide, data pulse |
 | Responsive breakpoint | 900px (mobile: full-screen NHC, 48px bar, 44px touch targets) |
 
 ## Lessons Learned
