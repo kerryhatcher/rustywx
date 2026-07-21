@@ -11,6 +11,7 @@ use crate::model::{Product, ScanData};
 use crate::nhc::{NhcBundle, NhcFetchState};
 use crate::settings::Settings;
 use crate::widgets::dropdown::DropdownState;
+use crate::widgets::toast::Toast;
 use ply_engine::prelude::Texture2D;
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -149,4 +150,10 @@ pub struct AppState {
     pub show_settings_panel: bool,
     /// Whether the keyboard shortcuts overlay is visible.
     pub show_shortcuts: bool,
+
+    // ── Error recovery (Stage 7) ─────────────────────────────────
+    /// Most recent user-facing error banner, if one is still showing.
+    /// Auto-fades per [`crate::widgets::toast::Toast::opacity`]; overwritten
+    /// (not queued) by the next error — see [`crate::widgets::toast`].
+    pub toast: Option<Toast>,
 }

@@ -20,6 +20,7 @@ use rustywx::widgets::dropdown::{DropdownConfig, DropdownOption, DropdownState};
 use rustywx::widgets::glass_panel;
 use rustywx::widgets::settings as settings_widget;
 use rustywx::widgets::shortcuts as shortcuts_widget;
+use rustywx::widgets::toast as toast_widget;
 use rustywx::widgets::toggle::{self, ToggleOption};
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -383,6 +384,7 @@ async fn main() {
         pending_settings_load,
         show_settings_panel: false,
         show_shortcuts: false,
+        toast: None,
     };
 
     // Boot-time bookkeeping for applying loaded settings exactly once, and
@@ -512,7 +514,11 @@ async fn main() {
                     }
                 }
                 WorkerMessage::Error(e) => {
+                    // `e` already carries the raw anyhow detail + retry
+                    // countdown for the status bar; the toast stays short
+                    // and friendly (see widgets::toast).
                     state.status_text = format!("Error: {e}");
+                    show_toast(&mut state, now, toast_widget::ErrorKind::RadarData);
                 }
             }
         }
@@ -555,6 +561,7 @@ async fn main() {
                 Err(e) => {
                     eprintln!("Warning: border fetch failed: {e}");
                     // Will retry on next frame (borders_fetch_fired is false)
+                    show_toast(&mut state, now, toast_widget::ErrorKind::Network);
                 }
             }
         }
@@ -581,6 +588,7 @@ async fn main() {
                 }
                 Err(e) => {
                     eprintln!("Warning: alert fetch failed: {e}");
+                    show_toast(&mut state, now, toast_widget::ErrorKind::Network);
                 }
             }
         }
@@ -625,6 +633,7 @@ async fn main() {
                 }
                 Err(e) => {
                     eprintln!("Warning: NHC fetch failed: {e:#}");
+                    show_toast(&mut state, now, toast_widget::ErrorKind::Network);
                 }
             }
         }
@@ -1359,6 +1368,13 @@ async fn main() {
                     shortcuts_widget::draw(ui);
                 }
 
+                // ── Error toast banner (Stage 7 error recovery) ─────────────
+                if let Some(ref toast) = state.toast
+                    && let Some(opacity) = toast.opacity(now)
+                {
+                    toast_widget::draw(ui, toast, opacity);
+                }
+
                 // ── Radar scope (transparent — drawn directly to screen) ──
                 // Loading skeleton: pulsing indicator while first scan loads.
                 if state.scan.is_none() {
@@ -1712,13 +1728,24 @@ fn handle_input(
         }
         state.show_shortcuts = !state.show_shortcuts;
     }
-    if state.show_shortcuts {
-        if ply.is_just_pressed(shortcuts_widget::CLOSE_ID)
+    if state.show_shortcuts
+        && (ply.is_just_pressed(shortcuts_widget::CLOSE_ID)
             || ply.is_just_pressed(shortcuts_widget::BACKDROP_ID)
-            || is_key_pressed(KeyCode::Escape)
+            || is_key_pressed(KeyCode::Escape))
         {
             state.show_shortcuts = false;
         }
+
+    // ── Error toast dismissal (Stage 7) ──────────────────────────────
+    // Click-to-dismiss, or drop it once fully faded (see `Toast::opacity`).
+    if state.toast.is_some()
+        && (ply.is_just_pressed(toast_widget::DISMISS_ID)
+            || state
+                .toast
+                .as_ref()
+                .is_some_and(|t| t.opacity(get_time()).is_none()))
+    {
+        state.toast = None;
     }
 
     // ── NHC storm selector dropdown ──────────────────────────────
@@ -1875,6 +1902,16 @@ fn select_tilt(state: &mut AppState, index: usize) {
         state.needs_reraster = true;
         update_scan_status(state, "");
     }
+}
+
+/// Surface a short, friendly error banner (Stage 7 error recovery). The raw
+/// error detail stays in the `eprintln!` log at the call site — only the
+/// canned [`toast_widget::friendly_message`] text reaches the user.
+fn show_toast(state: &mut AppState, now: f64, kind: toast_widget::ErrorKind) {
+    state.toast = Some(toast_widget::Toast::new(
+        toast_widget::friendly_message(kind),
+        now,
+    ));
 }
 
 fn select_site(state: &mut AppState, index: usize) {

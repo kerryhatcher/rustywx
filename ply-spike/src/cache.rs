@@ -66,19 +66,32 @@ impl Cache {
     ///
     /// Returns a `oneshot::Receiver` that the game loop polls each frame
     /// with `try_recv()`.  The receiver yields `None` when no cached data
-    /// exists for this site.
+    /// exists for this site, *or* when the stored bytes are corrupt — a bad
+    /// entry is logged and removed so the next save self-heals it, never a
+    /// panic.
     pub fn load_scan(&self, site: &str) -> oneshot::Receiver<Option<ScanData>> {
         let storage = self.storage.clone();
         let key = Self::scan_key(site);
         let (tx, rx) = oneshot::channel();
 
         tokio::spawn(async move {
-            let result = storage
-                .load_bytes(&key)
-                .await
-                .ok()
-                .flatten()
-                .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+            let result = match storage.load_bytes(&key).await {
+                Ok(Some(bytes)) => match serde_json::from_slice(&bytes) {
+                    Ok(scan) => Some(scan),
+                    Err(e) => {
+                        eprintln!(
+                            "Warning: corrupt cached scan for {key} ({e}) — treating as cache miss"
+                        );
+                        let _ = storage.remove(&key).await;
+                        None
+                    }
+                },
+                Ok(None) => None,
+                Err(e) => {
+                    eprintln!("Warning: failed to read cache key {key}: {e}");
+                    None
+                }
+            };
             let _ = tx.send(result);
         });
 
@@ -112,20 +125,35 @@ impl Cache {
 
     /// Spawn a background task to load and decompress the RLE-compressed
     /// scan for `site`. Mirrors [`Self::load_scan`]; yields `None` if no
-    /// compressed entry exists or the stored bytes are corrupt.
+    /// compressed entry exists or the stored bytes are corrupt — a corrupt
+    /// entry is logged and removed so it self-heals on the next save,
+    /// never a panic.
     pub fn load_scan_compressed(&self, site: &str) -> oneshot::Receiver<Option<ScanData>> {
         let storage = self.storage.clone();
         let key = Self::scan_key_rle(site);
         let (tx, rx) = oneshot::channel();
 
         tokio::spawn(async move {
-            let result = storage
-                .load_bytes(&key)
-                .await
-                .ok()
-                .flatten()
-                .and_then(|bytes| crate::rle::decompress(&bytes).ok())
-                .and_then(|bytes| bytes_to_scan(&bytes).ok());
+            let result = match storage.load_bytes(&key).await {
+                Ok(Some(bytes)) => match crate::rle::decompress(&bytes)
+                    .map_err(|e| format!("decompressing: {e}"))
+                    .and_then(|raw| bytes_to_scan(&raw))
+                {
+                    Ok(scan) => Some(scan),
+                    Err(e) => {
+                        eprintln!(
+                            "Warning: corrupt compressed scan for {key} ({e}) — treating as cache miss"
+                        );
+                        let _ = storage.remove(&key).await;
+                        None
+                    }
+                },
+                Ok(None) => None,
+                Err(e) => {
+                    eprintln!("Warning: failed to read cache key {key}: {e}");
+                    None
+                }
+            };
             let _ = tx.send(result);
         });
 
@@ -149,19 +177,31 @@ impl Cache {
 
     /// Spawn a background task to load the persisted site ID.
     ///
-    /// Returns a `oneshot::Receiver` that yields `None` when no
-    /// preference has been saved (first launch).
+    /// Returns a `oneshot::Receiver` that yields `None` when no preference
+    /// has been saved (first launch) or the stored bytes are corrupt
+    /// (not valid UTF-8) — a corrupt entry is removed so it self-heals.
     pub fn load_site(&self) -> oneshot::Receiver<Option<String>> {
         let storage = self.storage.clone();
         let key = Self::SITE_KEY.to_string();
         let (tx, rx) = oneshot::channel();
         tokio::spawn(async move {
-            let result = storage
-                .load_bytes(&key)
-                .await
-                .ok()
-                .flatten()
-                .and_then(|bytes| String::from_utf8(bytes).ok());
+            let result = match storage.load_bytes(&key).await {
+                Ok(Some(bytes)) => match String::from_utf8(bytes) {
+                    Ok(site) => Some(site),
+                    Err(e) => {
+                        eprintln!(
+                            "Warning: corrupt cached site preference ({e}) — treating as unset"
+                        );
+                        let _ = storage.remove(&key).await;
+                        None
+                    }
+                },
+                Ok(None) => None,
+                Err(e) => {
+                    eprintln!("Warning: failed to read cache key {key}: {e}");
+                    None
+                }
+            };
             let _ = tx.send(result);
         });
         rx
@@ -193,18 +233,31 @@ impl Cache {
     /// Spawn a background task to load the persisted [`crate::settings::Settings`].
     ///
     /// Returns a `oneshot::Receiver` that yields `None` when no settings
-    /// have been saved yet (first launch) or the stored JSON is corrupt.
+    /// have been saved yet (first launch) or the stored JSON is corrupt —
+    /// a corrupt entry is logged and removed so it self-heals on the next
+    /// save, and the app falls back to `Settings::default()`.
     pub fn load_settings(&self) -> oneshot::Receiver<Option<crate::settings::Settings>> {
         let storage = self.storage.clone();
         let key = Self::SETTINGS_KEY.to_string();
         let (tx, rx) = oneshot::channel();
         tokio::spawn(async move {
-            let result = storage
-                .load_bytes(&key)
-                .await
-                .ok()
-                .flatten()
-                .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+            let result = match storage.load_bytes(&key).await {
+                Ok(Some(bytes)) => match serde_json::from_slice(&bytes) {
+                    Ok(settings) => Some(settings),
+                    Err(e) => {
+                        eprintln!(
+                            "Warning: corrupt cached settings for {key} ({e}) — using defaults"
+                        );
+                        let _ = storage.remove(&key).await;
+                        None
+                    }
+                },
+                Ok(None) => None,
+                Err(e) => {
+                    eprintln!("Warning: failed to read cache key {key}: {e}");
+                    None
+                }
+            };
             let _ = tx.send(result);
         });
         rx
