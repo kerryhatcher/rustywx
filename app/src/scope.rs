@@ -6,6 +6,7 @@ use crate::alerts::Alert;
 use crate::borders::Ring;
 use crate::colors;
 use crate::geo::{self, RadarSite};
+use crate::location::Coords;
 use crate::model::{Product, RadialData, SweepData};
 use crate::nhc::{ArrivalTimeContour, NhcBundle, WindProbContour};
 use macroquad::math::Vec2;
@@ -402,6 +403,7 @@ pub fn draw_scope_to_texture(
     borders: Option<(&[Ring], bool)>,
     alerts: Option<(&[Alert], bool)>,
     nhc: Option<(&NhcBundle, &NhcOverlayState)>,
+    user: Option<Coords>,
 ) {
     let side = screen_width().min(screen_height());
     let px_per_km = (side / 2.0) / MAX_RANGE_KM * zoom;
@@ -569,6 +571,11 @@ pub fn draw_scope_to_texture(
     if let Some((bundle, overlays)) = nhc {
         draw_nhc_overlays(bundle, overlays, site, center_x, center_y, px_per_km);
     }
+
+    // ── User location marker ─────────────────────────────────────
+    if let Some(user) = user {
+        draw_user_location(user, site, center_x, center_y, px_per_km);
+    }
 }
 
 /// Draw state-border and coastline line segments on the scope, extending
@@ -675,6 +682,25 @@ fn draw_alerts(alerts: &[Alert], site: &RadarSite, center_x: f32, center_y: f32,
             draw_text(label, cx, cy, 14.0, label_color);
         }
     }
+}
+
+/// Draw the user's location as a cyan crosshair-pin at its projected position.
+fn draw_user_location(
+    user: Coords,
+    site: &RadarSite,
+    center_x: f32,
+    center_y: f32,
+    px_per_km: f32,
+) {
+    let off = geo::point_to_km_offset(site.lat, site.lon, (user.lat, user.lon));
+    let x = center_x + off.x * px_per_km;
+    let y = center_y + off.y * px_per_km;
+    let cyan = MacroquadColor::from_rgba(0, 220, 220, 255);
+    // Crosshair + center dot — distinct from alert polygons and echoes.
+    draw_line(x - 10.0, y, x + 10.0, y, 2.0, cyan);
+    draw_line(x, y - 10.0, x, y + 10.0, 2.0, cyan);
+    draw_circle(x, y, 4.0, cyan);
+    draw_circle_lines(x, y, 9.0, 1.5, cyan);
 }
 
 // ---------------------------------------------------------------------------

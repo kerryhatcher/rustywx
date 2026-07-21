@@ -748,6 +748,11 @@ async fn main() {
             Some((&state.borders, state.show_borders)),
             Some((&state.alerts, state.show_alerts)),
             state.nhc_bundle.as_ref().map(|b| (b, &state.nhc_overlays)),
+            if state.show_location {
+                state.user_location
+            } else {
+                None
+            },
         );
 
         // Radar sweep line (optional observatory visual flourish) — dropped

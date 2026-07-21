@@ -92,7 +92,9 @@ pub fn poll_ip() -> Option<Result<Coords, String>> {
     use ply_engine::prelude::net;
     let resp = net::request(IP_NET_ID)?.response()?;
     match resp {
-        Ok(r) => Some(parse_ipapi_json(r.text()).ok_or_else(|| "no coords in IP response".to_string())),
+        Ok(r) => {
+            Some(parse_ipapi_json(r.text()).ok_or_else(|| "no coords in IP response".to_string()))
+        }
         Err(e) => Some(Err(format!("IP geolocation failed: {e}"))),
     }
 }
@@ -145,7 +147,10 @@ pub struct LocationResolver {
 
 impl LocationResolver {
     pub fn new() -> Self {
-        LocationResolver { phase: Phase::Idle, status: LocationStatus::Idle }
+        LocationResolver {
+            phase: Phase::Idle,
+            status: LocationStatus::Idle,
+        }
     }
 
     pub fn status(&self) -> &LocationStatus {
@@ -170,7 +175,10 @@ impl LocationResolver {
             LocationInput::Invalid => {
                 // Empty input → auto chain; non-empty junk → invalid.
                 if input.trim().is_empty() {
-                    self.phase = Phase::SystemWait { start: now, locator: SystemLocator::start() };
+                    self.phase = Phase::SystemWait {
+                        start: now,
+                        locator: SystemLocator::start(),
+                    };
                     self.status = LocationStatus::Detecting;
                 } else {
                     self.phase = Phase::Idle;
@@ -246,14 +254,26 @@ mod tests {
     fn parses_coords_and_zip_and_junk() {
         assert_eq!(
             parse_location_input("32.68, -83.35"),
-            LocationInput::Coords(Coords { lat: 32.68, lon: -83.35 })
+            LocationInput::Coords(Coords {
+                lat: 32.68,
+                lon: -83.35
+            })
         );
         assert_eq!(
             parse_location_input("32.68 -83.35"),
-            LocationInput::Coords(Coords { lat: 32.68, lon: -83.35 })
+            LocationInput::Coords(Coords {
+                lat: 32.68,
+                lon: -83.35
+            })
         );
-        assert_eq!(parse_location_input("30301"), LocationInput::Zip("30301".to_string()));
-        assert_eq!(parse_location_input("  30301 "), LocationInput::Zip("30301".to_string()));
+        assert_eq!(
+            parse_location_input("30301"),
+            LocationInput::Zip("30301".to_string())
+        );
+        assert_eq!(
+            parse_location_input("  30301 "),
+            LocationInput::Zip("30301".to_string())
+        );
         assert_eq!(parse_location_input("nope"), LocationInput::Invalid);
         assert_eq!(parse_location_input("1234"), LocationInput::Invalid);
         assert_eq!(parse_location_input("123456"), LocationInput::Invalid);
@@ -263,7 +283,13 @@ mod tests {
     #[test]
     fn parses_ipapi_body() {
         let body = r#"{"ip":"1.2.3.4","city":"Macon","latitude":32.8407,"longitude":-83.6324}"#;
-        assert_eq!(parse_ipapi_json(body), Some(Coords { lat: 32.8407, lon: -83.6324 }));
+        assert_eq!(
+            parse_ipapi_json(body),
+            Some(Coords {
+                lat: 32.8407,
+                lon: -83.6324
+            })
+        );
         assert_eq!(parse_ipapi_json(r#"{"error":true}"#), None);
     }
 
@@ -271,7 +297,13 @@ mod tests {
     fn parses_zippopotam_body() {
         let body = r#"{"post code":"30301","country":"United States",
             "places":[{"place name":"Atlanta","latitude":"33.7490","longitude":"-84.3880"}]}"#;
-        assert_eq!(parse_zippopotam_json(body), Some(Coords { lat: 33.7490, lon: -84.3880 }));
+        assert_eq!(
+            parse_zippopotam_json(body),
+            Some(Coords {
+                lat: 33.7490,
+                lon: -84.3880
+            })
+        );
         assert_eq!(parse_zippopotam_json(r#"{"places":[]}"#), None);
         assert_eq!(parse_zippopotam_json("not json"), None);
     }
@@ -280,8 +312,17 @@ mod tests {
     fn detect_manual_coords_resolves_instantly() {
         let mut r = LocationResolver::new();
         let got = r.detect("40.0, -75.0", 0.0);
-        assert_eq!(got, Some(Coords { lat: 40.0, lon: -75.0 }));
-        assert!(matches!(r.status(), LocationStatus::Resolved(_, Source::Manual)));
+        assert_eq!(
+            got,
+            Some(Coords {
+                lat: 40.0,
+                lon: -75.0
+            })
+        );
+        assert!(matches!(
+            r.status(),
+            LocationStatus::Resolved(_, Source::Manual)
+        ));
     }
 
     #[test]

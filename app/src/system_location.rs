@@ -49,11 +49,12 @@ impl SystemLocator {
             {
                 return SystemFix::Unavailable;
             }
-            if authorized
-                && let Some(loc) = self.manager.location()
-            {
+            if authorized && let Some(loc) = self.manager.location() {
                 let c = loc.coordinate();
-                return SystemFix::Ready(Coords { lat: c.latitude, lon: c.longitude });
+                return SystemFix::Ready(Coords {
+                    lat: c.latitude,
+                    lon: c.longitude,
+                });
             }
             SystemFix::Pending
         }
