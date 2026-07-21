@@ -46,13 +46,20 @@ controls, how to read the display, and configuring settings.
 
 ## Architecture
 
-- `src/data.rs` — background worker: poll S3 → download → decode → channel
-- `src/model.rs` — thin scan model (product → sweeps → radials → gates)
-- `src/scope.rs` — PPI rasterizer and overlay painting
-- `src/colors.rs` — NWS-style color tables
-- `src/geo.rs` — range/bearing and polar→screen projection
-- `src/app.rs` — egui application state and layout
-- `src/borders.rs` — fetches/caches US state boundary lines for the scope overlay
+The app is the `rustywx` crate under `ply-spike/` (ply-engine backend):
+
+- `ply-spike/src/main.rs` — app entry, async game loop, and frame drawing
+- `ply-spike/src/state.rs` — app state (selected site, overlays, animation)
+- `ply-spike/src/data.rs` — background worker: poll S3 → download → decode → channel
+- `ply-spike/src/model.rs` — thin scan model (product → sweeps → radials → gates)
+- `ply-spike/src/scope.rs` — PPI rasterizer and overlay painting
+- `ply-spike/src/colors.rs` — NWS-style color tables
+- `ply-spike/src/geo.rs` — range/bearing and polar→screen projection
+- `ply-spike/src/cities.rs` — city markers for the scope overlay
+- `ply-spike/src/borders.rs` — fetches/caches US state boundary lines for the overlay
+- `ply-spike/src/alerts.rs`, `nhc.rs` — NWS alerts and NHC tropical overlays
+- `ply-spike/src/cache.rs`, `rle.rs` — Ply-storage scan cache + RLE compression
+- `ply-spike/src/widgets/` — reusable glass-panel UI widgets
 
 Design docs live in `docs/superpowers/`. For build/test/lint commands, the
 module map, and how to extend the app, see

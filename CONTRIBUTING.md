@@ -3,7 +3,7 @@
 This is a reference for working on rustywx's code: building, testing, the
 module layout, the invariants worth knowing before you touch something, and
 how to extend it. For what the app *does* from a user's perspective, see
-[`docs/USER_GUIDE.md`](docs/USER_GUIDE.md).
+[`USER_GUIDE.md`](USER_GUIDE.md).
 
 ## Prerequisites
 
