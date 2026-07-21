@@ -86,7 +86,7 @@ impl DropdownState {
         }
 
         let filtered = self.filtered_indices(options);
-        let visible = self.visible_indices(&filtered, config.visible_rows);
+        let visible = self.visible_range(filtered.len(), config.visible_rows);
 
         ui.element()
             .id(config.panel_id)
@@ -135,7 +135,7 @@ impl DropdownState {
                     return;
                 }
 
-                for &option_position in visible {
+                for option_position in visible.clone() {
                     let option = &options[filtered[option_position]];
                     let highlighted = option_position == self.cursor
                         || selected_index == Some(option.source_index);
@@ -215,8 +215,8 @@ impl DropdownState {
             }
             self.keep_cursor_visible(filtered.len(), config.visible_rows);
 
-            let visible = self.visible_indices(&filtered, config.visible_rows);
-            for &option_position in visible {
+            let visible = self.visible_range(filtered.len(), config.visible_rows);
+            for option_position in visible {
                 let option = &options[filtered[option_position]];
                 if ply.is_just_pressed((config.option_id, option.source_index as u32)) {
                     let selection = option.source_index;
@@ -254,10 +254,13 @@ impl DropdownState {
             .collect()
     }
 
-    fn visible_indices<'a>(&self, filtered: &'a [usize], visible_rows: usize) -> &'a [usize] {
-        let max_scroll = filtered.len().saturating_sub(visible_rows);
+    /// The window of *positions into `filtered`* currently visible, honoring
+    /// scroll. Callers index `filtered[position]` to get the option index, so
+    /// this returns positions (0..filtered.len()), not the filtered values.
+    fn visible_range(&self, filtered_len: usize, visible_rows: usize) -> std::ops::Range<usize> {
+        let max_scroll = filtered_len.saturating_sub(visible_rows);
         let scroll = self.scroll.min(max_scroll);
-        &filtered[scroll..(scroll + visible_rows).min(filtered.len())]
+        scroll..(scroll + visible_rows).min(filtered_len)
     }
 
     fn keep_cursor_visible(&mut self, option_count: usize, visible_rows: usize) {
@@ -295,6 +298,37 @@ mod tests {
             ..DropdownState::default()
         };
         assert_eq!(state.filtered_indices(&options), vec![1]);
+    }
+
+    #[test]
+    fn visible_range_maps_through_filtered_without_out_of_bounds() {
+        // Regression: visible_range yields POSITIONS into `filtered`; callers
+        // do options[filtered[position]]. With a filter active the option
+        // indices differ from positions — this must stay in bounds and pick
+        // the right options (the old code re-indexed filtered by its values).
+        let opt = |i: usize, s: &str| DropdownOption {
+            source_index: i,
+            label: format!("opt{i}"),
+            search_text: s.to_string(),
+        };
+        let options = [
+            opt(0, "alpha"),
+            opt(1, "bravo match"),
+            opt(2, "charlie"),
+            opt(3, "delta"),
+            opt(4, "echo match"),
+        ];
+        let state = DropdownState {
+            filter: "match".to_string(),
+            ..DropdownState::default()
+        };
+        let filtered = state.filtered_indices(&options); // [1, 4]
+        assert_eq!(filtered, vec![1, 4]);
+        let visible = state.visible_range(filtered.len(), 10); // 0..2 (positions)
+        let picked: Vec<usize> = visible
+            .map(|position| options[filtered[position]].source_index)
+            .collect();
+        assert_eq!(picked, vec![1, 4]);
     }
 
     #[test]
