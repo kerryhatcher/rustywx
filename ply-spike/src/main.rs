@@ -14,7 +14,7 @@ use rustywx::geo;
 use rustywx::model::{Product, RadialData, SweepData, vcp_mode_label, format_nyquist_velocity};
 use rustywx::nhc;
 use rustywx::scope;
-use rustywx::settings::Settings;
+use rustywx::settings::{AnimationLevel, Settings};
 use rustywx::state::{AppState, NhcModal};
 use rustywx::widgets::dropdown::{DropdownConfig, DropdownOption, DropdownState};
 use rustywx::widgets::glass_panel;
@@ -22,6 +22,7 @@ use rustywx::widgets::settings as settings_widget;
 use rustywx::widgets::toggle::{self, ToggleOption};
 use std::collections::HashMap;
 use std::sync::mpsc;
+use std::time::Duration;
 
 const SITE_DROPDOWN: DropdownConfig = DropdownConfig {
     button_id: "site-dropdown-btn",
@@ -290,10 +291,24 @@ async fn main() {
         .position(|s| s.id == "KFFC")
         .unwrap_or(0);
     let initial_site = geo::RADAR_SITES[default_site_index].id.to_string();
-    data::spawn_worker(worker_tx, initial_site.clone(), site_rx);
 
     // ── Open disk cache ────────────────────────────────────────
     let cache = Cache::new().await.expect("Ply storage initialisation");
+
+    // Read the persisted poll interval synchronously (a tiny local read)
+    // so the worker thread starts with the user's setting rather than
+    // always falling back to `data::POLL_INTERVAL`.
+    // ponytail: this re-reads settings.json a second time via the async
+    // `pending_settings_load` below; simplest fix given the worker thread
+    // needs the interval before that load resolves.
+    let boot_poll_interval = cache
+        .load_settings()
+        .await
+        .ok()
+        .flatten()
+        .map(|s| Duration::from_secs(s.poll_interval_secs))
+        .unwrap_or(data::POLL_INTERVAL);
+    data::spawn_worker(worker_tx, initial_site.clone(), site_rx, boot_poll_interval);
 
     // Kick off a non-blocking load of the last-cached scan for the
     // initial site so we have something to show before the first
@@ -380,7 +395,13 @@ async fn main() {
         clear_background(MacroquadColor::new(0.031, 0.039, 0.059, 1.0));
 
         let now = get_time();
-        let entrance = ease_out_cubic(((now - state.start_time) / 0.6).clamp(0.0, 1.0) as f32);
+        // `None` renders the settled/final state immediately; `Subtle` and
+        // `Full` both ease in (Subtle just skips the sweep line below).
+        let entrance = if state.settings.animation_level == AnimationLevel::None {
+            1.0
+        } else {
+            ease_out_cubic(((now - state.start_time) / 0.6).clamp(0.0, 1.0) as f32)
+        };
 
         // Stage 6: animation timing + hover tracking.
         state.sweep_angle = (state.sweep_angle + 0.6) % 360.0;
@@ -456,6 +477,9 @@ async fn main() {
             state.show_borders = state.settings.show_borders;
             state.show_alerts = state.settings.show_alerts;
             state.nhc_show_panel = state.settings.show_nhc;
+            // The initial raster (if any) used the default TDBZ kernel size
+            // before this load resolved — redo it with the loaded setting.
+            state.needs_reraster = true;
         }
 
         // ── Poll worker messages ──────────────────────────────────
@@ -562,7 +586,7 @@ async fn main() {
         // ── Fire NHC fetch if not yet started or refresh interval elapsed ─
         if !state.nhc_fetch_fired
             && (state.nhc_bundle.is_none()
-                || now - state.nhc_last_poll > nhc::POLL_INTERVAL.as_secs() as f64)
+                || now - state.nhc_last_poll > state.settings.nhc_refresh_secs as f64)
         {
             state.nhc_fetch.start();
             state.nhc_fetch_fired = true;
@@ -626,6 +650,7 @@ async fn main() {
                 state.product,
                 scope::RASTER_SIZE_PX,
                 scope::MAX_RANGE_KM,
+                state.settings.tdbz_kernel.size() as usize,
             );
             let tex = Texture2D::from_rgba8(
                 scope::RASTER_SIZE_PX as u16,
@@ -649,8 +674,11 @@ async fn main() {
             state.nhc_bundle.as_ref().map(|b| (b, &state.nhc_overlays)),
         );
 
-        // Radar sweep line (optional observatory visual flourish).
-        draw_radar_sweep(state.pan_km, state.zoom, state.sweep_angle, entrance);
+        // Radar sweep line (optional observatory visual flourish) — dropped
+        // under Subtle and None, kept only at Full.
+        if state.settings.animation_level == AnimationLevel::Full {
+            draw_radar_sweep(state.pan_km, state.zoom, state.sweep_angle, entrance);
+        }
 
         // Build frame-local control options before borrowing Ply for layout.
         let site_options: Vec<DropdownOption> = geo::RADAR_SITES
@@ -868,7 +896,13 @@ async fn main() {
                         screen_height() - 60.0
                     };
                     let slide_t = ((now - state.nhc_anim_start) / 0.5).clamp(0.0, 1.0) as f32;
-                    let slide = ease_out_elastic(slide_t);
+                    // Full = bouncy spring; Subtle = damped (no overshoot);
+                    // None = appear instantly in the final position.
+                    let slide = match state.settings.animation_level {
+                        AnimationLevel::Full => ease_out_elastic(slide_t),
+                        AnimationLevel::Subtle => ease_out_cubic(slide_t),
+                        AnimationLevel::None => 1.0,
+                    };
                     let final_x = if is_mobile {
                         0.0
                     } else {
@@ -1349,8 +1383,14 @@ async fn main() {
                         let has_real = state.scan.is_some();
                         let base_status = if has_real { 0x5F8A6A } else { 0x9E9590 };
                         // Pulse toward accent colour for ~1.2s after new data.
-                        let pulse =
+                        // Subtle halves the intensity; None disables it.
+                        let raw_pulse =
                             (1.2 - (now - state.pulse_time).max(0.0)).clamp(0.0, 1.0) as f32;
+                        let pulse = match state.settings.animation_level {
+                            AnimationLevel::Full => raw_pulse,
+                            AnimationLevel::Subtle => raw_pulse * 0.5,
+                            AnimationLevel::None => 0.0,
+                        };
                         let status_color = if pulse > 0.0 && state.pulse_time > 0.0 {
                             blend_hex(base_status, 0x0dc5b8, pulse)
                         } else {
@@ -1646,6 +1686,7 @@ fn handle_input(
         if ply.is_just_pressed(settings_widget::TDBZ_CYCLE_ID) {
             state.settings.tdbz_kernel = state.settings.tdbz_kernel.next();
             state.cache.save_settings(&state.settings);
+            state.needs_reraster = true;
         }
         if ply.is_just_pressed(settings_widget::USE_CURRENT_SITE_ID) {
             state.settings.default_site = geo::RADAR_SITES[state.site_index].id.to_string();

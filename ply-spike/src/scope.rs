@@ -23,7 +23,7 @@ pub const RASTER_SIZE_PX: usize = 1024;
 // Rasterization
 // ---------------------------------------------------------------------------
 
-fn clean_sweep(sweep: &SweepData, product: Product) -> SweepData {
+fn clean_sweep(sweep: &SweepData, product: Product, tdbz_kernel_size: usize) -> SweepData {
     let mut cleaned = SweepData {
         elevation_deg: sweep.elevation_deg,
         radials: sweep.radials.clone(),
@@ -49,11 +49,10 @@ fn clean_sweep(sweep: &SweepData, product: Product) -> SweepData {
         }
     }
 
-    const TDBZ_KERNEL: usize = 9;
     const TDBZ_THRESHOLD: f32 = 25.0;
     for radial in &mut cleaned.radials {
         let n = radial.gates.len();
-        let half = TDBZ_KERNEL / 2;
+        let half = tdbz_kernel_size / 2;
         let mut tdbz = vec![0.0f32; n];
         for (i, tdbz_slot) in tdbz.iter_mut().enumerate() {
             let start = i.saturating_sub(half);
@@ -89,8 +88,9 @@ pub fn rasterize(
     product: Product,
     size_px: usize,
     max_range_km: f32,
+    tdbz_kernel_size: usize,
 ) -> Vec<u8> {
-    let sweep = clean_sweep(sweep, product);
+    let sweep = clean_sweep(sweep, product, tdbz_kernel_size);
     let mut pixels = vec![0u8; size_px * size_px * 4];
 
     if sweep.radials.is_empty() {
@@ -1027,5 +1027,29 @@ mod tests {
         let r2 = radial(1.0, vec![Some(20.0)]);
         // gate 5 is out of range for both → None
         assert!(bilinear_sample(&r1, &r2, 0.5, 0.5, 5, 0.5).is_none());
+    }
+
+    #[test]
+    fn tdbz_kernel_size_widens_clutter_removal_footprint() {
+        // A single spike gate surrounded by uniform reflectivity: a wider
+        // TDBZ kernel averages over more gate-pairs per position, so the
+        // spike's influence (and thus clutter removal) spreads further.
+        let mut gates = vec![Some(20.0); 21];
+        gates[10] = Some(80.0);
+        let sweep = SweepData {
+            elevation_deg: 0.0,
+            radials: vec![radial(0.0, gates)],
+        };
+
+        let removed_count = |kernel_size: usize| {
+            clean_sweep(&sweep, Product::Reflectivity, kernel_size).radials[0]
+                .gates
+                .iter()
+                .filter(|g| g.is_none())
+                .count()
+        };
+
+        assert_eq!(removed_count(5), 5);
+        assert_eq!(removed_count(13), 13);
     }
 }

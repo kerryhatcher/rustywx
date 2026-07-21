@@ -1,16 +1,16 @@
 //! User-configurable settings, persisted via Ply `storage` (see `cache.rs`).
 //!
-//! Stage 7 foundation: the schema and persistence plumbing land here first;
-//! the settings panel (`widgets/settings.rs`) reads/writes this struct, and
-//! later Stage 7 tasks consume the fields that aren't wired to behaviour yet
+//! The settings panel (`widgets/settings.rs`) reads/writes this struct;
+//! `main.rs` and `data.rs` consume the fields to drive actual behaviour
 //! (`animation_level`, `tdbz_kernel`, poll intervals).
 
 use serde::{Deserialize, Serialize};
 
 /// How much motion the Stage 6 "Observatory Look" animations use.
 ///
-/// `// Stage 7: consumed by the animation/easing code in main.rs (pending)`
-/// — no animation currently reads this; it's stored for that later task.
+/// Consumed by the animation/easing code in `main.rs`: `Full` is the
+/// original behaviour, `Subtle` keeps fades but drops the sweep line and
+/// spring bounce, `None` renders the final/static state with no motion.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AnimationLevel {
     #[default]
@@ -21,9 +21,8 @@ pub enum AnimationLevel {
 
 /// TDBZ clutter-filter kernel size preset (see `scope.rs`).
 ///
-/// `// Stage 7: consumed by the TDBZ filter in scope.rs (pending)` — the
-/// filter is currently hardcoded to 9×9; a later task reads
-/// [`TdbzKernel::size`] instead.
+/// [`TdbzKernel::size`] is passed into `scope::rasterize` from the `main.rs`
+/// call site on every re-raster.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TdbzKernel {
     Sensitive,
@@ -88,11 +87,14 @@ pub struct Settings {
     pub default_site: String,
     /// Seconds between background radar-scan polls.
     ///
-    /// `// Stage 7: consumed by data.rs POLL_INTERVAL (pending)`
+    /// Read once at startup and threaded into `data::spawn_worker` as the
+    /// healthy-poll `Duration` (see `main.rs`); `data::POLL_INTERVAL`
+    /// remains the fallback used before the persisted value loads.
     pub poll_interval_secs: u64,
     /// Seconds between NHC tropical-data refreshes.
     ///
-    /// `// Stage 7: consumed by nhc.rs POLL_INTERVAL (pending)`
+    /// Read every frame in `main.rs`'s NHC-fetch-scheduling block in place
+    /// of `nhc::POLL_INTERVAL`.
     pub nhc_refresh_secs: u64,
     /// Whether state borders are shown by default at startup.
     pub show_borders: bool,
