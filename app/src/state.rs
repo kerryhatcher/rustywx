@@ -89,6 +89,10 @@ pub struct AppState {
     pub alerts_fetch_fired: bool,
     /// Wall-clock time (seconds) of the last alerts refresh.
     pub last_alert_poll: f64,
+    /// Whether the Radar controls side panel is visible.
+    pub show_radar: bool,
+    /// Radar panel open/close animation start time (0 = not animating).
+    pub radar_anim_start: f64,
     /// Toggle: show state borders on the scope.
     pub show_borders: bool,
     /// Toggle: show NWS alert polygons on the scope.

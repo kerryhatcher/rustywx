@@ -78,6 +78,11 @@ impl AnimationLevel {
     }
 }
 
+/// Serde default for [`Settings::show_radar`] (missing in older config files).
+fn default_show_radar() -> bool {
+    true
+}
+
 /// User-configurable app settings, persisted as `"settings.json"` via
 /// [`crate::cache::Cache::save_settings`] / [`crate::cache::Cache::load_settings`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -102,6 +107,11 @@ pub struct Settings {
     pub show_alerts: bool,
     /// Whether the NHC tropical panel is shown by default at startup.
     pub show_nhc: bool,
+    /// Whether the Radar controls side panel is shown by default at startup.
+    /// Defaults `true` (open) so the radar controls stay discoverable after
+    /// moving off the main controls bar.
+    #[serde(default = "default_show_radar")]
+    pub show_radar: bool,
     /// Observatory-look animation intensity.
     pub animation_level: AnimationLevel,
     /// TDBZ clutter-filter kernel size preset.
@@ -135,6 +145,7 @@ impl Default for Settings {
             show_borders: true,
             show_alerts: true,
             show_nhc: false,
+            show_radar: true,
             animation_level: AnimationLevel::default(),
             tdbz_kernel: TdbzKernel::default(),
             dyslexic_font: false,
@@ -158,6 +169,7 @@ mod tests {
         assert!(settings.show_borders);
         assert!(settings.show_alerts);
         assert!(!settings.show_nhc);
+        assert!(settings.show_radar);
         assert_eq!(settings.animation_level, AnimationLevel::Full);
         assert_eq!(settings.tdbz_kernel, TdbzKernel::Default);
         assert_eq!(settings.tdbz_kernel.size(), 9);
@@ -172,6 +184,7 @@ mod tests {
             show_borders: false,
             show_alerts: true,
             show_nhc: true,
+            show_radar: false,
             animation_level: AnimationLevel::Subtle,
             tdbz_kernel: TdbzKernel::Aggressive,
             dyslexic_font: true,
@@ -215,5 +228,7 @@ mod tests {
         let s: Settings = serde_json::from_str(json).expect("back-compat deserialize");
         assert!(s.user_lat.is_none());
         assert!(!s.center_on_location);
+        // Missing show_radar defaults to open.
+        assert!(s.show_radar);
     }
 }

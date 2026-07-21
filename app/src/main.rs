@@ -392,6 +392,8 @@ async fn main() {
         alerts_loaded: false,
         alerts_fetch_fired: false,
         last_alert_poll: 0.0,
+        show_radar: true,
+        radar_anim_start: 0.0,
         show_borders: true,
         show_alerts: true,
         fullscreen: false,
@@ -540,6 +542,7 @@ async fn main() {
             state.show_borders = state.settings.show_borders;
             state.show_alerts = state.settings.show_alerts;
             state.nhc_show_panel = state.settings.show_nhc;
+            state.show_radar = state.settings.show_radar;
             state.show_location = state.settings.show_location;
             // Restore last known location from settings without any
             // network call — the resolver chain runs only on Detect.
@@ -844,33 +847,31 @@ async fn main() {
                             .wrap_gap(6)
                     })
                     .children(|ui| {
-                        state.site_dropdown.draw(
-                            ui,
-                            SITE_DROPDOWN,
-                            site.id,
-                            &site_options,
-                            Some(state.site_index),
+                        // ── Radar toggle button ──────────────────────────
+                        // The radar controls (site / product / tilt) now live
+                        // in the slide-in Radar panel; this button opens it.
+                        let radar_bg = hover_tint(
+                            &state.hovered_ids,
+                            "btn-radar",
+                            if state.show_radar { 0x0dc5b8 } else { 0x1E1B1B },
+                            0x1E1B1B,
                         );
-
-                        // Wide, low-priority readouts are hidden on narrow windows
-                        // (the site id is still shown in the dropdown above).
-                        if !is_mobile {
-                            ui.text(&format!("— {}", site.name), |text| {
-                                text.font_size(14).color(0xE8E0DC)
+                        let radar_label = if state.show_radar {
+                            "Radar ✓"
+                        } else {
+                            "Radar"
+                        };
+                        ui.element()
+                            .id("btn-radar")
+                            .width(fit!())
+                            .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                            .background_color(radar_bg)
+                            .corner_radius(4.0)
+                            .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
+                            .accessibility(|a| a.button(radar_label).checked(state.show_radar))
+                            .children(|ui| {
+                                ui.text(radar_label, |text| text.font_size(12).color(0xE8E0DC));
                             });
-                        }
-
-                        toggle::draw(ui, state.product, &PRODUCT_OPTIONS);
-
-                        state.tilt_dropdown.draw(
-                            ui,
-                            TILT_DROPDOWN,
-                            tilt_label,
-                            &tilt_options,
-                            tilt_options
-                                .get(state.tilt_index)
-                                .map(|option| option.source_index),
-                        );
 
                         // Zoom/Pan readout lives in the bottom status bar.
 
@@ -1055,6 +1056,127 @@ async fn main() {
                                     });
                             });
                     });
+
+                // ── Radar slide-in panel ────────────────────────────────
+                if state.show_radar {
+                    if state.radar_anim_start == 0.0 {
+                        state.radar_anim_start = now;
+                    }
+                    let panel_w = if is_mobile { screen_width() } else { 320.0 };
+                    let panel_h = if is_mobile {
+                        screen_height()
+                    } else {
+                        screen_height() - 60.0
+                    };
+                    let panel_top = if is_mobile { 0.0 } else { 36.0 };
+                    let slide_t = ((now - state.radar_anim_start) / 0.5).clamp(0.0, 1.0) as f32;
+                    let slide = match state.settings.animation_level {
+                        AnimationLevel::Full => ease_out_elastic(slide_t),
+                        AnimationLevel::Subtle => ease_out_cubic(slide_t),
+                        AnimationLevel::None => 1.0,
+                    };
+                    let final_x = if is_mobile {
+                        0.0
+                    } else {
+                        screen_width() - panel_w - 8.0
+                    };
+                    let panel_x = final_x + (1.0 - slide) * (panel_w + 16.0);
+
+                    // Dropdown popups float in absolute screen space via
+                    // `attach_root`, so anchor them just left of the panel (a
+                    // flyout) near their button. Mobile has no room left, so
+                    // the popup opens over the panel at the left edge.
+                    // ponytail: hardcoded popup y per the fixed panel layout;
+                    // compute from measured element rects if it goes dynamic.
+                    let flyout_x = |popup_w: f32| {
+                        if is_mobile {
+                            8.0
+                        } else {
+                            screen_width() - panel_w - popup_w - 16.0
+                        }
+                    };
+                    // y ≈ each button's row: header(28)+name(18)+gaps put the
+                    // site button ~64px below the panel top; the 3 stacked
+                    // product buttons push tilt ~120px lower.
+                    let site_cfg = DropdownConfig {
+                        panel_offset: (flyout_x(SITE_DROPDOWN.width), panel_top + 64.0),
+                        ..SITE_DROPDOWN
+                    };
+                    let tilt_cfg = DropdownConfig {
+                        panel_offset: (flyout_x(TILT_DROPDOWN.width), panel_top + 184.0),
+                        ..TILT_DROPDOWN
+                    };
+
+                    glass_panel::glass(
+                        ui.element()
+                            .id("radar-panel")
+                            .width(fixed!(panel_w))
+                            .height(fixed!(panel_h)),
+                    )
+                    .floating(|floating| {
+                        floating
+                            .offset((panel_x, panel_top))
+                            .z_index(50)
+                            .attach_root()
+                    })
+                    .layout(|layout| layout.direction(TopToBottom).padding(8).gap(6))
+                    .overflow(|o| {
+                        o.scroll_y()
+                            .scrollbar(|s| s.width(6.0).thumb_color(0x4a4a4a).track_color(0x1a1a1a))
+                    })
+                    .children(|ui| {
+                        // Panel header
+                        ui.element()
+                            .width(grow!())
+                            .height(fixed!(28.0))
+                            .background_color(0x1E1B1B)
+                            .corner_radius(4.0)
+                            .layout(|layout| {
+                                layout
+                                    .padding((0, 8, 0, 8))
+                                    .direction(LeftToRight)
+                                    .gap(8)
+                                    .align(Left, CenterY)
+                            })
+                            .children(|ui| {
+                                ui.text(nf::RADAR, |text| {
+                                    text.font_size(15).font(&SYMBOL_FONT).color(0x0dc5b8)
+                                });
+                                let bold = if active_dyslexic {
+                                    &DYSLEXIC_BOLD
+                                } else {
+                                    &INTER_BOLD
+                                };
+                                ui.text("Radar", |text| {
+                                    text.font_size(14).font(bold).color(0xE8E0DC)
+                                });
+                            });
+
+                        ui.text(&format!("— {}", site.name), |text| {
+                            text.font_size(14).color(0xE8E0DC)
+                        });
+
+                        state.site_dropdown.draw(
+                            ui,
+                            site_cfg,
+                            site.id,
+                            &site_options,
+                            Some(state.site_index),
+                        );
+
+                        toggle::draw(ui, state.product, &PRODUCT_OPTIONS);
+
+                        state.tilt_dropdown.draw(
+                            ui,
+                            tilt_cfg,
+                            tilt_label,
+                            &tilt_options,
+                            tilt_options
+                                .get(state.tilt_index)
+                                .map(|option| option.source_index),
+                        );
+                    });
+                }
 
                 // ── NHC slide-in panel (Stage 5) ────────────────────────
                 if state.nhc_show_panel {
@@ -1827,8 +1949,14 @@ fn handle_input(
         || state.show_settings_panel
         || state.show_shortcuts;
     let over_nhc_panel = state.nhc_show_panel && ply.pointer_over("nhc-panel");
+    let over_radar_panel = state.show_radar && ply.pointer_over("radar-panel");
 
-    if !dropdown_open && !modal_open && !over_nhc_panel && is_mouse_button_down(MouseButton::Left) {
+    if !dropdown_open
+        && !modal_open
+        && !over_nhc_panel
+        && !over_radar_panel
+        && is_mouse_button_down(MouseButton::Left)
+    {
         let (mx, my) = mouse_position();
         if let Some((lx, ly)) = state.last_mouse_pos {
             let dx = mx - lx;
@@ -1972,15 +2100,36 @@ fn handle_input(
         miniquad::window::order_quit();
     }
 
+    // ── Radar toggle button ──────────────────────────────────────
+    if ply.is_just_pressed("btn-radar") {
+        state.show_radar = !state.show_radar;
+        // Replay the slide-in next open; drop open dropdowns on close so
+        // their floating popups don't linger.
+        state.radar_anim_start = 0.0;
+        if state.show_radar {
+            state.nhc_show_panel = false; // right-edge panels are exclusive
+        } else {
+            state.site_dropdown.close();
+            state.tilt_dropdown.close();
+        }
+        state.settings.show_radar = state.show_radar;
+        state.cache.save_settings(&state.settings);
+    }
+
     // ── NHC toggle button and keyboard shortcut (Stage 5) ────────
     if ply.is_just_pressed("btn-nhc") {
         state.nhc_show_panel = !state.nhc_show_panel;
         if !state.nhc_show_panel {
             state.nhc_anim_start = 0.0;
+        } else {
+            state.show_radar = false; // right-edge panels are exclusive
         }
     }
     if !dropdown_open && !state.location_input_focused && is_key_pressed(KeyCode::N) {
         state.nhc_show_panel = !state.nhc_show_panel;
+        if state.nhc_show_panel {
+            state.show_radar = false;
+        }
     }
 
     // ── Settings gear button and modal (Stage 7) ──────────────────
