@@ -259,15 +259,22 @@ pub fn parse_forecast(json: &str) -> Result<Forecast> {
 /// Pure (no GPU/ply) so it is unit-testable; the caller wraps the bytes in a
 /// `Texture2D` for display. Colors match the forecast view (line `0x6F9FE0`).
 pub fn render_hourly_chart(hours: &[Hour], w: usize, h: usize) -> Vec<u8> {
-    let mut buf = vec![0u8; w * h * 4]; // transparent
+    // Opaque panel-colored background — ply's `.image` does not alpha-composite
+    // a transparent texture, so bake the background in (matches the opaque-PNG
+    // path NHC thumbnails use).
+    const BG: [u8; 4] = [0x1E, 0x1B, 0x1B, 0xFF];
+    let mut buf = vec![0u8; w * h * 4];
+    for px in buf.chunks_exact_mut(4) {
+        px.copy_from_slice(&BG);
+    }
     if hours.is_empty() || w < 8 || h < 8 {
         return buf;
     }
 
     const LINE: [u8; 4] = [0x8F, 0xC0, 0xFF, 0xFF]; // bright blue line/dots
-    const FILL: [u8; 4] = [0x6F, 0x9F, 0xE0, 0x3A]; // translucent area under line
-    const GRID: [u8; 4] = [0xFF, 0xFF, 0xFF, 0x16]; // faint horizontal quartiles
-    const DAY: [u8; 4] = [0xFF, 0xFF, 0xFF, 0x40]; // day-boundary verticals
+    const FILL: [u8; 4] = [0x6F, 0x9F, 0xE0, 0x55]; // translucent area under line
+    const GRID: [u8; 4] = [0xFF, 0xFF, 0xFF, 0x22]; // faint horizontal quartiles
+    const DAY: [u8; 4] = [0x0d, 0xc5, 0xb8, 0x66]; // teal day-boundary verticals
     let margin = 8usize;
     let plot_w = w.saturating_sub(2 * margin).max(1);
     let plot_h = h.saturating_sub(2 * margin).max(1);
@@ -456,17 +463,20 @@ mod tests {
         let (w, h) = (120, 60);
         let buf = render_hourly_chart(&hours, w, h);
         assert_eq!(buf.len(), w * h * 4);
-        // The 100% hour must paint a blue dot near the top (small y); scan the
-        // top rows for any non-transparent pixel.
-        let top_has_ink = (0..h / 3).any(|y| (0..w).any(|x| buf[(y * w + x) * 4 + 3] != 0));
-        assert!(top_has_ink, "100% hour should ink near the top");
+        // The 100% hour must paint the bright-blue line near the top; scan the
+        // top rows for a strongly-blue pixel (distinct from the dark bg).
+        let is_line = |i: usize| buf[i * 4] > 0x60 && buf[i * 4 + 1] > 0x90 && buf[i * 4 + 2] > 0xD0;
+        let top_has_line = (0..h / 3).any(|y| (0..w).any(|x| is_line(y * w + x)));
+        assert!(top_has_line, "100% hour should ink the line near the top");
     }
 
     #[test]
-    fn render_hourly_chart_empty_is_transparent() {
+    fn render_hourly_chart_empty_is_opaque_background() {
+        // Empty input → an opaque panel-colored buffer (ply won't composite a
+        // transparent texture), no line pixels.
         let buf = render_hourly_chart(&[], 120, 60);
         assert_eq!(buf.len(), 120 * 60 * 4);
-        assert!(buf.iter().all(|&b| b == 0));
+        assert!(buf.chunks_exact(4).all(|p| p == [0x1E, 0x1B, 0x1B, 0xFF]));
     }
 
     #[test]
