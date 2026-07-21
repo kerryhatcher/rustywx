@@ -107,7 +107,7 @@ pub fn draw(ui: &mut Ui<'_, ()>, toast: &Toast, opacity: f32) {
                 .live_region_assertive()
         })
         .children(|ui| {
-            ui.text("⚠", |t| {
+            ui.text(super::nf::WARNING, |t| {
                 t.font_size(14).font(&super::SYMBOL_FONT).color(accent)
             });
             ui.text(&toast.message, |t| t.font_size(12).color(text_color));

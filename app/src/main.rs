@@ -16,13 +16,13 @@ use rustywx::nhc;
 use rustywx::scope;
 use rustywx::settings::{AnimationLevel, Settings};
 use rustywx::state::{AppState, NhcModal};
-use rustywx::widgets::SYMBOL_FONT;
 use rustywx::widgets::dropdown::{DropdownConfig, DropdownOption, DropdownState};
 use rustywx::widgets::glass_panel;
 use rustywx::widgets::settings as settings_widget;
 use rustywx::widgets::shortcuts as shortcuts_widget;
 use rustywx::widgets::toast as toast_widget;
 use rustywx::widgets::toggle::{self, ToggleOption};
+use rustywx::widgets::{SYMBOL_FONT, nf};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -947,8 +947,8 @@ async fn main() {
                                     .align(Left, CenterY)
                             })
                             .children(|ui| {
-                                ui.text("◉", |text| {
-                                    text.font_size(14).font(&SYMBOL_FONT).color(0x0dc5b8)
+                                ui.text(nf::HURRICANE, |text| {
+                                    text.font_size(15).font(&SYMBOL_FONT).color(0x0dc5b8)
                                 });
                                 ui.text("NHC Tropical Cyclones", |text| {
                                     text.font_size(14).font(&INTER_BOLD).color(0xE8E0DC)
@@ -1065,7 +1065,7 @@ async fn main() {
                                             ui.text("NHC Graphics Page", |t| {
                                                 t.font_size(11).color(0x4a90d9)
                                             });
-                                            ui.text("↗", |t| {
+                                            ui.text(nf::EXTERNAL_LINK, |t| {
                                                 t.font_size(11).font(&SYMBOL_FONT).color(0x4a90d9)
                                             });
                                         });
@@ -1295,7 +1295,7 @@ async fn main() {
                                         .corner_radius(4.0)
                                         .layout(|l| l.align(CenterX, CenterY))
                                         .children(|ui| {
-                                            ui.text("✕", |t| {
+                                            ui.text(nf::CLOSE, |t| {
                                                 t.font_size(14).font(&SYMBOL_FONT).color(0xE8E0DC)
                                             });
                                         });
@@ -1359,7 +1359,7 @@ async fn main() {
                                             ui.text("Open in browser", |t| {
                                                 t.font_size(12).color(0x88aaff)
                                             });
-                                            ui.text("↗", |t| {
+                                            ui.text(nf::EXTERNAL_LINK, |t| {
                                                 t.font_size(12).font(&SYMBOL_FONT).color(0x88aaff)
                                             });
                                         });
@@ -1391,12 +1391,13 @@ async fn main() {
                     ui.element()
                         .width(grow!())
                         .height(grow!())
-                        .layout(|l| l.align(CenterX, CenterY))
+                        .layout(|l| l.gap(8).align(CenterX, CenterY))
                         .children(|ui| {
                             let pulse = (0.5 + 0.5 * (now * 2.0).sin()) as f32;
                             let c = blend_hex(0x9E9590, 0x0dc5b8, pulse);
-                            ui.text("◌ Loading radar data…", |t| {
-                                t.font_size(18).font(&SYMBOL_FONT).color(c)
+                            ui.text(nf::RADAR, |t| t.font_size(18).font(&SYMBOL_FONT).color(c));
+                            ui.text("Loading radar data…", |t| {
+                                t.font_size(18).font(&MONO_FONT).color(c)
                             });
                         });
                 } else {
@@ -1509,8 +1510,8 @@ async fn main() {
                             .layout(|layout| layout.align(CenterX, CenterY))
                             .accessibility(|a| a.button("Settings"))
                             .children(|ui| {
-                                ui.text("⚙", |text| {
-                                    text.font_size(20).font(&SYMBOL_FONT).color(0xE8E0DC)
+                                ui.text(nf::GEAR, |text| {
+                                    text.font_size(18).font(&SYMBOL_FONT).color(0xE8E0DC)
                                 });
                             });
                     });

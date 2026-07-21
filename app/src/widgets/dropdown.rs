@@ -77,8 +77,13 @@ impl DropdownState {
             .accessibility(|a| a.button(button_label))
             .children(|ui| {
                 ui.text(button_label, |text| text.font_size(12).color(TEXT_COLOR));
-                // Caret uses the symbol font (Inter lacks ▾/▴).
-                ui.text(if self.open { "▴" } else { "▾" }, |text| {
+                // Caret uses the Nerd Font symbol font (Inter has no glyph).
+                let caret = if self.open {
+                    super::nf::CHEVRON_UP
+                } else {
+                    super::nf::CHEVRON_DOWN
+                };
+                ui.text(caret, |text| {
                     text.font_size(10)
                         .font(&super::SYMBOL_FONT)
                         .color(TEXT_COLOR)

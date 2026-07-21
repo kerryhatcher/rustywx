@@ -73,7 +73,7 @@ fn cycle_button(ui: &mut Ui<'_, ()>, id: &'static str, label: &str) {
         .accessibility(|a| a.button(label))
         .children(|ui| {
             ui.text(label, |t| t.font_size(12).color(TEXT_COLOR));
-            ui.text("↻", |t| {
+            ui.text(super::nf::REFRESH, |t| {
                 t.font_size(12).font(&super::SYMBOL_FONT).color(TEXT_COLOR)
             });
         });
@@ -124,7 +124,7 @@ pub fn draw(ui: &mut Ui<'_, ()>, settings: &Settings, current_site_id: &str) {
                         .layout(|l| l.align(CenterX, CenterY))
                         .accessibility(|a| a.button("Close settings"))
                         .children(|ui| {
-                            ui.text("✕", |t| {
+                            ui.text(super::nf::CLOSE, |t| {
                                 t.font_size(14).font(&super::SYMBOL_FONT).color(TEXT_COLOR)
                             });
                         });
