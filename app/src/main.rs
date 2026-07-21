@@ -1326,6 +1326,125 @@ async fn main() {
                             });
                     });
 
+                // ── Forecast full-screen view ───────────────────────────
+                if state.view_mode == ViewMode::Forecast {
+                    glass_panel::glass(ui.element().width(grow!()).height(grow!()))
+                        .layout(|layout| {
+                            layout
+                                .direction(TopToBottom)
+                                .padding(24)
+                                .gap(20)
+                                .align(CenterX, Top)
+                        })
+                        .children(|ui| {
+                            // Search row.
+                            let search_bg = hover_tint(
+                                &state.hovered_ids,
+                                "fc-search",
+                                if state.fc_search_focused { 0x2A2727 } else { 0x1E1B1B },
+                                0x2A2727,
+                            );
+                            let search_display = if state.fc_search_text.is_empty() {
+                                "Search a city…".to_string()
+                            } else {
+                                state.fc_search_text.clone()
+                            };
+                            ui.element()
+                                .id("fc-search")
+                                .width(fixed!(360.0))
+                                .height(fixed!(32.0))
+                                .background_color(search_bg)
+                                .corner_radius(6.0)
+                                .layout(|layout| {
+                                    layout.padding((0, 10, 0, 10)).align(Left, CenterY)
+                                })
+                                .accessibility(|a| a.button(&search_display))
+                                .children(|ui| {
+                                    ui.text(&search_display, |t| t.font_size(14).color(0xE8E0DC));
+                                });
+
+                            // Geocode results dropdown (if any).
+                            for (idx, hit) in state.fc_geo_hits.iter().enumerate() {
+                                let hit_id: Id = ("fc-hit", idx as u32).into();
+                                let hit_hovered = state.hovered_ids.contains(&hit_id);
+                                let hit_bg = if hit_hovered {
+                                    blend_hex(0x1E1B1B, 0x0dc5b8, 0.35)
+                                } else {
+                                    0x1E1B1B
+                                };
+                                ui.element()
+                                    .id(hit_id.clone())
+                                    .width(fixed!(360.0))
+                                    .height(fixed!(26.0))
+                                    .background_color(hit_bg)
+                                    .corner_radius(4.0)
+                                    .layout(|layout| layout.padding((0, 10, 0, 10)).align(Left, CenterY))
+                                    .accessibility(|a| a.button(&hit.label))
+                                    .children(|ui| {
+                                        ui.text(&hit.label, |t| t.font_size(13).color(0xC8C0BC));
+                                    });
+                            }
+
+                            // Body: current conditions + 7-day strip, or a status line.
+                            if let Some(err) = &state.forecast_error {
+                                ui.text(&format!("Couldn't load forecast: {err}"), |t| {
+                                    t.font_size(14).color(0xE08080)
+                                });
+                            } else if let Some(fc) = &state.forecast {
+                                // Current conditions.
+                                let (glyph, label) = forecast::wmo_icon(fc.current.code, fc.current.is_day);
+                                ui.text(&fc.place, |t| t.font_size(20).color(0xE8E0DC));
+                                ui.element()
+                                    .width(fit!())
+                                    .height(fit!())
+                                    .layout(|layout| layout.direction(LeftToRight).gap(16).align(CenterX, CenterY))
+                                    .children(|ui| {
+                                        ui.text(glyph, |t| t.font_size(48).font(&SYMBOL_FONT).color(0xE8E0DC));
+                                        ui.text(&format!("{:.0}°F", fc.current.temp), |t| {
+                                            t.font_size(48).color(0xE8E0DC)
+                                        });
+                                    });
+                                ui.text(
+                                    &format!(
+                                        "{label}   Feels {:.0}°   Wind {:.0} mph   Humidity {}%",
+                                        fc.current.feels_like, fc.current.wind, fc.current.humidity
+                                    ),
+                                    |t| t.font_size(14).color(0xC8C0BC),
+                                );
+
+                                // 7-day strip.
+                                ui.element()
+                                    .width(fit!())
+                                    .height(fit!())
+                                    .layout(|layout| layout.direction(LeftToRight).gap(12).align(CenterX, Top))
+                                    .children(|ui| {
+                                        for day in &fc.days {
+                                            let (dglyph, _dlabel) = forecast::wmo_icon(day.code, true);
+                                            ui.element()
+                                                .width(fixed!(72.0))
+                                                .height(fit!())
+                                                .background_color(0x1E1B1B)
+                                                .corner_radius(6.0)
+                                                .layout(|layout| {
+                                                    layout.direction(TopToBottom).padding(8).gap(6).align(CenterX, Top)
+                                                })
+                                                .children(|ui| {
+                                                    ui.text(&day.weekday, |t| t.font_size(13).color(0xE8E0DC));
+                                                    ui.text(dglyph, |t| t.font_size(22).font(&SYMBOL_FONT).color(0xE8E0DC));
+                                                    ui.text(&format!("{:.0}°", day.hi), |t| t.font_size(14).color(0xE8E0DC));
+                                                    ui.text(&format!("{:.0}°", day.lo), |t| t.font_size(13).color(0x9A9490));
+                                                    ui.text(&format!("{}%", day.precip_pct), |t| t.font_size(12).color(0x6F9FE0));
+                                                });
+                                        }
+                                    });
+                            } else if state.user_location.is_none() {
+                                ui.text("Detecting location…", |t| t.font_size(14).color(0xC8C0BC));
+                            } else {
+                                ui.text("Loading forecast…", |t| t.font_size(14).color(0xC8C0BC));
+                            }
+                        });
+                }
+
                 // ── Radar slide-in panel ────────────────────────────────
                 if state.radar_panel_open {
                     if state.radar_anim_start == 0.0 {
@@ -2703,6 +2822,104 @@ fn handle_input(
             state.cache.save_settings(&state.settings);
             if state.settings.center_on_location {
                 recenter_on_user(state);
+            }
+        }
+    }
+
+    // ── Forecast view: fetch, poll, and search input ────────────
+    if state.view_mode == ViewMode::Forecast {
+        // Target coords: a picked search hit sets forecast_coords directly
+        // (handled below); otherwise follow the app's user_location.
+        if let Some(target) = state.user_location {
+            let stale = state.forecast_coords != Some(target);
+            if stale && !state.forecast_fetch_fired {
+                // Derive a place label if we don't already have one.
+                if state.forecast_place.is_empty() {
+                    state.forecast_place = if !state.settings.location_input.is_empty() {
+                        state.settings.location_input.clone()
+                    } else {
+                        format!("{:.2}, {:.2}", target.lat, target.lon)
+                    };
+                }
+                forecast::fire_forecast(target);
+                state.forecast_fetch_fired = true;
+                state.forecast_error = None;
+                // Remember which coords we're fetching for.
+                state.forecast_coords = Some(target);
+            }
+        }
+        // Poll whichever coords we last fired for.
+        if state.forecast_fetch_fired
+            && let Some(coords) = state.forecast_coords
+        {
+            match forecast::poll_forecast(coords) {
+                Some(Ok(mut fc)) => {
+                    fc.place = state.forecast_place.clone();
+                    state.forecast = Some(fc);
+                    state.forecast_fetch_fired = false;
+                }
+                Some(Err(e)) => {
+                    state.forecast_error = Some(e.to_string());
+                    state.forecast_fetch_fired = false;
+                }
+                None => {}
+            }
+        }
+
+        // Search box focus (click) + typing.
+        if ply.is_just_pressed("fc-search") {
+            state.fc_search_focused = true;
+        }
+        if state.fc_search_focused {
+            while let Some(ch) = get_char_pressed() {
+                if !ch.is_control() && state.fc_search_text.len() < 48 {
+                    state.fc_search_text.push(ch);
+                }
+            }
+            if is_key_pressed(KeyCode::Backspace) {
+                state.fc_search_text.pop();
+            }
+            if is_key_pressed(KeyCode::Enter) {
+                state.fc_search_focused = false;
+                let q = state.fc_search_text.trim().to_string();
+                if !q.is_empty() {
+                    forecast::fire_geo(&q);
+                    state.fc_geo_fired = true;
+                }
+            }
+            if is_key_pressed(KeyCode::Escape) {
+                state.fc_search_focused = false;
+            }
+        }
+        // Poll geocode results.
+        if state.fc_geo_fired {
+            let q = state.fc_search_text.trim().to_string();
+            if !q.is_empty() {
+                match forecast::poll_geo(&q) {
+                    Some(Ok(hits)) => {
+                        state.fc_geo_hits = hits;
+                        state.fc_geo_fired = false;
+                    }
+                    Some(Err(_)) => {
+                        state.fc_geo_hits = Vec::new();
+                        state.fc_geo_fired = false;
+                    }
+                    None => {}
+                }
+            }
+        }
+        // Pick a search result.
+        for idx in 0..state.fc_geo_hits.len() {
+            if ply.is_just_pressed(("fc-hit", idx as u32)) {
+                let hit = state.fc_geo_hits[idx].clone();
+                state.user_location = Some(hit.coords);
+                state.forecast_place = hit.label;
+                state.forecast_coords = None; // force refetch for new coords
+                state.forecast_fetch_fired = false;
+                state.forecast = None;
+                state.fc_geo_hits = Vec::new();
+                state.fc_search_text.clear();
+                break;
             }
         }
     }
