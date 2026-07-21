@@ -39,7 +39,7 @@ geometry math, color banding, scan-model conversion, and rasterization, all
 using synthetic data built from `nexrad-model`'s public constructors — no
 network access needed, and they run in milliseconds.
 
-[`tests/network.rs`](ply-spike/tests/network.rs) is `#[ignore]`d by default because it
+[`tests/network.rs`](tests/network.rs) is `#[ignore]`d by default because it
 downloads and decodes a real volume from S3. Run it explicitly when you
 change anything in [`src/data.rs`](ply-spike/src/data.rs)'s fetch path, or after
 bumping the `nexrad-data`/`nexrad-model` dependency versions.
@@ -70,7 +70,7 @@ nexrad-data / nexrad-model (raw decode)
 ScanData (rustywx's own thin model)
       │  mpsc channel → UI thread
       ▼
-RadarApp (src/app.rs) — picks product + tilt, tracks what needs redrawing
+game loop (src/main.rs) + AppState (src/state.rs) — picks product + tilt, tracks what needs redrawing
       │  scope::rasterize (src/scope.rs)
       ▼
 pixel buffer → scope::draw_scope (overlays: rings, spokes, cities, borders, legend)
@@ -84,7 +84,9 @@ pixel buffer → scope::draw_scope (overlays: rings, spokes, cities, borders, le
 | [`src/colors.rs`](ply-spike/src/colors.rs) | NWS-style stepped color tables for dBZ and velocity, plus the lookup functions the rasterizer calls per-gate. |
 | [`src/geo.rs`](ply-spike/src/geo.rs) | Great-circle range/bearing (haversine) and polar-to-screen-pixel projection. Also holds the KJGX coordinates and the city list. |
 | [`src/borders.rs`](ply-spike/src/borders.rs) | Loads US state boundary lines for the scope overlay: checks `~/.rustywx/state_borders.geojson`, fetching it from the Census TIGERweb REST API on first run if missing, then reports parsed rings to the UI over its own one-shot channel. |
-| [`src/app.rs`](ply-spike/src/app.rs) | Ply-engine app: owns UI state (selected product/tilt, current scan, cached texture), drains worker messages, and manages the display. |
+| [`src/main.rs`](ply-spike/src/main.rs) | Ply-engine entry + async game loop: drains worker messages, polls caches/overlays, draws the scope and UI each frame. |
+| [`src/state.rs`](ply-spike/src/state.rs) | `AppState`: selected product/tilt/site, overlay toggles, settings, animation state, and the `needs_reraster` flag. |
+| [`src/cities.rs`](ply-spike/src/cities.rs) | City markers for the scope overlay (loaded from bundled GeoJSON). |
 
 ### Why a separate `ScanData` model instead of using `nexrad-model` directly
 
@@ -139,7 +141,7 @@ These aren't enforced by types, so it's easy to break them silently:
 4. Add a color table to `ply-spike/src/colors.rs` and wire it into the `color_of`
    match in `scope::rasterize` and the `legend`/`unit` match in
    `scope::draw_scope`.
-5. Add a button for it in `ply-spike/src/app.rs`'s control bar.
+5. Add a button for it in `ply-spike/src/main.rs`'s control bar.
 6. Add unit tests mirroring the existing ones in `model.rs`/`colors.rs`.
 
 **Add a new city marker:**
