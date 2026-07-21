@@ -19,6 +19,7 @@ use rustywx::state::{AppState, NhcModal};
 use rustywx::widgets::dropdown::{DropdownConfig, DropdownOption, DropdownState};
 use rustywx::widgets::glass_panel;
 use rustywx::widgets::settings as settings_widget;
+use rustywx::widgets::shortcuts as shortcuts_widget;
 use rustywx::widgets::toggle::{self, ToggleOption};
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -381,6 +382,7 @@ async fn main() {
         settings: Settings::default(),
         pending_settings_load,
         show_settings_panel: false,
+        show_shortcuts: false,
     };
 
     // Boot-time bookkeeping for applying loaded settings exactly once, and
@@ -1352,6 +1354,11 @@ async fn main() {
                     settings_widget::draw(ui, &state.settings, site.id);
                 }
 
+                // ── Keyboard shortcuts overlay (Stage 7) ────────────────────
+                if state.show_shortcuts {
+                    shortcuts_widget::draw(ui);
+                }
+
                 // ── Radar scope (transparent — drawn directly to screen) ──
                 // Loading skeleton: pulsing indicator while first scan loads.
                 if state.scan.is_none() {
@@ -1530,7 +1537,9 @@ fn handle_input(
     }
 
     let dropdown_open = state.site_dropdown.is_open() || state.tilt_dropdown.is_open();
-    let modal_open = !matches!(state.nhc_modal, NhcModal::None) || state.show_settings_panel;
+    let modal_open = !matches!(state.nhc_modal, NhcModal::None)
+        || state.show_settings_panel
+        || state.show_shortcuts;
     let over_nhc_panel = state.nhc_show_panel && ply.pointer_over("nhc-panel");
 
     if !dropdown_open && !modal_open && !over_nhc_panel && is_mouse_button_down(MouseButton::Left) {
@@ -1691,6 +1700,24 @@ fn handle_input(
         if ply.is_just_pressed(settings_widget::USE_CURRENT_SITE_ID) {
             state.settings.default_site = geo::RADAR_SITES[state.site_index].id.to_string();
             state.cache.save_settings(&state.settings);
+        }
+    }
+
+    // ── Keyboard shortcuts overlay (Stage 7) ─────────────────────────
+    // ? key (Shift+/) toggles the shortcuts overlay. If both settings and
+    // shortcuts would be open, close settings first for cleaner UX.
+    if !dropdown_open && is_key_pressed(KeyCode::Slash) && is_key_down(KeyCode::LeftShift) {
+        if state.show_settings_panel {
+            state.show_settings_panel = false;
+        }
+        state.show_shortcuts = !state.show_shortcuts;
+    }
+    if state.show_shortcuts {
+        if ply.is_just_pressed(shortcuts_widget::CLOSE_ID)
+            || ply.is_just_pressed(shortcuts_widget::BACKDROP_ID)
+            || is_key_pressed(KeyCode::Escape)
+        {
+            state.show_shortcuts = false;
         }
     }
 

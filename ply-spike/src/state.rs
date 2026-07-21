@@ -147,4 +147,6 @@ pub struct AppState {
     pub pending_settings_load: Option<oneshot::Receiver<Option<Settings>>>,
     /// Whether the settings panel modal is visible.
     pub show_settings_panel: bool,
+    /// Whether the keyboard shortcuts overlay is visible.
+    pub show_shortcuts: bool,
 }
