@@ -6,6 +6,8 @@ use crate::model::ScanData;
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use nexrad_data::aws::archive::{Identifier, download_file, list_files};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
@@ -86,13 +88,14 @@ pub async fn fetch_latest_scan(
 /// runtime; all communication with the UI is via `tx`.
 /// `site_rx` delivers site-change requests; `recv_timeout` is used so the
 /// worker wakes immediately when the user selects a new radar.
-/// `poll_interval` is the healthy-state delay between checks — normally
-/// `Settings.poll_interval_secs`, passed in by the caller (see `main.rs`).
+/// `poll_interval` is the healthy-state delay between checks, in seconds —
+/// a shared atomic the UI updates from `Settings.poll_interval_secs`, so a
+/// changed setting takes effect on the next cycle (see `main.rs`).
 pub fn spawn_worker(
     tx: Sender<WorkerMessage>,
     initial_site: String,
     site_rx: Receiver<String>,
-    poll_interval: Duration,
+    poll_interval: Arc<AtomicU64>,
 ) {
     std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -135,6 +138,8 @@ pub fn spawn_worker(
                 "Checking {site} for new data…"
             )));
 
+            // Read the live healthy interval (floored at 1s) each cycle.
+            let healthy = Duration::from_secs(poll_interval.load(Ordering::Relaxed).max(1));
             delay = match runtime.block_on(fetch_latest_scan(&site, last_timestamp)) {
                 Ok(Some(scan)) => {
                     consecutive_errors = 0;
@@ -143,16 +148,16 @@ pub fn spawn_worker(
                         site: site.clone(),
                         scan: Box::new(scan),
                     });
-                    retry_delay(consecutive_errors, poll_interval)
+                    retry_delay(consecutive_errors, healthy)
                 }
                 Ok(None) => {
                     consecutive_errors = 0;
                     let _ = tx.send(WorkerMessage::Status("Up to date".to_string()));
-                    retry_delay(consecutive_errors, poll_interval)
+                    retry_delay(consecutive_errors, healthy)
                 }
                 Err(e) => {
                     consecutive_errors += 1;
-                    let d = retry_delay(consecutive_errors, poll_interval);
+                    let d = retry_delay(consecutive_errors, healthy);
                     let _ = tx.send(WorkerMessage::Error(format!(
                         "{e:#} — retrying in {}s",
                         d.as_secs()

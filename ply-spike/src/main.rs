@@ -24,7 +24,8 @@ use rustywx::widgets::toast as toast_widget;
 use rustywx::widgets::toggle::{self, ToggleOption};
 use std::collections::HashMap;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const SITE_DROPDOWN: DropdownConfig = DropdownConfig {
     button_id: "site-dropdown-btn",
@@ -297,20 +298,19 @@ async fn main() {
     // ── Open disk cache ────────────────────────────────────────
     let cache = Cache::new().await.expect("Ply storage initialisation");
 
-    // Read the persisted poll interval synchronously (a tiny local read)
-    // so the worker thread starts with the user's setting rather than
-    // always falling back to `data::POLL_INTERVAL`.
-    // ponytail: this re-reads settings.json a second time via the async
-    // `pending_settings_load` below; simplest fix given the worker thread
-    // needs the interval before that load resolves.
-    let boot_poll_interval = cache
-        .load_settings()
-        .await
-        .ok()
-        .flatten()
-        .map(|s| Duration::from_secs(s.poll_interval_secs))
-        .unwrap_or(data::POLL_INTERVAL);
-    data::spawn_worker(worker_tx, initial_site.clone(), site_rx, boot_poll_interval);
+    // Healthy poll interval (seconds), shared with the worker thread so the
+    // persisted setting — and any live change from the settings panel — takes
+    // effect without a blocking read here. (Awaiting the settings oneshot on
+    // the macroquad executor panics: "does not support waking futures".) The
+    // worker starts on the default; the game loop stores the live value from
+    // `state.settings` each frame once the async settings load resolves.
+    let poll_interval = Arc::new(AtomicU64::new(data::POLL_INTERVAL.as_secs()));
+    data::spawn_worker(
+        worker_tx,
+        initial_site.clone(),
+        site_rx,
+        Arc::clone(&poll_interval),
+    );
 
     // Kick off a non-blocking load of the last-cached scan for the
     // initial site so we have something to show before the first
@@ -464,6 +464,10 @@ async fn main() {
                 Err(_) => state.pending_settings_load = Some(rx),
             }
         }
+
+        // Keep the worker's healthy poll interval in sync with the current
+        // setting (floored at 1s to avoid a busy loop). Cheap relaxed store.
+        poll_interval.store(state.settings.poll_interval_secs.max(1), Ordering::Relaxed);
 
         // Apply settings-seeded defaults exactly once, after both the site
         // preference and settings loads have resolved (order between the
