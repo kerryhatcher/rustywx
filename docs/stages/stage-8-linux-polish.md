@@ -1,11 +1,14 @@
-# Stage 8: "Linux Polish" — Performance & Accessibility
+# Stage 8: "Desktop Polish" — Performance & Accessibility
 
 **Status:** 🔲 Not started
 **Tag:** `v1.0.0-stage8`
 
 ## Goal
 
-Optimize for Linux desktop, ensure accessibility compliance.
+Optimize for **Linux and macOS desktop** (both v1 targets), ensure
+accessibility compliance. The ply-engine backend is cross-platform;
+v1 ships and is validated on both. macOS was confirmed working during
+Stage 7 (fetch, cache, and scope/border rendering all verified).
 
 ## Scope
 
@@ -16,12 +19,18 @@ Optimize for Linux desktop, ensure accessibility compliance.
   systematic benchmarking methodology (resolution × sampling rate tables,
   hardware comparison across 5 machines). These benchmarks catch performance
   regressions as features grow. See `docs/post-v1-multi-site-animation.md`.
-- HiDPI testing (verify scaling on high-DPI displays)
-- Wayland testing (verify native Wayland support, no X11 fallback issues)
+- HiDPI testing (verify scaling on high-DPI displays — Linux fractional
+  scaling AND macOS Retina)
+- Linux windowing: Wayland testing (verify native Wayland support, no X11
+  fallback issues)
+- macOS windowing: verify on native (Cocoa/Metal via ply-engine); confirm
+  window chrome, menu bar, and asset/CWD handling work when launched from
+  Finder/dock (not just `cargo run`)
 - Accessibility audit (labels, tab order, screen reader via Ply's `a11y`
-  feature — AccessKit on desktop)
-- System tray icon (optional — runs in background, quick access to current alerts)
-- Final cleanup and release build
+  feature — AccessKit: Orca/AT-SPI on Linux, VoiceOver on macOS)
+- Background/quick-access alert indicator (optional — system tray on Linux,
+  menu bar item on macOS)
+- Final cleanup and release build for **both** Linux and macOS
 
 ## Notes from Stage 1
 
@@ -35,17 +44,18 @@ Optimize for Linux desktop, ensure accessibility compliance.
 
 ## Deliverable
 
-Optimized Linux desktop build with full accessibility support.
+Optimized Linux and macOS desktop builds with full accessibility support.
 
 ## Validation
 
-- [ ] Frame time <16ms (60fps) on target hardware
+- [ ] Frame time <16ms (60fps) on target hardware (Linux and macOS)
 - [ ] Texture cache hit rate >90% (scope not re-rendered when static)
-- [ ] HiDPI display renders correctly (no blurry UI)
-- [ ] Wayland native — no X11 warnings or fallback
-- [ ] Screen reader announces controls correctly
+- [ ] HiDPI renders correctly, no blurry UI (Linux fractional scale + macOS Retina)
+- [ ] Wayland native — no X11 warnings or fallback (Linux)
+- [ ] macOS native window works, incl. launch from Finder/dock (assets resolve)
+- [ ] Screen reader announces controls correctly (Orca on Linux, VoiceOver on macOS)
 - [ ] Tab navigation works through all interactive elements
-- [ ] Release build runs without debug overhead
-- [ ] (Optional) System tray icon shows current alert status
+- [ ] Release build runs without debug overhead (both platforms)
+- [ ] (Optional) Alert-status indicator: system tray (Linux) / menu bar (macOS)
 - [ ] Rasterization benchmarks exist and run in CI (or documented as manual)
 - [ ] `git push` → CI passes → `git tag v1.0.0-stage8` → `git push --tags`
