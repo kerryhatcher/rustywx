@@ -865,35 +865,37 @@ async fn main() {
         // coordinate flip — framebuffer bottom-left origin + Ply .image() display
         // causes a 180° rotation of the content).
         draw_observatory_background();
-        scope::draw_scope_to_texture(
-            if state.show_radar_data {
-                state.radar_texture.as_ref()
-            } else {
-                None
-            },
-            site,
-            state.pan_km,
-            state.zoom,
-            Some((&state.borders, state.show_borders)),
-            Some((&state.alerts, state.show_watches, state.show_warnings)),
-            if state.show_nhc_data {
-                state.nhc_bundle.as_ref().map(|b| (b, &state.nhc_overlays))
-            } else {
-                None
-            },
-            if state.show_location {
-                state.user_location
-            } else {
-                None
-            },
-            state.radar_panel_open, // show_sites arg — markers shown only while the Radar panel is open
-            state.settings.show_scope_rings,
-        );
+        if state.view_mode == ViewMode::Radar {
+            scope::draw_scope_to_texture(
+                if state.show_radar_data {
+                    state.radar_texture.as_ref()
+                } else {
+                    None
+                },
+                site,
+                state.pan_km,
+                state.zoom,
+                Some((&state.borders, state.show_borders)),
+                Some((&state.alerts, state.show_watches, state.show_warnings)),
+                if state.show_nhc_data {
+                    state.nhc_bundle.as_ref().map(|b| (b, &state.nhc_overlays))
+                } else {
+                    None
+                },
+                if state.show_location {
+                    state.user_location
+                } else {
+                    None
+                },
+                state.radar_panel_open, // show_sites arg — markers shown only while the Radar panel is open
+                state.settings.show_scope_rings,
+            );
 
-        // Radar sweep line (optional observatory visual flourish) — gated on
-        // its own setting, independent of the range rings/crosshairs.
-        if state.settings.show_sweep {
-            draw_radar_sweep(state.pan_km, state.zoom, state.sweep_angle, entrance);
+            // Radar sweep line (optional observatory visual flourish) — gated on
+            // its own setting, independent of the range rings/crosshairs.
+            if state.settings.show_sweep {
+                draw_radar_sweep(state.pan_km, state.zoom, state.sweep_angle, entrance);
+            }
         }
 
         // Build frame-local control options before borrowing Ply for layout.
@@ -1017,6 +1019,40 @@ async fn main() {
                                 ui.text("Tropical", |text| text.font_size(12).color(0xE8E0DC));
                                 ui.text(nf::CHEVRON_RIGHT, |text| {
                                     text.font_size(10).font(&SYMBOL_FONT).color(0xE8E0DC)
+                                });
+                            });
+
+                        let forecast_active = state.view_mode == ViewMode::Forecast;
+                        let forecast_bg = hover_tint(
+                            &state.hovered_ids,
+                            "btn-forecast",
+                            if forecast_active { 0x0dc5b8 } else { 0x1E1B1B },
+                            0x1E1B1B,
+                        );
+                        let forecast_label = if forecast_active {
+                            "Forecast ✓"
+                        } else {
+                            "Forecast"
+                        };
+                        ui.element()
+                            .id("btn-forecast")
+                            .width(fit!())
+                            .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                            .background_color(forecast_bg)
+                            .corner_radius(4.0)
+                            .layout(|layout| {
+                                layout
+                                    .direction(LeftToRight)
+                                    .gap(6)
+                                    .padding((0, 8, 0, 8))
+                                    .align(CenterX, CenterY)
+                            })
+                            .accessibility(|a| {
+                                a.button(forecast_label).checked(forecast_active)
+                            })
+                            .children(|ui| {
+                                ui.text(forecast_label, |text| {
+                                    text.font_size(12).color(0xE8E0DC)
                                 });
                             });
 
@@ -2509,6 +2545,7 @@ fn handle_input(
 
     // ── Radar toggle button ──────────────────────────────────────
     if ply.is_just_pressed("btn-radar") {
+        state.view_mode = ViewMode::Radar;
         state.radar_panel_open = !state.radar_panel_open;
         // Replay the slide-in next open; drop open dropdowns on close so
         // their floating popups don't linger.
@@ -2525,12 +2562,25 @@ fn handle_input(
 
     // ── Tropical panel toggle button (Stage 5) ────────────────────
     if ply.is_just_pressed("btn-tropical") {
+        state.view_mode = ViewMode::Radar;
         state.nhc_show_panel = !state.nhc_show_panel;
         if !state.nhc_show_panel {
             state.nhc_anim_start = 0.0;
         } else {
             state.radar_panel_open = false; // right-edge panels are exclusive
         }
+    }
+
+    // ── Forecast view toggle ──────────────────────────────────────
+    if ply.is_just_pressed("btn-forecast") {
+        state.view_mode = if state.view_mode == ViewMode::Forecast {
+            ViewMode::Radar
+        } else {
+            // Entering forecast: close the scope side panels (exclusive).
+            state.radar_panel_open = false;
+            state.nhc_show_panel = false;
+            ViewMode::Forecast
+        };
     }
     // `N` toggles the tropical *data* layer (not the panel), matching the
     // B/W/A data-toggle family.
