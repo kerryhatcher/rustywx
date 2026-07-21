@@ -93,6 +93,8 @@ pub struct AppState {
     pub show_borders: bool,
     /// Toggle: show NWS alert polygons on the scope.
     pub show_alerts: bool,
+    /// Whether the window is currently fullscreen (chrome hidden).
+    pub fullscreen: bool,
 
     // ── NHC Tropical (Stage 5) ────────────────────────────────────
     /// NHC data bundle (storm metadata, GIS, text, images, contours).
