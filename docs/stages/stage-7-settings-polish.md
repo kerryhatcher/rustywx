@@ -88,6 +88,10 @@ Polished, configurable app.
 - [ ] RLE compression achieves ≥90% space savings on cached radar volumes
 - [ ] Spectrum Width product displays with appropriate color table
 - [ ] VCP and scan mode shown in status bar
-- [ ] Nyquist velocity shown for current tilt in status bar
+- [~] Nyquist velocity in status bar — shows "Nyquist —". Deferred: neither
+  `nexrad-model` (1.0.0-rc.2) nor `nexrad-data` (1.0.0-rc.7) exposes Nyquist
+  velocity or PRT in their public API; deriving it needs hand-parsing the
+  raw message-31 radial header. Moved to post-v1 rather than fabricate a
+  physical value. Status-bar slot + label plumbing already in place.
 - [ ] TDBZ kernel size selectable in settings (Sensitive / Default / Aggressive)
 - [ ] `git push` → CI passes → `git tag v0.5.0-stage7` → `git push --tags`
