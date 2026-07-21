@@ -18,6 +18,9 @@ pub const ANIMATION_CYCLE_ID: &str = "settings-cycle-animation";
 pub const TDBZ_CYCLE_ID: &str = "settings-cycle-tdbz";
 pub const USE_CURRENT_SITE_ID: &str = "settings-use-current-site";
 pub const DYSLEXIC_TOGGLE_ID: &str = "settings-toggle-dyslexic";
+pub const LOCATION_INPUT_ID: &str = "settings-location-input";
+pub const LOCATION_DETECT_ID: &str = "settings-location-detect";
+pub const CENTER_TOGGLE_ID: &str = "settings-toggle-center";
 
 const ROW_HEIGHT: f32 = 32.0;
 const TEXT_COLOR: u32 = 0xE8E0DC;
@@ -82,9 +85,16 @@ fn cycle_button(ui: &mut Ui<'_, ()>, id: &'static str, label: &str) {
 
 /// Draw the settings modal (backdrop + glass panel). No-op if the caller
 /// doesn't want it shown — check `state.show_settings_panel` before calling.
-pub fn draw(ui: &mut Ui<'_, ()>, settings: &Settings, current_site_id: &str) {
+pub fn draw(
+    ui: &mut Ui<'_, ()>,
+    settings: &Settings,
+    current_site_id: &str,
+    location_input: &str,
+    location_focused: bool,
+    location_status: &str,
+) {
     let modal_w = 420.0;
-    let modal_h = 380.0;
+    let modal_h = 470.0;
     let modal_x = (screen_width() - modal_w) / 2.0;
     let modal_y = (screen_height() - modal_h) / 2.0;
 
@@ -192,6 +202,57 @@ pub fn draw(ui: &mut Ui<'_, ()>, settings: &Settings, current_site_id: &str) {
                             settings.dyslexic_font,
                         );
                     });
+                    // ── My Location ──────────────────────────────
+                    ui.text("My Location", |t| t.font_size(12).color(TEXT_COLOR));
+                    row(ui, "Coords or ZIP", |ui| {
+                        let bg = if location_focused { 0x1a2730 } else { 0x11151c };
+                        let shown = if location_input.is_empty() && !location_focused {
+                            "e.g. 33.75, -84.39 or 30301"
+                        } else {
+                            location_input
+                        };
+                        ui.element()
+                            .id(LOCATION_INPUT_ID)
+                            .width(grow!())
+                            .height(fixed!(24.0))
+                            .background_color(bg)
+                            .corner_radius(4.0)
+                            .layout(|l| l.padding((0, 8, 0, 8)).align(Left, CenterY))
+                            .accessibility(|a| a.button("Edit location"))
+                            .children(|ui| {
+                                ui.text(shown, |t| {
+                                    t.font_size(11).color(
+                                        if location_input.is_empty() && !location_focused {
+                                            MUTED_COLOR
+                                        } else {
+                                            TEXT_COLOR
+                                        },
+                                    )
+                                });
+                            });
+                    });
+                    row(ui, "", |ui| {
+                        ui.element()
+                            .id(LOCATION_DETECT_ID)
+                            .width(fit!())
+                            .height(fixed!(24.0))
+                            .background_color(INACTIVE_BG)
+                            .corner_radius(4.0)
+                            .layout(|l| l.padding((0, 10, 0, 10)).align(CenterX, CenterY))
+                            .accessibility(|a| a.button("Detect location"))
+                            .children(|ui| {
+                                ui.text("Detect", |t| t.font_size(11).color(TEXT_COLOR));
+                            });
+                    });
+                    row(ui, "Center map on my location", |ui| {
+                        bool_toggle(
+                            ui,
+                            CENTER_TOGGLE_ID,
+                            "Center map on my location",
+                            settings.center_on_location,
+                        );
+                    });
+                    ui.text(location_status, |t| t.font_size(10).color(MUTED_COLOR));
                     row(ui, "Animation level", |ui| {
                         cycle_button(ui, ANIMATION_CYCLE_ID, settings.animation_level.label());
                     });

@@ -1537,7 +1537,30 @@ async fn main() {
                 // ── Settings modal (Stage 7) ────────────────────────────
                 if state.show_settings_panel {
                     let site = &geo::RADAR_SITES[state.site_index];
-                    settings_widget::draw(ui, &state.settings, site.id);
+                    let loc_status = match state.location_resolver.status() {
+                        rustywx::location::LocationStatus::Idle => match state.user_location {
+                            Some(c) => format!("{:.4}, {:.4}", c.lat, c.lon),
+                            None => "Not set".to_string(),
+                        },
+                        rustywx::location::LocationStatus::Detecting => "Detecting…".to_string(),
+                        rustywx::location::LocationStatus::Resolved(c, src) => {
+                            format!("{:.4}, {:.4} ({:?})", c.lat, c.lon, src)
+                        }
+                        rustywx::location::LocationStatus::Denied => {
+                            "Permission denied".to_string()
+                        }
+                        rustywx::location::LocationStatus::Offline => "Offline".to_string(),
+                        rustywx::location::LocationStatus::NotFound => "ZIP not found".to_string(),
+                        rustywx::location::LocationStatus::Invalid => "Invalid input".to_string(),
+                    };
+                    settings_widget::draw(
+                        ui,
+                        &state.settings,
+                        site.id,
+                        &state.settings.location_input,
+                        state.location_input_focused,
+                        &loc_status,
+                    );
                 }
 
                 // ── Keyboard shortcuts overlay (Stage 7) ────────────────────
@@ -1976,6 +1999,56 @@ fn handle_input(
         if ply.is_just_pressed(settings_widget::USE_CURRENT_SITE_ID) {
             state.settings.default_site = geo::RADAR_SITES[state.site_index].id.to_string();
             state.cache.save_settings(&state.settings);
+        }
+
+        // Focus the location field on click; blur when clicking elsewhere.
+        if ply.is_just_pressed(settings_widget::LOCATION_INPUT_ID) {
+            state.location_input_focused = true;
+        }
+        // Capture typing while focused (runs before the Escape-closes-settings
+        // check above so typing/Enter never closes the modal).
+        if state.location_input_focused {
+            let now = get_time();
+            while let Some(ch) = get_char_pressed() {
+                if !ch.is_control() && state.settings.location_input.len() < 32 {
+                    state.settings.location_input.push(ch);
+                }
+            }
+            if is_key_pressed(KeyCode::Backspace) {
+                state.settings.location_input.pop();
+            }
+            if is_key_pressed(KeyCode::Enter) {
+                state.location_input_focused = false;
+                state.location_error_shown = false;
+                state
+                    .location_resolver
+                    .detect(&state.settings.location_input, now);
+                state.cache.save_settings(&state.settings);
+            }
+        }
+        if ply.is_just_pressed(settings_widget::LOCATION_DETECT_ID) {
+            let now = get_time();
+            state.location_input_focused = false;
+            state.location_error_shown = false;
+            if let Some(c) = state
+                .location_resolver
+                .detect(&state.settings.location_input, now)
+            {
+                state.user_location = Some(c);
+                state.settings.user_lat = Some(c.lat);
+                state.settings.user_lon = Some(c.lon);
+                if state.settings.center_on_location {
+                    recenter_on_user(state);
+                }
+            }
+            state.cache.save_settings(&state.settings);
+        }
+        if ply.is_just_pressed(settings_widget::CENTER_TOGGLE_ID) {
+            state.settings.center_on_location = !state.settings.center_on_location;
+            state.cache.save_settings(&state.settings);
+            if state.settings.center_on_location {
+                recenter_on_user(state);
+            }
         }
     }
 
