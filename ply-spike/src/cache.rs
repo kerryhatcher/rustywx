@@ -236,6 +236,7 @@ impl Cache {
 fn scan_to_bytes(scan: &ScanData) -> Vec<u8> {
     let mut buf = Vec::new();
     buf.extend_from_slice(&scan.timestamp.timestamp_millis().to_le_bytes());
+    buf.extend_from_slice(&scan.vcp_number.to_le_bytes());
     encode_sweeps(&mut buf, &scan.reflectivity);
     encode_sweeps(&mut buf, &scan.velocity);
     encode_sweeps(&mut buf, &scan.spectrum_width);
@@ -270,6 +271,7 @@ fn encode_sweeps(buf: &mut Vec<u8>, sweeps: &[SweepData]) {
 fn bytes_to_scan(bytes: &[u8]) -> Result<ScanData, String> {
     let mut r = Reader::new(bytes);
     let timestamp_millis = r.read_i64()?;
+    let vcp_number = r.read_u16()?;
     let timestamp = chrono::DateTime::from_timestamp_millis(timestamp_millis)
         .ok_or("cache: invalid timestamp in compressed scan")?;
     let reflectivity = decode_sweeps(&mut r)?;
@@ -280,6 +282,7 @@ fn bytes_to_scan(bytes: &[u8]) -> Result<ScanData, String> {
         reflectivity,
         velocity,
         spectrum_width,
+        vcp_number,
     })
 }
 
@@ -338,6 +341,11 @@ impl<'a> Reader<'a> {
         Ok(self.take(1)?[0])
     }
 
+    fn read_u16(&mut self) -> Result<u16, String> {
+        let bytes: [u8; 2] = self.take(2)?.try_into().unwrap();
+        Ok(u16::from_le_bytes(bytes))
+    }
+
     fn read_u32(&mut self) -> Result<u32, String> {
         let bytes: [u8; 4] = self.take(4)?.try_into().unwrap();
         Ok(u32::from_le_bytes(bytes))
@@ -372,6 +380,7 @@ mod tests {
             }],
             velocity: vec![],
             spectrum_width: vec![],
+            vcp_number: 12,
         }
     }
 
@@ -439,6 +448,7 @@ mod tests {
             reflectivity: sweeps,
             velocity: vec![],
             spectrum_width: vec![],
+            vcp_number: 12,
         };
 
         let raw = scan_to_bytes(&scan);

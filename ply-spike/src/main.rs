@@ -11,7 +11,7 @@ use rustywx::cache::Cache;
 use rustywx::colors;
 use rustywx::data::{self, WorkerMessage};
 use rustywx::geo;
-use rustywx::model::{Product, RadialData, SweepData};
+use rustywx::model::{Product, RadialData, SweepData, vcp_mode_label, format_nyquist_velocity};
 use rustywx::nhc;
 use rustywx::scope;
 use rustywx::settings::Settings;
@@ -1834,12 +1834,18 @@ fn update_scan_status(state: &mut AppState, suffix: &str) {
             .get(state.tilt_index)
             .map(|sweep| format!(" — {:.1}°", sweep.elevation_deg))
             .unwrap_or_default();
+        let vcp_num_enum = nexrad_model::data::VCPNumber::from_number(scan.vcp_number);
+        let vcp_mode = vcp_mode_label(vcp_num_enum);
+        let nyquist = format_nyquist_velocity();
         state.status_text = format!(
-            "{} — {} — {} tilt(s){}{}",
+            "{} — {} — {} tilt(s){} — VCP {} — {} — {}{}",
             scan.timestamp.format("%Y-%m-%d %H:%M UTC"),
             geo::RADAR_SITES[state.site_index].id,
             sweeps.len(),
             elevation,
+            scan.vcp_number,
+            vcp_mode,
+            nyquist,
             suffix,
         );
     }
