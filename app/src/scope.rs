@@ -404,6 +404,7 @@ pub fn draw_scope_to_texture(
     alerts: Option<(&[Alert], bool)>,
     nhc: Option<(&NhcBundle, &NhcOverlayState)>,
     user: Option<Coords>,
+    show_sites: bool,
 ) {
     let side = screen_width().min(screen_height());
     let px_per_km = (side / 2.0) / MAX_RANGE_KM * zoom;
@@ -528,29 +529,32 @@ pub fn draw_scope_to_texture(
     }
 
     // ── Radar site markers (double-click to select) ─────────────
-    let sw = screen_width();
-    let sh = screen_height();
-    let site_marker_color = MacroquadColor::from_rgba(0x0d, 0xc5, 0xb8, 220);
-    let site_label_color = MacroquadColor::from_rgba(0x0d, 0xc5, 0xb8, 255);
-    let margin = 60.0;
-    for other in geo::RADAR_SITES.iter() {
-        if other.id == site.id {
-            continue; // the active site is already marked at center
+    // Shown only while the Radar panel is open (mirrors `show_sites`).
+    if show_sites {
+        let sw = screen_width();
+        let sh = screen_height();
+        let site_marker_color = MacroquadColor::from_rgba(0x0d, 0xc5, 0xb8, 220);
+        let site_label_color = MacroquadColor::from_rgba(0x0d, 0xc5, 0xb8, 255);
+        let margin = 60.0;
+        for other in geo::RADAR_SITES.iter() {
+            if other.id == site.id {
+                continue; // the active site is already marked at center
+            }
+            let (sx, sy) = project_site(other.lat, other.lon, site, pan_km, zoom);
+            // Cull off-screen markers.
+            if sx < -margin || sx > sw + margin || sy < -margin || sy > sh + margin {
+                continue;
+            }
+            draw_circle(sx, sy, 5.0, site_marker_color);
+            draw_circle_lines(
+                sx,
+                sy,
+                5.0,
+                1.5,
+                MacroquadColor::from_rgba(0xff, 0xff, 0xff, 180),
+            );
+            draw_text(other.id, sx + 8.0, sy - 6.0, 14.0, site_label_color);
         }
-        let (sx, sy) = project_site(other.lat, other.lon, site, pan_km, zoom);
-        // Cull off-screen markers.
-        if sx < -margin || sx > sw + margin || sy < -margin || sy > sh + margin {
-            continue;
-        }
-        draw_circle(sx, sy, 5.0, site_marker_color);
-        draw_circle_lines(
-            sx,
-            sy,
-            5.0,
-            1.5,
-            MacroquadColor::from_rgba(0xff, 0xff, 0xff, 180),
-        );
-        draw_text(other.id, sx + 8.0, sy - 6.0, 14.0, site_label_color);
     }
 
     // ── Border overlays (Stage 4) ────────────────────────────────

@@ -785,6 +785,7 @@ async fn main() {
             } else {
                 None
             },
+            state.show_radar,
         );
 
         // Radar sweep line (optional observatory visual flourish) — dropped
