@@ -109,6 +109,21 @@ pub struct Settings {
     /// Render body/label text with the OpenDyslexic font (accessibility).
     #[serde(default)]
     pub dyslexic_font: bool,
+    /// Last resolved user latitude (persisted; loaded at startup without network).
+    #[serde(default)]
+    pub user_lat: Option<f64>,
+    /// Last resolved user longitude.
+    #[serde(default)]
+    pub user_lon: Option<f64>,
+    /// Raw manual-entry text (coords or ZIP), kept so the field redisplays.
+    #[serde(default)]
+    pub location_input: String,
+    /// Whether the user-location marker is shown on the scope.
+    #[serde(default)]
+    pub show_location: bool,
+    /// Whether the scope recenters on the user's location.
+    #[serde(default)]
+    pub center_on_location: bool,
 }
 
 impl Default for Settings {
@@ -123,6 +138,11 @@ impl Default for Settings {
             animation_level: AnimationLevel::default(),
             tdbz_kernel: TdbzKernel::default(),
             dyslexic_font: false,
+            user_lat: None,
+            user_lon: None,
+            location_input: String::new(),
+            show_location: false,
+            center_on_location: false,
         }
     }
 }
@@ -155,6 +175,11 @@ mod tests {
             animation_level: AnimationLevel::Subtle,
             tdbz_kernel: TdbzKernel::Aggressive,
             dyslexic_font: true,
+            user_lat: Some(35.5),
+            user_lon: Some(-97.5),
+            location_input: "Oklahoma City".to_string(),
+            show_location: true,
+            center_on_location: true,
         };
         let json = serde_json::to_string(&settings).expect("serialize");
         let restored: Settings = serde_json::from_str(&json).expect("deserialize");
@@ -170,5 +195,25 @@ mod tests {
         assert_eq!(TdbzKernel::Sensitive.next(), TdbzKernel::Default);
         assert_eq!(TdbzKernel::Default.next(), TdbzKernel::Aggressive);
         assert_eq!(TdbzKernel::Aggressive.next(), TdbzKernel::Sensitive);
+    }
+
+    #[test]
+    fn location_fields_default_off() {
+        let s = Settings::default();
+        assert!(s.user_lat.is_none());
+        assert!(!s.show_location);
+        assert!(!s.center_on_location);
+        assert!(s.location_input.is_empty());
+    }
+
+    #[test]
+    fn deserializes_settings_without_location_fields() {
+        // Simulate an old cached settings blob lacking the new keys.
+        let json = r#"{"default_site":"KFFC","poll_interval_secs":120,"nhc_refresh_secs":300,
+            "show_borders":true,"show_alerts":true,"show_nhc":false,
+            "animation_level":"Full","tdbz_kernel":"Default","dyslexic_font":false}"#;
+        let s: Settings = serde_json::from_str(json).expect("back-compat deserialize");
+        assert!(s.user_lat.is_none());
+        assert!(!s.center_on_location);
     }
 }
