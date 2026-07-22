@@ -5,6 +5,7 @@
 //! pan/zoom and keyboard controls.
 
 use ply_engine::prelude::*;
+use ply_engine::render_commands::{RenderCommand, RenderCommandConfig};
 use rustywx::alerts;
 use rustywx::borders;
 use rustywx::cache::Cache;
@@ -16,8 +17,8 @@ use rustywx::model::{Product, RadialData, SweepData, format_nyquist_velocity, vc
 use rustywx::nhc;
 use rustywx::scope;
 use rustywx::settings::{AnimationLevel, Settings};
-use rustywx::state::{AlertModal, AppState, NhcModal};
 use rustywx::state::ViewMode;
+use rustywx::state::{AlertModal, AppState, NhcModal};
 use rustywx::widgets::dropdown::{DropdownConfig, DropdownOption, DropdownState};
 use rustywx::widgets::glass_panel;
 use rustywx::widgets::settings as settings_widget;
@@ -25,7 +26,6 @@ use rustywx::widgets::shortcuts as shortcuts_widget;
 use rustywx::widgets::toast as toast_widget;
 use rustywx::widgets::toggle::{self, ToggleOption};
 use rustywx::widgets::{ChartWidget, SYMBOL_FONT, nf};
-use ply_engine::render_commands::{RenderCommand, RenderCommandConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -225,8 +225,12 @@ fn synthetic_sweep() -> SweepData {
 /// draws directly with macroquad (real `draw_text` axis labels, crisp lines)
 /// instead of the old rasterize-to-texture approach.
 fn draw_rain_chart(cmd: &RenderCommand<ChartWidget>) {
-    let RenderCommandConfig::Custom(c) = &cmd.config else { return };
-    let ChartWidget::RainChart(hours) = &c.data else { return };
+    let RenderCommandConfig::Custom(c) = &cmd.config else {
+        return;
+    };
+    let ChartWidget::RainChart(hours) = &c.data else {
+        return;
+    };
     if hours.is_empty() {
         return;
     }
@@ -257,12 +261,22 @@ fn draw_rain_chart(cmd: &RenderCommand<ChartWidget>) {
         draw_line(left, y, right, y, 1.0, grid);
         let label = format!("{pct}");
         let dims = measure_text(&label, None, 11, 1.0);
-        draw_text(&label, left - 6.0 - dims.width, y + dims.height / 2.0 - 2.0, 11.0, gray);
+        draw_text(
+            &label,
+            left - 6.0 - dims.width,
+            y + dims.height / 2.0 - 2.0,
+            11.0,
+            gray,
+        );
     }
 
     // x/y for hour i (n==1 guarded: single point centered on the plot).
     let x_at = |i: usize| -> f32 {
-        if n > 1 { left + (i as f32 / (n - 1) as f32) * plot_w } else { left + plot_w / 2.0 }
+        if n > 1 {
+            left + (i as f32 / (n - 1) as f32) * plot_w
+        } else {
+            left + plot_w / 2.0
+        }
     };
     let y_at = |pct: i64| -> f32 {
         let p = pct.clamp(0, 100) as f32;
@@ -316,7 +330,13 @@ fn draw_rain_chart(cmd: &RenderCommand<ChartWidget>) {
         if k % 6 == 0 || k == n - 1 {
             let x = x_at(k);
             let dims = measure_text(&hours[k].label, None, 11, 1.0);
-            draw_text(&hours[k].label, x - dims.width / 2.0, bottom + 14.0, 11.0, gray);
+            draw_text(
+                &hours[k].label,
+                x - dims.width / 2.0,
+                bottom + 14.0,
+                11.0,
+                gray,
+            );
         }
     }
 }
@@ -1149,228 +1169,245 @@ async fn main() {
                                     .padding((0, 8, 0, 8))
                                     .align(CenterX, CenterY)
                             })
-                            .accessibility(|a| {
-                                a.button(forecast_label).checked(forecast_active)
-                            })
+                            .accessibility(|a| a.button(forecast_label).checked(forecast_active))
                             .children(|ui| {
-                                ui.text(forecast_label, |text| {
-                                    text.font_size(12).color(0xE8E0DC)
-                                });
+                                ui.text(forecast_label, |text| text.font_size(12).color(0xE8E0DC));
                             });
 
-                        // Divider between Panels and Layers groups.
-                        ui.element()
-                            .width(fixed!(1.0))
-                            .height(fixed!(if is_mobile { 28.0 } else { 16.0 }))
-                            .background_color((1.0f32, 1.0f32, 1.0f32, 40.0f32))
-                            .empty();
+                        // Map-layer toggles (Radar/Tropical/Borders/Watches/
+                        // Warnings/Location) are irrelevant in Forecast mode.
+                        if !forecast_active {
+                            // Divider between Panels and Layers groups.
+                            ui.element()
+                                .width(fixed!(1.0))
+                                .height(fixed!(if is_mobile { 28.0 } else { 16.0 }))
+                                .background_color((1.0f32, 1.0f32, 1.0f32, 40.0f32))
+                                .empty();
 
-                        // ── Layers group ──────────────────────────────────
-                        // Pure visibility toggles (✓ idiom).
-                        let radar_data_bg = hover_tint(
-                            &state.hovered_ids,
-                            "btn-radar-data",
-                            if state.show_radar_data {
-                                0x0dc5b8
+                            // ── Layers group ──────────────────────────────────
+                            // Pure visibility toggles (✓ idiom).
+                            let radar_data_bg = hover_tint(
+                                &state.hovered_ids,
+                                "btn-radar-data",
+                                if state.show_radar_data {
+                                    0x0dc5b8
+                                } else {
+                                    0x1E1B1B
+                                },
+                                0x1E1B1B,
+                            );
+                            let radar_data_label = if state.show_radar_data {
+                                "Radar ✓"
                             } else {
-                                0x1E1B1B
-                            },
-                            0x1E1B1B,
-                        );
-                        let radar_data_label = if state.show_radar_data {
-                            "Radar ✓"
-                        } else {
-                            "Radar"
-                        };
-                        ui.element()
-                            .id("btn-radar-data")
-                            .width(fit!())
-                            .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
-                            .background_color(radar_data_bg)
-                            .corner_radius(4.0)
-                            .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
-                            .accessibility(|a| {
-                                a.button(radar_data_label).checked(state.show_radar_data)
-                            })
-                            .children(|ui| {
-                                ui.text(radar_data_label, |text| {
-                                    text.font_size(12).color(0xE8E0DC)
+                                "Radar"
+                            };
+                            ui.element()
+                                .id("btn-radar-data")
+                                .width(fit!())
+                                .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                                .background_color(radar_data_bg)
+                                .corner_radius(4.0)
+                                .layout(|layout| {
+                                    layout.padding((0, 8, 0, 8)).align(CenterX, CenterY)
+                                })
+                                .accessibility(|a| {
+                                    a.button(radar_data_label).checked(state.show_radar_data)
+                                })
+                                .children(|ui| {
+                                    ui.text(radar_data_label, |text| {
+                                        text.font_size(12).color(0xE8E0DC)
+                                    });
                                 });
-                            });
 
-                        // ── Tropical data toggle (Layers group) ──────────
-                        let tropical_data_bg = hover_tint(
-                            &state.hovered_ids,
-                            "btn-tropical-data",
-                            if state.show_nhc_data {
-                                0x0dc5b8
+                            // ── Tropical data toggle (Layers group) ──────────
+                            let tropical_data_bg = hover_tint(
+                                &state.hovered_ids,
+                                "btn-tropical-data",
+                                if state.show_nhc_data {
+                                    0x0dc5b8
+                                } else {
+                                    0x1E1B1B
+                                },
+                                0x1E1B1B,
+                            );
+                            let tropical_data_label = if state.show_nhc_data {
+                                "Tropical ✓"
                             } else {
-                                0x1E1B1B
-                            },
-                            0x1E1B1B,
-                        );
-                        let tropical_data_label = if state.show_nhc_data {
-                            "Tropical ✓"
-                        } else {
-                            "Tropical"
-                        };
-                        let storm_count = state
-                            .nhc_bundle
-                            .as_ref()
-                            .map(|b| b.metas.len())
-                            .unwrap_or(0);
-                        let nhc_badge = if storm_count > 0 {
-                            format!(" ({storm_count})")
-                        } else if state.nhc_fetch_fired {
-                            " (…)".to_string()
-                        } else {
-                            String::new()
-                        };
-                        ui.element()
-                            .id("btn-tropical-data")
-                            .width(fit!())
-                            .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
-                            .background_color(tropical_data_bg)
-                            .corner_radius(4.0)
-                            .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
-                            .accessibility(|a| {
-                                a.button(tropical_data_label).checked(state.show_nhc_data)
-                            })
-                            .children(|ui| {
-                                ui.text(&format!("{tropical_data_label}{nhc_badge}"), |text| {
-                                    text.font_size(12).color(0xE8E0DC)
-                                });
-                            });
-
-                        // Zoom/Pan readout lives in the bottom status bar.
-
-                        // ── Overlay toggles (Stage 4) ──────────────────
-                        let borders_active = state.show_borders;
-                        let borders_bg = if borders_active { 0x0dc5b8 } else { 0x1E1B1B };
-                        let borders_label = if borders_active {
-                            "Borders ✓"
-                        } else {
-                            "Borders"
-                        };
-                        ui.element()
-                            .id("btn-borders")
-                            .width(fit!())
-                            .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
-                            .background_color(borders_bg)
-                            .corner_radius(4.0)
-                            .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
-                            .accessibility(|a| a.button(borders_label).checked(borders_active))
-                            .children(|ui| {
-                                ui.text(borders_label, |text| text.font_size(12).color(0xE8E0DC));
-                            });
-
-                        // Per-category counts for the Watches/Warnings buttons.
-                        let (watch_n, warn_n) = state.alerts.iter().fold((0, 0), |(w, a), al| {
-                            if alerts::is_watch(&al.event) {
-                                (w + 1, a)
-                            } else {
-                                (w, a + 1)
-                            }
-                        });
-                        let count_suffix = |n: usize| {
-                            if state.alerts_loaded {
-                                format!(" ({n})")
-                            } else if state.alerts_fetch_fired {
+                                "Tropical"
+                            };
+                            let storm_count = state
+                                .nhc_bundle
+                                .as_ref()
+                                .map(|b| b.metas.len())
+                                .unwrap_or(0);
+                            let nhc_badge = if storm_count > 0 {
+                                format!(" ({storm_count})")
+                            } else if state.nhc_fetch_fired {
                                 " (…)".to_string()
                             } else {
                                 String::new()
-                            }
-                        };
+                            };
+                            ui.element()
+                                .id("btn-tropical-data")
+                                .width(fit!())
+                                .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                                .background_color(tropical_data_bg)
+                                .corner_radius(4.0)
+                                .layout(|layout| {
+                                    layout.padding((0, 8, 0, 8)).align(CenterX, CenterY)
+                                })
+                                .accessibility(|a| {
+                                    a.button(tropical_data_label).checked(state.show_nhc_data)
+                                })
+                                .children(|ui| {
+                                    ui.text(&format!("{tropical_data_label}{nhc_badge}"), |text| {
+                                        text.font_size(12).color(0xE8E0DC)
+                                    });
+                                });
 
-                        let watches_bg = hover_tint(
-                            &state.hovered_ids,
-                            "btn-watches",
-                            if state.show_watches {
-                                0x0dc5b8
-                            } else {
-                                0x1E1B1B
-                            },
-                            0x1E1B1B,
-                        );
-                        let watches_label = if state.show_watches {
-                            "Watches ✓"
-                        } else {
-                            "Watches"
-                        };
-                        ui.element()
-                            .id("btn-watches")
-                            .width(fit!())
-                            .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
-                            .background_color(watches_bg)
-                            .corner_radius(4.0)
-                            .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
-                            .accessibility(|a| a.button(watches_label).checked(state.show_watches))
-                            .children(|ui| {
-                                ui.text(
-                                    &format!("{watches_label}{}", count_suffix(watch_n)),
-                                    |text| text.font_size(12).color(0xE8E0DC),
-                                );
-                            });
+                            // Zoom/Pan readout lives in the bottom status bar.
 
-                        let warnings_bg = hover_tint(
-                            &state.hovered_ids,
-                            "btn-warnings",
-                            if state.show_warnings {
-                                0x0dc5b8
+                            // ── Overlay toggles (Stage 4) ──────────────────
+                            let borders_active = state.show_borders;
+                            let borders_bg = if borders_active { 0x0dc5b8 } else { 0x1E1B1B };
+                            let borders_label = if borders_active {
+                                "Borders ✓"
                             } else {
-                                0x1E1B1B
-                            },
-                            0x1E1B1B,
-                        );
-                        let warnings_label = if state.show_warnings {
-                            "Warnings ✓"
-                        } else {
-                            "Warnings"
-                        };
-                        ui.element()
-                            .id("btn-warnings")
-                            .width(fit!())
-                            .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
-                            .background_color(warnings_bg)
-                            .corner_radius(4.0)
-                            .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
-                            .accessibility(|a| {
-                                a.button(warnings_label).checked(state.show_warnings)
-                            })
-                            .children(|ui| {
-                                ui.text(
-                                    &format!("{warnings_label}{}", count_suffix(warn_n)),
-                                    |text| text.font_size(12).color(0xE8E0DC),
-                                );
-                            });
+                                "Borders"
+                            };
+                            ui.element()
+                                .id("btn-borders")
+                                .width(fit!())
+                                .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                                .background_color(borders_bg)
+                                .corner_radius(4.0)
+                                .layout(|layout| {
+                                    layout.padding((0, 8, 0, 8)).align(CenterX, CenterY)
+                                })
+                                .accessibility(|a| a.button(borders_label).checked(borders_active))
+                                .children(|ui| {
+                                    ui.text(borders_label, |text| {
+                                        text.font_size(12).color(0xE8E0DC)
+                                    });
+                                });
 
-                        // ── Location toggle button (Task 9) ──────────────
-                        let loc_bg = hover_tint(
-                            &state.hovered_ids,
-                            "btn-location",
-                            if state.show_location {
-                                0x0dc5b8
+                            // Per-category counts for the Watches/Warnings buttons.
+                            let (watch_n, warn_n) =
+                                state.alerts.iter().fold((0, 0), |(w, a), al| {
+                                    if alerts::is_watch(&al.event) {
+                                        (w + 1, a)
+                                    } else {
+                                        (w, a + 1)
+                                    }
+                                });
+                            let count_suffix = |n: usize| {
+                                if state.alerts_loaded {
+                                    format!(" ({n})")
+                                } else if state.alerts_fetch_fired {
+                                    " (…)".to_string()
+                                } else {
+                                    String::new()
+                                }
+                            };
+
+                            let watches_bg = hover_tint(
+                                &state.hovered_ids,
+                                "btn-watches",
+                                if state.show_watches {
+                                    0x0dc5b8
+                                } else {
+                                    0x1E1B1B
+                                },
+                                0x1E1B1B,
+                            );
+                            let watches_label = if state.show_watches {
+                                "Watches ✓"
                             } else {
-                                0x1E1B1B
-                            },
-                            0x1E1B1B,
-                        );
-                        let loc_label = if state.show_location {
-                            "Location ✓"
-                        } else {
-                            "Location"
-                        };
-                        ui.element()
-                            .id("btn-location")
-                            .width(fit!())
-                            .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
-                            .background_color(loc_bg)
-                            .corner_radius(4.0)
-                            .layout(|layout| layout.padding((0, 8, 0, 8)).align(CenterX, CenterY))
-                            .accessibility(|a| a.button(loc_label).checked(state.show_location))
-                            .children(|ui| {
-                                ui.text(loc_label, |text| text.font_size(12).color(0xE8E0DC));
-                            });
+                                "Watches"
+                            };
+                            ui.element()
+                                .id("btn-watches")
+                                .width(fit!())
+                                .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                                .background_color(watches_bg)
+                                .corner_radius(4.0)
+                                .layout(|layout| {
+                                    layout.padding((0, 8, 0, 8)).align(CenterX, CenterY)
+                                })
+                                .accessibility(|a| {
+                                    a.button(watches_label).checked(state.show_watches)
+                                })
+                                .children(|ui| {
+                                    ui.text(
+                                        &format!("{watches_label}{}", count_suffix(watch_n)),
+                                        |text| text.font_size(12).color(0xE8E0DC),
+                                    );
+                                });
+
+                            let warnings_bg = hover_tint(
+                                &state.hovered_ids,
+                                "btn-warnings",
+                                if state.show_warnings {
+                                    0x0dc5b8
+                                } else {
+                                    0x1E1B1B
+                                },
+                                0x1E1B1B,
+                            );
+                            let warnings_label = if state.show_warnings {
+                                "Warnings ✓"
+                            } else {
+                                "Warnings"
+                            };
+                            ui.element()
+                                .id("btn-warnings")
+                                .width(fit!())
+                                .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                                .background_color(warnings_bg)
+                                .corner_radius(4.0)
+                                .layout(|layout| {
+                                    layout.padding((0, 8, 0, 8)).align(CenterX, CenterY)
+                                })
+                                .accessibility(|a| {
+                                    a.button(warnings_label).checked(state.show_warnings)
+                                })
+                                .children(|ui| {
+                                    ui.text(
+                                        &format!("{warnings_label}{}", count_suffix(warn_n)),
+                                        |text| text.font_size(12).color(0xE8E0DC),
+                                    );
+                                });
+
+                            // ── Location toggle button (Task 9) ──────────────
+                            let loc_bg = hover_tint(
+                                &state.hovered_ids,
+                                "btn-location",
+                                if state.show_location {
+                                    0x0dc5b8
+                                } else {
+                                    0x1E1B1B
+                                },
+                                0x1E1B1B,
+                            );
+                            let loc_label = if state.show_location {
+                                "Location ✓"
+                            } else {
+                                "Location"
+                            };
+                            ui.element()
+                                .id("btn-location")
+                                .width(fit!())
+                                .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                                .background_color(loc_bg)
+                                .corner_radius(4.0)
+                                .layout(|layout| {
+                                    layout.padding((0, 8, 0, 8)).align(CenterX, CenterY)
+                                })
+                                .accessibility(|a| a.button(loc_label).checked(state.show_location))
+                                .children(|ui| {
+                                    ui.text(loc_label, |text| text.font_size(12).color(0xE8E0DC));
+                                });
+                        }
 
                         // Settings gear lives in the bottom status bar.
 
@@ -1443,7 +1480,11 @@ async fn main() {
                             let search_bg = hover_tint(
                                 &state.hovered_ids,
                                 "fc-search",
-                                if state.fc_search_focused { 0x2A2727 } else { 0x1E1B1B },
+                                if state.fc_search_focused {
+                                    0x2A2727
+                                } else {
+                                    0x1E1B1B
+                                },
                                 0x2A2727,
                             );
                             let search_display = if state.fc_search_text.is_empty() {
@@ -1480,7 +1521,9 @@ async fn main() {
                                     .height(fixed!(26.0))
                                     .background_color(hit_bg)
                                     .corner_radius(4.0)
-                                    .layout(|layout| layout.padding((0, 10, 0, 10)).align(Left, CenterY))
+                                    .layout(|layout| {
+                                        layout.padding((0, 10, 0, 10)).align(Left, CenterY)
+                                    })
                                     .accessibility(|a| a.button(&hit.label))
                                     .children(|ui| {
                                         ui.text(&hit.label, |t| t.font_size(13).color(0xC8C0BC));
@@ -1494,14 +1537,22 @@ async fn main() {
                                 });
                             } else if let Some(fc) = &state.forecast {
                                 // Current conditions.
-                                let (glyph, label) = forecast::wmo_icon(fc.current.code, fc.current.is_day);
+                                let (glyph, label) =
+                                    forecast::wmo_icon(fc.current.code, fc.current.is_day);
                                 ui.text(&fc.place, |t| t.font_size(20).color(0xE8E0DC));
                                 ui.element()
                                     .width(fit!())
                                     .height(fit!())
-                                    .layout(|layout| layout.direction(LeftToRight).gap(16).align(CenterX, CenterY))
+                                    .layout(|layout| {
+                                        layout
+                                            .direction(LeftToRight)
+                                            .gap(16)
+                                            .align(CenterX, CenterY)
+                                    })
                                     .children(|ui| {
-                                        ui.text(glyph, |t| t.font_size(48).font(&SYMBOL_FONT).color(0xE8E0DC));
+                                        ui.text(glyph, |t| {
+                                            t.font_size(48).font(&SYMBOL_FONT).color(0xE8E0DC)
+                                        });
                                         ui.text(&format!("{:.0}°F", fc.current.temp), |t| {
                                             t.font_size(48).color(0xE8E0DC)
                                         });
@@ -1518,24 +1569,43 @@ async fn main() {
                                 ui.element()
                                     .width(fit!())
                                     .height(fit!())
-                                    .layout(|layout| layout.direction(LeftToRight).gap(12).align(CenterX, Top))
+                                    .layout(|layout| {
+                                        layout.direction(LeftToRight).gap(12).align(CenterX, Top)
+                                    })
                                     .children(|ui| {
                                         for day in &fc.days {
-                                            let (dglyph, _dlabel) = forecast::wmo_icon(day.code, true);
+                                            let (dglyph, _dlabel) =
+                                                forecast::wmo_icon(day.code, true);
                                             ui.element()
                                                 .width(fixed!(72.0))
                                                 .height(fit!())
                                                 .background_color(0x1E1B1B)
                                                 .corner_radius(6.0)
                                                 .layout(|layout| {
-                                                    layout.direction(TopToBottom).padding(8).gap(6).align(CenterX, Top)
+                                                    layout
+                                                        .direction(TopToBottom)
+                                                        .padding(8)
+                                                        .gap(6)
+                                                        .align(CenterX, Top)
                                                 })
                                                 .children(|ui| {
-                                                    ui.text(&day.weekday, |t| t.font_size(13).color(0xE8E0DC));
-                                                    ui.text(dglyph, |t| t.font_size(22).font(&SYMBOL_FONT).color(0xE8E0DC));
-                                                    ui.text(&format!("{:.0}°", day.hi), |t| t.font_size(14).color(0xE8E0DC));
-                                                    ui.text(&format!("{:.0}°", day.lo), |t| t.font_size(13).color(0x9A9490));
-                                                    ui.text(&format!("{}%", day.precip_pct), |t| t.font_size(12).color(0x6F9FE0));
+                                                    ui.text(&day.weekday, |t| {
+                                                        t.font_size(13).color(0xE8E0DC)
+                                                    });
+                                                    ui.text(dglyph, |t| {
+                                                        t.font_size(22)
+                                                            .font(&SYMBOL_FONT)
+                                                            .color(0xE8E0DC)
+                                                    });
+                                                    ui.text(&format!("{:.0}°", day.hi), |t| {
+                                                        t.font_size(14).color(0xE8E0DC)
+                                                    });
+                                                    ui.text(&format!("{:.0}°", day.lo), |t| {
+                                                        t.font_size(13).color(0x9A9490)
+                                                    });
+                                                    ui.text(&format!("{}%", day.precip_pct), |t| {
+                                                        t.font_size(12).color(0x6F9FE0)
+                                                    });
                                                 });
                                         }
                                     });
@@ -1555,7 +1625,9 @@ async fn main() {
                                         .empty();
                                 }
                             } else if state.user_location.is_none() {
-                                ui.text("Detecting location…", |t| t.font_size(14).color(0xC8C0BC));
+                                ui.text("Detecting location…", |t| {
+                                    t.font_size(14).color(0xC8C0BC)
+                                });
                             } else {
                                 ui.text("Loading forecast…", |t| t.font_size(14).color(0xC8C0BC));
                             }
@@ -2344,51 +2416,31 @@ async fn main() {
                             Product::DifferentialPhase => colors::PHIDP_LEGEND,
                         };
 
-                        // Left: two stacked rows.
-                        ui.element()
-                            .width(grow!())
-                            .height(grow!())
-                            .layout(|layout| {
-                                layout.direction(TopToBottom).gap(4).align(Left, CenterY)
-                            })
-                            .children(|ui| {
-                                // Row 1 — color key.
-                                ui.element()
-                                    .width(grow!())
-                                    .height(fit!())
-                                    .layout(|layout| {
-                                        layout.direction(LeftToRight).gap(8).align(Left, CenterY)
-                                    })
-                                    .children(|ui| {
-                                        for &(_threshold, color) in legend.iter().step_by(2) {
-                                            let hex = (color[0] as u32) << 16
-                                                | (color[1] as u32) << 8
-                                                | (color[2] as u32);
-                                            ui.element()
-                                                .width(fixed!(14.0))
-                                                .height(fixed!(10.0))
-                                                .background_color(hex)
-                                                .empty();
-                                        }
-                                        ui.text(state.product.units(), |text| {
-                                            text.font_size(10).font(&MONO_FONT).color(0x5F8A6A)
-                                        });
-
-                                        // ── Alert legend (watches/warnings key) ─────
-                                        if (state.show_watches || state.show_warnings)
-                                            && !state.alerts.is_empty()
-                                        {
-                                            const ALERT_LEGEND_CAP: usize = 4;
-                                            let mut seen: Vec<(&str, [u8; 4])> = Vec::new();
-                                            for a in &state.alerts {
-                                                if !seen.iter().any(|(e, _)| *e == a.event) {
-                                                    seen.push((a.event.as_str(), a.color));
-                                                }
-                                            }
-                                            let total = seen.len();
-                                            for &(event, color) in
-                                                seen.iter().take(ALERT_LEGEND_CAP)
-                                            {
+                        // Left: two stacked rows (color key + radar readout).
+                        // Both are map-only — hidden in Forecast mode; a grow
+                        // spacer keeps the gear pinned to the right edge.
+                        if state.view_mode == ViewMode::Forecast {
+                            ui.element().width(grow!()).height(grow!()).empty();
+                        } else {
+                            ui.element()
+                                .width(grow!())
+                                .height(grow!())
+                                .layout(|layout| {
+                                    layout.direction(TopToBottom).gap(4).align(Left, CenterY)
+                                })
+                                .children(|ui| {
+                                    // Row 1 — color key.
+                                    ui.element()
+                                        .width(grow!())
+                                        .height(fit!())
+                                        .layout(|layout| {
+                                            layout
+                                                .direction(LeftToRight)
+                                                .gap(8)
+                                                .align(Left, CenterY)
+                                        })
+                                        .children(|ui| {
+                                            for &(_threshold, color) in legend.iter().step_by(2) {
                                                 let hex = (color[0] as u32) << 16
                                                     | (color[1] as u32) << 8
                                                     | (color[2] as u32);
@@ -2397,46 +2449,85 @@ async fn main() {
                                                     .height(fixed!(10.0))
                                                     .background_color(hex)
                                                     .empty();
-                                                ui.text(event, |text| {
-                                                    text.font_size(10)
-                                                        .font(&MONO_FONT)
-                                                        .color(0x9E9590)
-                                                });
                                             }
-                                            if total > ALERT_LEGEND_CAP {
-                                                ui.text(
-                                                    &format!("+{} more", total - ALERT_LEGEND_CAP),
-                                                    |text| {
+                                            ui.text(state.product.units(), |text| {
+                                                text.font_size(10).font(&MONO_FONT).color(0x5F8A6A)
+                                            });
+
+                                            // ── Alert legend (watches/warnings key) ─────
+                                            if (state.show_watches || state.show_warnings)
+                                                && !state.alerts.is_empty()
+                                            {
+                                                const ALERT_LEGEND_CAP: usize = 4;
+                                                let mut seen: Vec<(&str, [u8; 4])> = Vec::new();
+                                                for a in &state.alerts {
+                                                    if !seen.iter().any(|(e, _)| *e == a.event) {
+                                                        seen.push((a.event.as_str(), a.color));
+                                                    }
+                                                }
+                                                let total = seen.len();
+                                                for &(event, color) in
+                                                    seen.iter().take(ALERT_LEGEND_CAP)
+                                                {
+                                                    let hex = (color[0] as u32) << 16
+                                                        | (color[1] as u32) << 8
+                                                        | (color[2] as u32);
+                                                    ui.element()
+                                                        .width(fixed!(14.0))
+                                                        .height(fixed!(10.0))
+                                                        .background_color(hex)
+                                                        .empty();
+                                                    ui.text(event, |text| {
                                                         text.font_size(10)
                                                             .font(&MONO_FONT)
                                                             .color(0x9E9590)
-                                                    },
-                                                );
+                                                    });
+                                                }
+                                                if total > ALERT_LEGEND_CAP {
+                                                    ui.text(
+                                                        &format!(
+                                                            "+{} more",
+                                                            total - ALERT_LEGEND_CAP
+                                                        ),
+                                                        |text| {
+                                                            text.font_size(10)
+                                                                .font(&MONO_FONT)
+                                                                .color(0x9E9590)
+                                                        },
+                                                    );
+                                                }
                                             }
-                                        }
-                                    });
-                                // Row 2 — status + zoom/pan.
-                                ui.element()
-                                    .width(grow!())
-                                    .height(fit!())
-                                    .layout(|layout| {
-                                        layout.direction(LeftToRight).gap(12).align(Left, CenterY)
-                                    })
-                                    .children(|ui| {
-                                        ui.text(&state.status_text, |text| {
-                                            text.font_size(11).font(&MONO_FONT).color(status_color)
                                         });
-                                        ui.text(
-                                            &format!(
-                                                "Zoom: {:.1}x  Pan: ({:.0}, {:.0}) km",
-                                                state.zoom, state.pan_km.0, state.pan_km.1
-                                            ),
-                                            |text| {
-                                                text.font_size(11).font(&MONO_FONT).color(0x9E9590)
-                                            },
-                                        );
-                                    });
-                            });
+                                    // Row 2 — status + zoom/pan.
+                                    ui.element()
+                                        .width(grow!())
+                                        .height(fit!())
+                                        .layout(|layout| {
+                                            layout
+                                                .direction(LeftToRight)
+                                                .gap(12)
+                                                .align(Left, CenterY)
+                                        })
+                                        .children(|ui| {
+                                            ui.text(&state.status_text, |text| {
+                                                text.font_size(11)
+                                                    .font(&MONO_FONT)
+                                                    .color(status_color)
+                                            });
+                                            ui.text(
+                                                &format!(
+                                                    "Zoom: {:.1}x  Pan: ({:.0}, {:.0}) km",
+                                                    state.zoom, state.pan_km.0, state.pan_km.1
+                                                ),
+                                                |text| {
+                                                    text.font_size(11)
+                                                        .font(&MONO_FONT)
+                                                        .color(0x9E9590)
+                                                },
+                                            );
+                                        });
+                                });
+                        }
 
                         // Settings gear — spans both rows (full bar height).
                         let gear_bg = hover_tint(
@@ -2516,7 +2607,12 @@ async fn main() {
 // ---------------------------------------------------------------------------
 
 /// Draw a compact toggle button for an NHC overlay layer.
-fn nhc_toggle_button(ui: &mut Ui<'_, rustywx::widgets::ChartWidget>, id: &'static str, label: &str, active: bool) {
+fn nhc_toggle_button(
+    ui: &mut Ui<'_, rustywx::widgets::ChartWidget>,
+    id: &'static str,
+    label: &str,
+    active: bool,
+) {
     let bg = if active { 0x0dc5b8 } else { 0x1E1B1B };
     let marker = if active { "✓" } else { " " };
     ui.element()
@@ -2587,144 +2683,149 @@ fn handle_input(
     // only applies while the radar scope is actually visible. In Forecast
     // mode the scope is hidden, so this whole region is gated off.
     if state.view_mode == ViewMode::Radar {
-    if !dropdown_open
-        && !modal_open
-        && !over_nhc_panel
-        && !over_radar_panel
-        && is_mouse_button_down(MouseButton::Left)
-    {
-        let (mx, my) = mouse_position();
-        if let Some((lx, ly)) = state.last_mouse_pos {
-            let dx = mx - lx;
-            let dy = my - ly;
-            let side = screen_width().min(screen_height());
-            let px_per_km = (side / 2.0) / scope::MAX_RANGE_KM * state.zoom;
-            // Drag right moves content right; drag down moves content down.
-            state.pan_km.0 += dx / px_per_km;
-            state.pan_km.1 += dy / px_per_km;
-        }
-        state.last_mouse_pos = Some((mx, my));
-    } else {
-        state.last_mouse_pos = None;
-    }
-
-    if !dropdown_open && !modal_open && !over_nhc_panel {
-        let scroll = mouse_wheel().1;
-        if scroll != 0.0 {
-            // 0.05 per unit = ~5-25% per wheel notch (vs old 0.001 = 0.1-0.5%)
-            state.zoom = (state.zoom * (1.0 + scroll * 0.05)).clamp(0.05, 8.0);
-        }
-
-        // ── Double-click on a radar site marker to select it ──────
-        if is_mouse_button_pressed(MouseButton::Left) {
+        if !dropdown_open
+            && !modal_open
+            && !over_nhc_panel
+            && !over_radar_panel
+            && is_mouse_button_down(MouseButton::Left)
+        {
             let (mx, my) = mouse_position();
-            let now = get_time();
-            let dt = now - state.last_click_time;
-            let (lx, ly) = state.last_click_pos;
-            let moved = (mx - lx).abs() + (my - ly).abs();
-            // Double-click: second press within 400ms and 10px of the first.
-            if dt < 0.4 && moved < 10.0 {
-                let center = &geo::RADAR_SITES[state.site_index];
-                // Hit-test all radar site markers (12px radius).
-                let hit_radius = 14.0;
-                let mut best: Option<(usize, f32)> = None;
-                for (i, other) in geo::RADAR_SITES.iter().enumerate() {
-                    if i == state.site_index {
-                        continue;
-                    }
-                    let (sx, sy) =
-                        scope::project_site(other.lat, other.lon, center, state.pan_km, state.zoom);
-                    let dist = ((mx - sx).powi(2) + (my - sy).powi(2)).sqrt();
-                    if dist < hit_radius && best.is_none_or(|(_, d)| dist < d) {
-                        best = Some((i, dist));
-                    }
-                }
-                if let Some((index, _)) = best {
-                    select_site(state, index);
-                } else {
-                    // No site marker hit — double-click on an alert polygon
-                    // opens its detail modal. (Single-click stays free for
-                    // panning, so map drags don't pop modals accidentally.)
-                    let side = screen_width().min(screen_height());
-                    let px_per_km = (side / 2.0) / scope::MAX_RANGE_KM * state.zoom;
-                    let center_x = screen_width() / 2.0 + state.pan_km.0 * px_per_km;
-                    let center_y = screen_height() / 2.0 + state.pan_km.1 * px_per_km;
-                    if let Some(alert) = alerts::hit_test(
-                        &state.alerts,
-                        state.show_watches,
-                        state.show_warnings,
-                        center,
-                        (mx, my),
-                        (center_x, center_y),
-                        px_per_km,
-                    ) {
-                        state.alert_modal = Some(AlertModal {
-                            title: alert.event.clone(),
-                            content: alert_modal_body(alert),
-                        });
-                    }
-                }
-                // Reset so a third click doesn't re-trigger.
-                state.last_click_time = 0.0;
-            } else {
-                state.last_click_time = now;
-                state.last_click_pos = (mx, my);
+            if let Some((lx, ly)) = state.last_mouse_pos {
+                let dx = mx - lx;
+                let dy = my - ly;
+                let side = screen_width().min(screen_height());
+                let px_per_km = (side / 2.0) / scope::MAX_RANGE_KM * state.zoom;
+                // Drag right moves content right; drag down moves content down.
+                state.pan_km.0 += dx / px_per_km;
+                state.pan_km.1 += dy / px_per_km;
             }
+            state.last_mouse_pos = Some((mx, my));
+        } else {
+            state.last_mouse_pos = None;
         }
-    }
 
-    if !dropdown_open && !modal_open {
-        if is_key_pressed(KeyCode::R) {
-            select_product(state, Product::Reflectivity);
-        }
-        if is_key_pressed(KeyCode::V) {
-            select_product(state, Product::Velocity);
-        }
-        if is_key_pressed(KeyCode::W) {
-            select_product(state, Product::SpectrumWidth);
-        }
-        if is_key_pressed(KeyCode::Z) {
-            select_product(state, Product::DifferentialReflectivity);
-        }
-        if is_key_pressed(KeyCode::C) {
-            select_product(state, Product::CorrelationCoefficient);
-        }
-        if is_key_pressed(KeyCode::P) {
-            select_product(state, Product::DifferentialPhase);
-        }
-        if is_key_pressed(KeyCode::T) {
-            let tilt_count = state
-                .scan
-                .as_ref()
-                .map(|scan| scan.sweeps(state.product).len())
-                .unwrap_or(0);
-            if tilt_count > 0 {
-                select_tilt(state, (state.tilt_index + 1) % tilt_count);
+        if !dropdown_open && !modal_open && !over_nhc_panel {
+            let scroll = mouse_wheel().1;
+            if scroll != 0.0 {
+                // 0.05 per unit = ~5-25% per wheel notch (vs old 0.001 = 0.1-0.5%)
+                state.zoom = (state.zoom * (1.0 + scroll * 0.05)).clamp(0.05, 8.0);
+            }
+
+            // ── Double-click on a radar site marker to select it ──────
+            if is_mouse_button_pressed(MouseButton::Left) {
+                let (mx, my) = mouse_position();
+                let now = get_time();
+                let dt = now - state.last_click_time;
+                let (lx, ly) = state.last_click_pos;
+                let moved = (mx - lx).abs() + (my - ly).abs();
+                // Double-click: second press within 400ms and 10px of the first.
+                if dt < 0.4 && moved < 10.0 {
+                    let center = &geo::RADAR_SITES[state.site_index];
+                    // Hit-test all radar site markers (12px radius).
+                    let hit_radius = 14.0;
+                    let mut best: Option<(usize, f32)> = None;
+                    for (i, other) in geo::RADAR_SITES.iter().enumerate() {
+                        if i == state.site_index {
+                            continue;
+                        }
+                        let (sx, sy) = scope::project_site(
+                            other.lat,
+                            other.lon,
+                            center,
+                            state.pan_km,
+                            state.zoom,
+                        );
+                        let dist = ((mx - sx).powi(2) + (my - sy).powi(2)).sqrt();
+                        if dist < hit_radius && best.is_none_or(|(_, d)| dist < d) {
+                            best = Some((i, dist));
+                        }
+                    }
+                    if let Some((index, _)) = best {
+                        select_site(state, index);
+                    } else {
+                        // No site marker hit — double-click on an alert polygon
+                        // opens its detail modal. (Single-click stays free for
+                        // panning, so map drags don't pop modals accidentally.)
+                        let side = screen_width().min(screen_height());
+                        let px_per_km = (side / 2.0) / scope::MAX_RANGE_KM * state.zoom;
+                        let center_x = screen_width() / 2.0 + state.pan_km.0 * px_per_km;
+                        let center_y = screen_height() / 2.0 + state.pan_km.1 * px_per_km;
+                        if let Some(alert) = alerts::hit_test(
+                            &state.alerts,
+                            state.show_watches,
+                            state.show_warnings,
+                            center,
+                            (mx, my),
+                            (center_x, center_y),
+                            px_per_km,
+                        ) {
+                            state.alert_modal = Some(AlertModal {
+                                title: alert.event.clone(),
+                                content: alert_modal_body(alert),
+                            });
+                        }
+                    }
+                    // Reset so a third click doesn't re-trigger.
+                    state.last_click_time = 0.0;
+                } else {
+                    state.last_click_time = now;
+                    state.last_click_pos = (mx, my);
+                }
             }
         }
-        if is_key_pressed(KeyCode::Key0) {
-            state.pan_km = (0.0, 0.0);
-            state.zoom = 1.0;
+
+        if !dropdown_open && !modal_open {
+            if is_key_pressed(KeyCode::R) {
+                select_product(state, Product::Reflectivity);
+            }
+            if is_key_pressed(KeyCode::V) {
+                select_product(state, Product::Velocity);
+            }
+            if is_key_pressed(KeyCode::W) {
+                select_product(state, Product::SpectrumWidth);
+            }
+            if is_key_pressed(KeyCode::Z) {
+                select_product(state, Product::DifferentialReflectivity);
+            }
+            if is_key_pressed(KeyCode::C) {
+                select_product(state, Product::CorrelationCoefficient);
+            }
+            if is_key_pressed(KeyCode::P) {
+                select_product(state, Product::DifferentialPhase);
+            }
+            if is_key_pressed(KeyCode::T) {
+                let tilt_count = state
+                    .scan
+                    .as_ref()
+                    .map(|scan| scan.sweeps(state.product).len())
+                    .unwrap_or(0);
+                if tilt_count > 0 {
+                    select_tilt(state, (state.tilt_index + 1) % tilt_count);
+                }
+            }
+            if is_key_pressed(KeyCode::Key0) {
+                state.pan_km = (0.0, 0.0);
+                state.zoom = 1.0;
+            }
+            if is_key_pressed(KeyCode::Right) {
+                select_site(state, (state.site_index + 1) % geo::RADAR_SITES.len());
+            }
+            if is_key_pressed(KeyCode::Left) {
+                select_site(
+                    state,
+                    (state.site_index + geo::RADAR_SITES.len() - 1) % geo::RADAR_SITES.len(),
+                );
+            }
+            if is_key_pressed(KeyCode::B) {
+                state.show_borders = !state.show_borders;
+            }
+            if is_key_pressed(KeyCode::W) {
+                state.show_watches = !state.show_watches;
+            }
+            if is_key_pressed(KeyCode::A) {
+                state.show_warnings = !state.show_warnings;
+            }
         }
-        if is_key_pressed(KeyCode::Right) {
-            select_site(state, (state.site_index + 1) % geo::RADAR_SITES.len());
-        }
-        if is_key_pressed(KeyCode::Left) {
-            select_site(
-                state,
-                (state.site_index + geo::RADAR_SITES.len() - 1) % geo::RADAR_SITES.len(),
-            );
-        }
-        if is_key_pressed(KeyCode::B) {
-            state.show_borders = !state.show_borders;
-        }
-        if is_key_pressed(KeyCode::W) {
-            state.show_watches = !state.show_watches;
-        }
-        if is_key_pressed(KeyCode::A) {
-            state.show_warnings = !state.show_warnings;
-        }
-    }
     } // state.view_mode == ViewMode::Radar
 
     if let Some(product) = toggle::pressed(ply, &PRODUCT_OPTIONS) {

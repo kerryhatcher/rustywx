@@ -1,7 +1,7 @@
 //! Reusable Ply UI controls used by the radar application.
 
-use ply_engine::prelude::FontAsset;
 use crate::forecast::Hour;
+use ply_engine::prelude::FontAsset;
 
 /// Icon font for UI symbols (Nerd Fonts Symbols-only). Glyphs are Private-Use
 /// codepoints (`\u{f0…}`) — see the `nf` module for the ones in use. Inter has
