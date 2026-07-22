@@ -24,7 +24,8 @@ use rustywx::widgets::settings as settings_widget;
 use rustywx::widgets::shortcuts as shortcuts_widget;
 use rustywx::widgets::toast as toast_widget;
 use rustywx::widgets::toggle::{self, ToggleOption};
-use rustywx::widgets::{SYMBOL_FONT, nf};
+use rustywx::widgets::{ChartWidget, SYMBOL_FONT, nf};
+use ply_engine::render_commands::{RenderCommand, RenderCommandConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -218,6 +219,107 @@ fn synthetic_sweep() -> SweepData {
 // ---------------------------------------------------------------------------
 // Stage 6: Observatory visual helpers
 // ---------------------------------------------------------------------------
+
+/// Ply custom-draw handler for the hourly rain-chance chart. Invoked by
+/// `ui.show(draw_rain_chart)` in z-order alongside the rest of the UI, so it
+/// draws directly with macroquad (real `draw_text` axis labels, crisp lines)
+/// instead of the old rasterize-to-texture approach.
+fn draw_rain_chart(cmd: &RenderCommand<ChartWidget>) {
+    let RenderCommandConfig::Custom(c) = &cmd.config else { return };
+    let ChartWidget::RainChart(hours) = &c.data else { return };
+    if hours.is_empty() {
+        return;
+    }
+    let n = hours.len();
+    let bb = cmd.bounding_box;
+
+    let bg = MacroquadColor::new(0.118, 0.106, 0.106, 1.0);
+    let grid = MacroquadColor::new(1.0, 1.0, 1.0, 0.10);
+    let gray = MacroquadColor::new(0.6, 0.58, 0.56, 1.0);
+    let fill = MacroquadColor::new(0.31, 0.56, 0.88, 0.45);
+    let line_color = MacroquadColor::new(0.75, 0.86, 1.0, 1.0);
+    let teal = MacroquadColor::new(0.05, 0.77, 0.72, 0.6);
+
+    draw_rectangle(bb.x, bb.y, bb.width, bb.height, bg);
+
+    // Plot area inset: room for % labels (left), day labels (top), hour
+    // ticks (bottom).
+    let left = bb.x + 30.0;
+    let right = bb.x + bb.width - 10.0;
+    let top = bb.y + 16.0;
+    let bottom = bb.y + bb.height - 18.0;
+    let plot_w = (right - left).max(1.0);
+    let plot_h = (bottom - top).max(1.0);
+
+    // Gridlines + % labels.
+    for pct in [0i64, 25, 50, 75, 100] {
+        let y = bottom - (pct as f32 / 100.0) * plot_h;
+        draw_line(left, y, right, y, 1.0, grid);
+        let label = format!("{pct}");
+        let dims = measure_text(&label, None, 11, 1.0);
+        draw_text(&label, left - 6.0 - dims.width, y + dims.height / 2.0 - 2.0, 11.0, gray);
+    }
+
+    // x/y for hour i (n==1 guarded: single point centered on the plot).
+    let x_at = |i: usize| -> f32 {
+        if n > 1 { left + (i as f32 / (n - 1) as f32) * plot_w } else { left + plot_w / 2.0 }
+    };
+    let y_at = |pct: i64| -> f32 {
+        let p = pct.clamp(0, 100) as f32;
+        bottom - (p / 100.0) * plot_h
+    };
+    let baseline = y_at(0);
+
+    // Area fill under the curve.
+    for i in 0..n.saturating_sub(1) {
+        let (x0, y0) = (x_at(i), y_at(hours[i].precip_pct));
+        let (x1, y1) = (x_at(i + 1), y_at(hours[i + 1].precip_pct));
+        draw_triangle(
+            Vec2::new(x0, y0),
+            Vec2::new(x1, y1),
+            Vec2::new(x0, baseline),
+            fill,
+        );
+        draw_triangle(
+            Vec2::new(x1, y1),
+            Vec2::new(x1, baseline),
+            Vec2::new(x0, baseline),
+            fill,
+        );
+    }
+
+    // Line + dots.
+    for i in 0..n.saturating_sub(1) {
+        let (x0, y0) = (x_at(i), y_at(hours[i].precip_pct));
+        let (x1, y1) = (x_at(i + 1), y_at(hours[i + 1].precip_pct));
+        draw_line(x0, y0, x1, y1, 2.5, line_color);
+    }
+    for i in 0..n {
+        draw_circle(x_at(i), y_at(hours[i].precip_pct), 2.5, line_color);
+    }
+
+    // Day-boundary verticals + day labels.
+    for i in 0..n {
+        let new_day = i == 0 || hours[i].date != hours[i - 1].date;
+        if new_day {
+            let x = x_at(i);
+            if i != 0 {
+                draw_line(x, top, x, bottom, 1.0, teal);
+            }
+            let wd = forecast::weekday_from_iso(&hours[i].date);
+            draw_text(&wd, x.max(left), top - 4.0, 12.0, teal);
+        }
+    }
+
+    // Sparse hour ticks.
+    for k in 0..n {
+        if k % 6 == 0 || k == n - 1 {
+            let x = x_at(k);
+            let dims = measure_text(&hours[k].label, None, 11, 1.0);
+            draw_text(&hours[k].label, x - dims.width / 2.0, bottom + 14.0, 11.0, gray);
+        }
+    }
+}
 
 /// Draw a subtle dark radial-gradient background behind the scope.
 /// Uses concentric filled circles from a brighter centre to darker edges,
@@ -494,7 +596,6 @@ async fn main() {
         forecast_fetch_fired: false,
         forecast_error: None,
         forecast_place: String::new(),
-        forecast_chart: None,
         fc_search_text: String::new(),
         fc_search_focused: false,
         fc_geo_hits: Vec::new(),
@@ -1441,56 +1542,17 @@ async fn main() {
 
                                 // Hourly rain chance (next 24h) as a line graph:
                                 // each dot is an hour, its height the rain %.
-                                if let Some(chart) = &state.forecast_chart {
+                                // Drawn directly via macroquad in `draw_rain_chart`,
+                                // through Ply's custom-draw hook (see `ui.show(...)`).
+                                if !fc.hours.is_empty() {
                                     ui.text("Hourly rain chance", |t| {
                                         t.font_size(14).color(0xC8C0BC)
                                     });
                                     ui.element()
                                         .width(fixed!(600.0))
-                                        .height(fixed!(140.0))
-                                        .background_color(0x1E1B1B)
-                                        .corner_radius(6.0)
-                                        .image(chart.clone())
+                                        .height(fixed!(150.0))
+                                        .custom_element(ChartWidget::RainChart(fc.hours.clone()))
                                         .empty();
-                                    // Day labels aligned to the day-boundary
-                                    // delimiters in the graph (teal), using the
-                                    // same per-hour proportional-spacer trick as
-                                    // the time ticks below.
-                                    let n = fc.hours.len();
-                                    ui.element()
-                                        .width(fixed!(600.0))
-                                        .height(fit!())
-                                        .layout(|layout| layout.direction(LeftToRight).align(Left, CenterY))
-                                        .children(|ui| {
-                                            for k in 0..n {
-                                                let new_day = k == 0
-                                                    || fc.hours[k].date != fc.hours[k - 1].date;
-                                                if new_day {
-                                                    let wd = forecast::weekday_from_iso(&fc.hours[k].date);
-                                                    ui.text(&wd, |t| t.font_size(12).color(0x0dc5b8));
-                                                }
-                                                if k != n - 1 {
-                                                    ui.element().width(grow!()).height(fixed!(1.0)).empty();
-                                                }
-                                            }
-                                        });
-                                    // Sparse time ticks (every ~6h) under the graph.
-                                    ui.element()
-                                        .width(fixed!(600.0))
-                                        .height(fit!())
-                                        .layout(|layout| layout.direction(LeftToRight).align(Left, CenterY))
-                                        .children(|ui| {
-                                            for k in 0..n {
-                                                if k % 6 == 0 || k == n - 1 {
-                                                    ui.text(&fc.hours[k].label, |t| {
-                                                        t.font_size(11).color(0x9A9490)
-                                                    });
-                                                }
-                                                if k != n - 1 {
-                                                    ui.element().width(grow!()).height(fixed!(1.0)).empty();
-                                                }
-                                            }
-                                        });
                                 }
                             } else if state.user_location.is_none() {
                                 ui.text("Detecting location…", |t| t.font_size(14).color(0xC8C0BC));
@@ -2403,7 +2465,7 @@ async fn main() {
                     });
             });
 
-        ui.show(|_| {}).await;
+        ui.show(draw_rain_chart).await;
 
         // ── Draw NHC modal image ───────────────────────────────────
         // Text products are rendered exclusively by Ply inside the modal.
@@ -2921,15 +2983,6 @@ fn handle_input(
             match forecast::poll_forecast(coords) {
                 Some(Ok(mut fc)) => {
                     fc.place = state.forecast_place.clone();
-                    // Rasterize the hourly rain-chance line graph once, now, and
-                    // cache the texture (rebuilt only when a new forecast lands).
-                    state.forecast_chart = if fc.hours.is_empty() {
-                        None
-                    } else {
-                        let (cw, ch) = (600usize, 140usize);
-                        let rgba = forecast::render_hourly_chart(&fc.hours, cw, ch);
-                        Some(Texture2D::from_rgba8(cw as u16, ch as u16, &rgba))
-                    };
                     state.forecast = Some(fc);
                     state.forecast_fetch_fired = false;
                 }
