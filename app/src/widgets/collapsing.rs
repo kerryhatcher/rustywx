@@ -23,10 +23,10 @@ impl CollapsingState {
     /// Declare the header and, when expanded, its body content.
     pub fn draw(
         &self,
-        ui: &mut Ui<'_, ()>,
+        ui: &mut Ui<'_, crate::widgets::ChartWidget>,
         header_id: &'static str,
         title: &str,
-        body: impl FnOnce(&mut Ui<'_, ()>),
+        body: impl FnOnce(&mut Ui<'_, crate::widgets::ChartWidget>),
     ) {
         ui.element()
             .width(grow!())
@@ -61,7 +61,7 @@ impl CollapsingState {
     }
 
     /// Toggle the section after the Ply frame has been shown.
-    pub fn handle_input(&mut self, ply: &Ply<()>, header_id: &'static str) -> bool {
+    pub fn handle_input(&mut self, ply: &Ply<crate::widgets::ChartWidget>, header_id: &'static str) -> bool {
         if ply.is_just_pressed(header_id) {
             self.open = !self.open;
             true

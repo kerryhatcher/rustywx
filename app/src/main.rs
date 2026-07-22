@@ -363,7 +363,7 @@ async fn main() {
     static DYSLEXIC_FONT: FontAsset =
         FontAsset::Path("assets/fonts/OpenDyslexicNerdFont-Regular.otf");
     static DYSLEXIC_BOLD: FontAsset = FontAsset::Path("assets/fonts/OpenDyslexicNerdFont-Bold.otf");
-    let mut ply = Ply::<()>::new(&DEFAULT_FONT).await;
+    let mut ply = Ply::<rustywx::widgets::ChartWidget>::new(&DEFAULT_FONT).await;
     // Which body font Ply was last built with, so we can detect setting changes.
     let mut active_dyslexic = false;
 
@@ -516,7 +516,7 @@ async fn main() {
         // default font is bound at construction and has no runtime setter.
         if state.settings.dyslexic_font != active_dyslexic {
             active_dyslexic = state.settings.dyslexic_font;
-            ply = Ply::<()>::new(if active_dyslexic {
+            ply = Ply::<rustywx::widgets::ChartWidget>::new(if active_dyslexic {
                 &DYSLEXIC_FONT
             } else {
                 &DEFAULT_FONT
@@ -2454,7 +2454,7 @@ async fn main() {
 // ---------------------------------------------------------------------------
 
 /// Draw a compact toggle button for an NHC overlay layer.
-fn nhc_toggle_button(ui: &mut Ui<'_, ()>, id: &'static str, label: &str, active: bool) {
+fn nhc_toggle_button(ui: &mut Ui<'_, rustywx::widgets::ChartWidget>, id: &'static str, label: &str, active: bool) {
     let bg = if active { 0x0dc5b8 } else { 0x1E1B1B };
     let marker = if active { "✓" } else { " " };
     ui.element()
@@ -2483,7 +2483,7 @@ fn nhc_toggle_button(ui: &mut Ui<'_, ()>, id: &'static str, label: &str, active:
 
 fn handle_input(
     state: &mut AppState,
-    ply: &Ply<()>,
+    ply: &Ply<rustywx::widgets::ChartWidget>,
     site_options: &[DropdownOption],
     tilt_options: &[DropdownOption],
 ) {

@@ -61,7 +61,7 @@ impl DropdownState {
     /// Declare the dropdown button and, when open, its floating panel.
     pub fn draw(
         &self,
-        ui: &mut Ui<'_, ()>,
+        ui: &mut Ui<'_, crate::widgets::ChartWidget>,
         config: DropdownConfig,
         button_label: &str,
         options: &[DropdownOption],
@@ -170,7 +170,7 @@ impl DropdownState {
     /// Process mouse and keyboard input after `Ply::show` and return a selection.
     pub fn handle_input(
         &mut self,
-        ply: &Ply<()>,
+        ply: &Ply<crate::widgets::ChartWidget>,
         config: DropdownConfig,
         options: &[DropdownOption],
     ) -> Option<usize> {

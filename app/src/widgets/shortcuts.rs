@@ -17,7 +17,7 @@ const ACCENT_COLOR: u32 = 0x0dc5b8;
 const SECTION_BG: u32 = 0x1E1B1B;
 
 /// One shortcut row: key on the left, action on the right.
-fn shortcut_row(ui: &mut Ui<'_, ()>, key: &str, action: &str) {
+fn shortcut_row(ui: &mut Ui<'_, crate::widgets::ChartWidget>, key: &str, action: &str) {
     ui.element()
         .width(grow!())
         .height(fixed!(ROW_HEIGHT))
@@ -47,7 +47,7 @@ fn shortcut_row(ui: &mut Ui<'_, ()>, key: &str, action: &str) {
 }
 
 /// Section header with light background.
-fn section_header(ui: &mut Ui<'_, ()>, title: &str) {
+fn section_header(ui: &mut Ui<'_, crate::widgets::ChartWidget>, title: &str) {
     ui.element()
         .width(grow!())
         .height(fixed!(28.0))
@@ -61,7 +61,7 @@ fn section_header(ui: &mut Ui<'_, ()>, title: &str) {
 
 /// Draw the keyboard shortcuts modal (backdrop + glass panel).
 /// No-op if the caller doesn't want it shown — check `state.show_shortcuts` before calling.
-pub fn draw(ui: &mut Ui<'_, ()>) {
+pub fn draw(ui: &mut Ui<'_, crate::widgets::ChartWidget>) {
     let modal_w = 480.0;
     let modal_h = 520.0;
     let modal_x = (screen_width() - modal_w) / 2.0;

@@ -69,7 +69,7 @@ pub const TEXT_PRIMARY: Color = Color::u_rgb(0xe8, 0xe0, 0xdc);
 /// content rendering inside large panels. `BLUR_SHADER` remains defined and
 /// validated (Spike S1) for use on non-text decorative elements, but is not
 /// applied to content-bearing panels.
-pub fn glass(builder: ElementBuilder<'_, ()>) -> ElementBuilder<'_, ()> {
+pub fn glass(builder: ElementBuilder<'_, crate::widgets::ChartWidget>) -> ElementBuilder<'_, crate::widgets::ChartWidget> {
     builder
         .background_color(GLASS_BG)
         .corner_radius(8.0)

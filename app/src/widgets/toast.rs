@@ -66,7 +66,7 @@ pub fn friendly_message(kind: ErrorKind) -> &'static str {
 }
 
 /// Draw the toast banner, top-center over the scope, faded by `opacity`.
-pub fn draw(ui: &mut Ui<'_, ()>, toast: &Toast, opacity: f32) {
+pub fn draw(ui: &mut Ui<'_, crate::widgets::ChartWidget>, toast: &Toast, opacity: f32) {
     let panel_w = 360.0;
     let panel_h = 40.0;
     let x = (screen_width() - panel_w) / 2.0;

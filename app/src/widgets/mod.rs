@@ -1,6 +1,7 @@
 //! Reusable Ply UI controls used by the radar application.
 
 use ply_engine::prelude::FontAsset;
+use crate::forecast::Hour;
 
 /// Icon font for UI symbols (Nerd Fonts Symbols-only). Glyphs are Private-Use
 /// codepoints (`\u{f0…}`) — see the `nf` module for the ones in use. Inter has
@@ -34,6 +35,17 @@ pub mod nf {
     pub const CHEVRON_RIGHT: &str = "\u{f054}"; // fa-chevron-right
     pub const EXPAND: &str = "\u{f065}"; // fa-expand (enter fullscreen)
     pub const COMPRESS: &str = "\u{f066}"; // fa-compress (exit fullscreen)
+}
+
+/// Payload for Ply's custom-draw hook (`Ply::show`'s `handle_custom_command`).
+/// Carries the data an element needs the app to render itself via macroquad.
+#[derive(Clone, Debug, Default)]
+pub enum ChartWidget {
+    /// Nothing custom to draw (the default for ordinary elements).
+    #[default]
+    None,
+    /// Hourly rain-chance line graph — the hours to plot.
+    RainChart(Vec<Hour>),
 }
 
 pub mod collapsing;

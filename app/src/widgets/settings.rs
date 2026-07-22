@@ -33,7 +33,7 @@ const ACTIVE_BG: u32 = 0x0dc5b8;
 const INACTIVE_BG: u32 = 0x1E1B1B;
 
 /// One row: a label on the left, a control on the right.
-fn row(ui: &mut Ui<'_, ()>, label: &str, children: impl FnOnce(&mut Ui<'_, ()>)) {
+fn row(ui: &mut Ui<'_, crate::widgets::ChartWidget>, label: &str, children: impl FnOnce(&mut Ui<'_, crate::widgets::ChartWidget>)) {
     ui.element()
         .width(grow!())
         .height(fixed!(ROW_HEIGHT))
@@ -54,7 +54,7 @@ fn row(ui: &mut Ui<'_, ()>, label: &str, children: impl FnOnce(&mut Ui<'_, ()>))
         });
 }
 
-fn bool_toggle(ui: &mut Ui<'_, ()>, id: &'static str, label: &str, value: bool) {
+fn bool_toggle(ui: &mut Ui<'_, crate::widgets::ChartWidget>, id: &'static str, label: &str, value: bool) {
     ui.element()
         .id(id)
         .width(fit!())
@@ -70,7 +70,7 @@ fn bool_toggle(ui: &mut Ui<'_, ()>, id: &'static str, label: &str, value: bool) 
         });
 }
 
-fn cycle_button(ui: &mut Ui<'_, ()>, id: &'static str, label: &str) {
+fn cycle_button(ui: &mut Ui<'_, crate::widgets::ChartWidget>, id: &'static str, label: &str) {
     ui.element()
         .id(id)
         .width(fit!())
@@ -90,7 +90,7 @@ fn cycle_button(ui: &mut Ui<'_, ()>, id: &'static str, label: &str) {
 /// Draw the settings modal (backdrop + glass panel). No-op if the caller
 /// doesn't want it shown — check `state.show_settings_panel` before calling.
 pub fn draw(
-    ui: &mut Ui<'_, ()>,
+    ui: &mut Ui<'_, crate::widgets::ChartWidget>,
     settings: &Settings,
     current_site_id: &str,
     location_input: &str,
