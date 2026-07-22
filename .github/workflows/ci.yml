@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, port/ply-engine]
+    branches: [main]
   pull_request:
-    branches: [main, port/ply-engine]
+    branches: [main]
   workflow_dispatch:
 
 env:
