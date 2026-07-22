@@ -3,3 +3,10 @@
 /logs
 /.pi-subagents
 ply-spike/target/
+
+# PDFs — research docs managed separately, not tracked in git
+*.pdf
+# Extension-less PDF research drops
+/docs/research/Investigating the outer spiral tornado mechanism in Typhoon Mujigae
+# Extracted figure images from research PDFs — text .md tracked, images not
+/docs/research/media/

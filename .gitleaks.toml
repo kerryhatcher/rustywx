@@ -10,7 +10,7 @@ useDefault = true
 description = "Global allowlist"
 paths = [
     # Exclude test fixtures and generated files
-    '''ply-spike/target/''',
+    '''app/target/''',
     '''target/''',
     '''Cargo.lock''',
     '''.*\.lock$''',

@@ -8,23 +8,33 @@ repos:
     rev: v5.0.0
     hooks:
       - id: trailing-whitespace
+        exclude: '^docs/research/'
       - id: end-of-file-fixer
+        exclude: '^docs/research/'
       - id: check-yaml
         args: [--allow-multiple]
+        exclude: '^docs/research/'
       - id: check-json
+        exclude: '^docs/research/'
       - id: check-toml
+        exclude: '^docs/research/'
       - id: check-added-large-files
         args: [--maxkb=500]
+        exclude: '^docs/research/'
       - id: check-merge-conflict
+        exclude: '^docs/research/'
       - id: detect-private-key
+        exclude: '^docs/research/'
       - id: mixed-line-ending
         args: [--fix=lf]
+        exclude: '^docs/research/'
 
   # ── Secrets detection ────────────────────────────────────────
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.1
     hooks:
       - id: gitleaks
+        exclude: '^docs/research/'
 
   # ── Rust: formatting ─────────────────────────────────────────
   - repo: local
@@ -114,13 +124,14 @@ repos:
     hooks:
       - id: typos
         args: [--config, typos.toml]
+        exclude: '^docs/research/|\.geojson$'
 
   # ── Markdown link checking ───────────────────────────────────
   - repo: local
     hooks:
       - id: lychee
         name: lychee
-        entry: lychee --no-progress --exclude 'localhost|127\.0\.0\.1|crates\.io' .
+        entry: lychee --no-progress --exclude 'localhost|127\.0\.0\.1|crates\.io' --exclude-path 'docs/research' --exclude-path 'docs/Volumetric' --exclude-path 'md_partB.md' --exclude-path 'fmh-11B-2005.md' .
         language: system
         pass_filenames: false
         stages: [pre-push]

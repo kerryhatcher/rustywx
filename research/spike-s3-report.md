@@ -3,6 +3,9 @@
 **Date:** 2025-07-19
 **Status:** ✅ Complete
 
+**Stage 3 update:** Implemented in `05e4fb7`; some pre-implementation notes below
+are superseded by Ply 1.1.1 findings recorded at the end of this report.
+
 ## Approach
 
 Built a searchable site selector dropdown using **Ply-native** elements
@@ -75,12 +78,29 @@ selector and other dropdowns in Stage 3.
 
 ## Notes for Stage 3
 
-- Extract dropdown logic into `widgets/dropdown.rs` as a reusable component
-- The current implementation iterates all 160+ sites for click detection
-  each frame. For Stage 3, only check visible options.
-- Add scroll wheel support for the dropdown list
-- The filter display is basic (just shows the string). Stage 3 should add
-  a proper text input field with cursor.
-- Consider adding a scrollbar indicator for long lists
-- The dropdown panel height is fixed at 300px. Make it dynamic based on
-  available space in Stage 3.
+- [x] Extract dropdown logic into `widgets/dropdown.rs` as a reusable component.
+- [x] Check only visible option IDs rather than the full radar-site list.
+- [x] Add scroll-wheel support for dropdown navigation.
+- [ ] Add a full cursor-bearing text field only if future UX requires it.
+- [ ] Consider a scrollbar indicator if usability testing shows it is needed.
+- [~] Panel dimensions and offsets are configurable, but available-space-aware
+  placement is deferred to Stage 6 responsive layout work.
+
+## Post-Implementation Findings (Stage 3)
+
+- The production radar-site table contains **143** sites, not “160+”. The
+  implementation renders and hit-tests at most 12 site rows at once.
+- Ply 1.1.1 exposes a native text-input primitive plus focus/value APIs. The
+  dropdown retained `get_char_pressed()` because the desired interaction is
+  immediate type-to-filter, not a general text editor. The draft text-input
+  issue should be updated before filing.
+- Reusable Ply widgets work best with a two-phase API: declare elements while
+  holding `Ui`, then process `Ply::is_just_pressed(...)` after `show`.
+- Dynamic option IDs should use stable source indices. Visible-row indices are
+  unsuitable because filtering and scrolling would remap identity each frame.
+- An open dropdown must gate global radar input. Otherwise wheel navigation
+  also zooms the scope and pointer interaction can pan it.
+- Product selection and tilt selection are coupled: switching products resets
+  the tilt index because Reflectivity and Velocity may have different sweeps.
+- Local end-to-end validation used the release binary under X11, `xdotool` for
+  interaction, and screenshots in addition to the mandatory startup smoke test.

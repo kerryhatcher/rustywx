@@ -1,0 +1,35 @@
+[package]
+name = "rustywx"
+version = "0.7.1"
+edition = "2024"
+license = "AGPL-3.0-only"
+description = "NEXRAD Level II weather radar scope — a live Doppler radar viewer with alerts and tropical-cyclone overlays."
+repository = "https://github.com/kerryhatcher/rustywx"
+homepage = "https://github.com/kerryhatcher/rustywx"
+keywords = ["weather", "radar", "nexrad", "meteorology", "gui"]
+categories = ["visualization", "gui", "science"]
+publish = true
+
+[dependencies]
+ply-engine = { version = "1.1", features = ["net", "net-json", "storage", "built-in-shaders", "text-styling"] }
+nexrad-data = "=1.0.0-rc.7"
+nexrad-model = "=1.0.0-rc.2"
+tokio = { version = "1", features = ["rt", "time", "sync"] }
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
+webbrowser = "0.8"
+zip = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-core-location = { version = "0.3", features = ["CLLocation", "CLLocationManager"] }
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "rasterize"
+harness = false
