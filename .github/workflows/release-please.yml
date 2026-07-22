@@ -78,10 +78,15 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      # release-please bumps app/Cargo.toml but cannot maintain the
+      # workspace-root Cargo.lock. `cargo update --workspace` refreshes only
+      # the workspace-member version in the lock, leaving every registry dep
+      # pinned as committed, so the build below can stay --locked (reproducible).
+      - name: Sync workspace lockfile to bumped version
+        run: cargo update --workspace
+
       - name: Build
-        # No --locked: release-please bumps app/Cargo.toml but cannot maintain
-        # the workspace-root Cargo.lock, so let cargo sync it to the new version.
-        run: cargo build --release -p rustywx --target ${{ matrix.target }}
+        run: cargo build --release --locked -p rustywx --target ${{ matrix.target }}
 
       - name: Package (unix)
         if: runner.os != 'Windows'
@@ -149,7 +154,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae  # v2
 
+      # See build job: refresh only the workspace-member version in the lock
+      # so publish can stay --locked without cargo mutating pinned deps.
+      - name: Sync workspace lockfile to bumped version
+        run: cargo update --workspace
+
       - name: Publish to crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish -p rustywx
+        run: cargo publish -p rustywx --locked
