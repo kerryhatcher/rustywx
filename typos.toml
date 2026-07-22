@@ -66,6 +66,10 @@ plyx = "plyx"
 Ply = "Ply"
 # Other
 rustywx = "rustywx"
+
+[default.extend-identifiers]
+# "PNGs" splits to PN+Gs; PN is flagged as a typo for ON
+PNGs = "PNGs"
 Observatory = "Observatory"
 # City names (false positives)
 Buda = "Buda"

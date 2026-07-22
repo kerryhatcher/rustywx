@@ -246,6 +246,7 @@ pub fn parse_forecast(json: &str) -> Result<Forecast> {
                 })
             })
             .unwrap_or(0);
+        #[allow(clippy::needless_range_loop)] // idx also indexes `probs`
         for idx in start..(start + 24).min(times.len()) {
             let ts = times[idx].as_str().unwrap_or("");
             hours.push(Hour {

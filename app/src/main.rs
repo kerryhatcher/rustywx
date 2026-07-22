@@ -311,6 +311,7 @@ fn draw_rain_chart(cmd: &RenderCommand<ChartWidget>) {
         let (x1, y1) = (x_at(i + 1), y_at(hours[i + 1].precip_pct));
         draw_line(x0, y0, x1, y1, 2.5, line_color);
     }
+    #[allow(clippy::needless_range_loop)] // i also feeds x_at(i)
     for i in 0..n {
         draw_circle(x_at(i), y_at(hours[i].precip_pct), 2.5, line_color);
     }
@@ -329,6 +330,7 @@ fn draw_rain_chart(cmd: &RenderCommand<ChartWidget>) {
     }
 
     // Sparse hour ticks.
+    #[allow(clippy::needless_range_loop)] // k also feeds x_at(k)
     for k in 0..n {
         if k % 6 == 0 || k == n - 1 {
             let x = x_at(k);

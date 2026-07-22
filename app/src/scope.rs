@@ -315,12 +315,12 @@ pub fn rasterize(
                 pixels[idx + 1] = c[1];
                 pixels[idx + 2] = c[2];
                 pixels[idx + 3] = c[3];
-            } else if matches!(product, Product::Velocity | Product::SpectrumWidth) {
-                if radial1.range_folded.get(gate).copied().unwrap_or(false) {
-                    let c = colors::RANGE_FOLDED_COLOR;
-                    let idx = (py * size_px + px) * 4;
-                    pixels[idx..idx + 4].copy_from_slice(&c);
-                }
+            } else if matches!(product, Product::Velocity | Product::SpectrumWidth)
+                && radial1.range_folded.get(gate).copied().unwrap_or(false)
+            {
+                let c = colors::RANGE_FOLDED_COLOR;
+                let idx = (py * size_px + px) * 4;
+                pixels[idx..idx + 4].copy_from_slice(&c);
             }
         }
     }
@@ -630,6 +630,7 @@ pub fn project_site(
 ///
 /// Stage 4 adds optional border and alert overlay drawing.
 /// Stage 5 adds optional NHC tropical cyclone overlay drawing.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_scope_to_texture(
     radar_texture: Option<&Texture2D>,
     site: &RadarSite,
@@ -1686,14 +1687,14 @@ mod tests {
 
         let center_radial = n_radials / 2;
         let center_gate = n_gates / 2;
-        for r in 0..n_radials {
+        for (r, radial) in radials.iter_mut().enumerate() {
             if r == center_radial {
                 continue;
             }
             // Alternate high/low so mean ~10, variance large, around the
             // center gate's window.
             let v = if r % 2 == 0 { 40.0 } else { -20.0 };
-            radials[r].gates[center_gate] = Some(v);
+            radial.gates[center_gate] = Some(v);
         }
 
         let sweep = SweepData {
