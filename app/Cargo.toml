@@ -1,6 +1,6 @@
 [package]
 name = "rustywx"
-version = "0.7.1"
+version = "0.7.2"
 edition = "2024"
 license = "AGPL-3.0-only"
 description = "NEXRAD Level II weather radar scope — a live Doppler radar viewer with alerts and tropical-cyclone overlays."
