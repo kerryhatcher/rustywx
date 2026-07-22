@@ -1455,7 +1455,15 @@ async fn main() {
                                     .height(fixed!(ctrl_h))
                                     .background_color(close_bg)
                                     .corner_radius(4.0)
-                                    .layout(|layout| layout.align(CenterX, CenterY))
+                                    // The fa-times glyph sits ~4px right / ~1.5px
+                                    // high of the cell centre in Symbols Nerd Font
+                                    // Mono (ply draws all glyphs at the Latin
+                                    // baseline). Asymmetric padding recentres it.
+                                    // ponytail: per-glyph nudge; the real fix is a
+                                    // ply-engine metrics patch.
+                                    .layout(|layout| {
+                                        layout.padding((3, 8, 0, 0)).align(CenterX, CenterY)
+                                    })
                                     .accessibility(|a| a.button("Close"))
                                     .children(|ui| {
                                         ui.text(nf::CLOSE, |text| {
@@ -2546,7 +2554,10 @@ async fn main() {
                             .height(grow!())
                             .background_color(gear_bg)
                             .corner_radius(4.0)
-                            .layout(|layout| layout.align(CenterX, CenterY))
+                            // fa-gear sits ~5px right / ~1.5px high of centre in
+                            // Symbols Nerd Font Mono — same quirk as btn-close.
+                            // ponytail: per-glyph nudge, not a metrics fix.
+                            .layout(|layout| layout.padding((3, 10, 0, 0)).align(CenterX, CenterY))
                             .accessibility(|a| a.button("Settings"))
                             .children(|ui| {
                                 ui.text(nf::GEAR, |text| {
