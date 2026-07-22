@@ -18,8 +18,11 @@ jobs:
     name: release-please
     runs-on: ubuntu-latest
     outputs:
-      release_created: ${{ steps.rp.outputs.release_created }}
-      tag_name: ${{ steps.rp.outputs.tag_name }}
+      # Manifest mode prefixes per-package outputs by path ("app--…"); the
+      # unprefixed release_created is for the repo root and is always empty
+      # here. releases_created is the top-level "any release cut?" boolean.
+      releases_created: ${{ steps.rp.outputs.releases_created }}
+      tag_name: ${{ steps.rp.outputs['app--tag_name'] }}
     steps:
       - id: rp
         uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071  # v4
@@ -33,7 +36,7 @@ jobs:
   build:
     name: build (${{ matrix.target }})
     needs: release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -129,7 +132,7 @@ jobs:
   publish-crate:
     name: cargo publish
     needs: [release-please, build]
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
