@@ -1,0 +1,122 @@
+name: release-build
+
+on:
+  release:
+    types: [published]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            archive_ext: tar.gz
+          - runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive_ext: tar.gz
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            archive_ext: tar.gz
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive_ext: zip
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Install Linux GUI/audio build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libx11-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libgl1-mesa-dev \
+            libasound2-dev \
+            libudev-dev
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae  # v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked -p rustywx --target ${{ matrix.target }}
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          STAGE="rustywx-${VERSION}-${{ matrix.target }}"
+          mkdir -p "$STAGE"
+          cp "target/${{ matrix.target }}/release/rustywx" "$STAGE/"
+          cp README.md LICENSE "$STAGE/"
+          cp -R app/assets "$STAGE/assets"
+          tar -czf "${STAGE}.tar.gz" "$STAGE"
+          echo "ASSET_PATH=${STAGE}.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $VERSION = "${env:GITHUB_REF_NAME}".TrimStart("v")
+          $STAGE = "rustywx-$VERSION-${{ matrix.target }}"
+          New-Item -ItemType Directory -Path $STAGE | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/rustywx.exe" -Destination $STAGE
+          Copy-Item README.md,LICENSE -Destination $STAGE
+          Copy-Item -Recurse app/assets "$STAGE/assets"
+          Compress-Archive -Path $STAGE -DestinationPath "$STAGE.zip"
+          Add-Content -Path $env:GITHUB_ENV -Value "ASSET_PATH=$STAGE.zip"
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2
+        with:
+          files: ${{ env.ASSET_PATH }}
+
+  publish-crate:
+    name: cargo publish
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - name: Install Linux GUI/audio build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libx11-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libgl1-mesa-dev \
+            libasound2-dev \
+            libudev-dev
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae  # v2
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p rustywx --locked
