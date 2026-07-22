@@ -61,7 +61,11 @@ impl CollapsingState {
     }
 
     /// Toggle the section after the Ply frame has been shown.
-    pub fn handle_input(&mut self, ply: &Ply<crate::widgets::ChartWidget>, header_id: &'static str) -> bool {
+    pub fn handle_input(
+        &mut self,
+        ply: &Ply<crate::widgets::ChartWidget>,
+        header_id: &'static str,
+    ) -> bool {
         if ply.is_just_pressed(header_id) {
             self.open = !self.open;
             true

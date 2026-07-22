@@ -194,7 +194,13 @@ pub fn parse_forecast(json: &str) -> Result<Forecast> {
     let daily = root
         .get("daily")
         .ok_or_else(|| anyhow!("forecast JSON has no \"daily\""))?;
-    let arr = |k: &str| daily.get(k).and_then(Value::as_array).cloned().unwrap_or_default();
+    let arr = |k: &str| {
+        daily
+            .get(k)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
     let dates = arr("time");
     let codes = arr("weather_code");
     let his = arr("temperature_2m_max");
@@ -233,9 +239,11 @@ pub fn parse_forecast(json: &str) -> Result<Forecast> {
         let start = now_hour
             .get(..13)
             .and_then(|nh| {
-                times
-                    .iter()
-                    .position(|t| t.as_str().and_then(|s| s.get(..13)).is_some_and(|h| h >= nh))
+                times.iter().position(|t| {
+                    t.as_str()
+                        .and_then(|s| s.get(..13))
+                        .is_some_and(|h| h >= nh)
+                })
             })
             .unwrap_or(0);
         for idx in start..(start + 24).min(times.len()) {
@@ -248,7 +256,12 @@ pub fn parse_forecast(json: &str) -> Result<Forecast> {
         }
     }
 
-    Ok(Forecast { place: String::new(), current, days, hours })
+    Ok(Forecast {
+        place: String::new(),
+        current,
+        days,
+        hours,
+    })
 }
 
 /// Parse an Open-Meteo geocoding response into up to 5 hits.
@@ -273,7 +286,10 @@ pub fn parse_geo(json: &str) -> Result<Vec<GeoHit>> {
                 .cloned()
                 .collect::<Vec<_>>()
                 .join(", ");
-            hits.push(GeoHit { label, coords: Coords { lat, lon } });
+            hits.push(GeoHit {
+                label,
+                coords: Coords { lat, lon },
+            });
         }
     }
     Ok(hits)

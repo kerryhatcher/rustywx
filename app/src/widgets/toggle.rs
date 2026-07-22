@@ -14,7 +14,11 @@ pub struct ToggleOption<T> {
 }
 
 /// Draw a mutually exclusive group of compact buttons.
-pub fn draw<T: Copy + PartialEq>(ui: &mut Ui<'_, crate::widgets::ChartWidget>, selected: T, options: &[ToggleOption<T>]) {
+pub fn draw<T: Copy + PartialEq>(
+    ui: &mut Ui<'_, crate::widgets::ChartWidget>,
+    selected: T,
+    options: &[ToggleOption<T>],
+) {
     for option in options {
         ui.element()
             .id(option.id)
@@ -35,7 +39,10 @@ pub fn draw<T: Copy + PartialEq>(ui: &mut Ui<'_, crate::widgets::ChartWidget>, s
 }
 
 /// Return the value of the option pressed during the current frame.
-pub fn pressed<T: Copy>(ply: &Ply<crate::widgets::ChartWidget>, options: &[ToggleOption<T>]) -> Option<T> {
+pub fn pressed<T: Copy>(
+    ply: &Ply<crate::widgets::ChartWidget>,
+    options: &[ToggleOption<T>],
+) -> Option<T> {
     options
         .iter()
         .find(|option| ply.is_just_pressed(option.id))
