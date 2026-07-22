@@ -6,7 +6,7 @@
 //! elevation appear once in the tilt selector.
 
 use chrono::{DateTime, Utc};
-use nexrad_model::data::{MomentValue, Scan, Sweep, VCPNumber};
+use nexrad_model::data::{DataMoment, MomentValue, Scan, Sweep, VCPNumber};
 use serde::{Deserialize, Serialize};
 
 /// NEXRAD WSR-88D wavelength in meters. Used for Nyquist velocity calculation.
@@ -88,6 +88,27 @@ pub struct RadialData {
 pub struct SweepData {
     pub elevation_deg: f32,
     pub radials: Vec<RadialData>,
+    /// Range to the first gate, km. Varies per product/tilt (super-res
+    /// split-cut vs. legacy upper tilts). Defaults to the legacy super-res
+    /// constant so stale JSON caches predating this field don't decode to
+    /// `0.0` (would divide-by-zero in `scope::rasterize`).
+    #[serde(default = "default_first_gate_km")]
+    pub first_gate_km: f32,
+    /// Distance between consecutive gates, km. See `first_gate_km`.
+    #[serde(default = "default_gate_spacing_km")]
+    pub gate_spacing_km: f32,
+}
+
+/// Legacy super-res split-cut first-gate range, km. Matches
+/// `scope::FIRST_GATE_KM`; used as the serde default/fallback.
+fn default_first_gate_km() -> f32 {
+    2.125
+}
+
+/// Legacy super-res split-cut gate spacing, km. Matches
+/// `scope::GATE_SPACING_KM`; used as the serde default/fallback.
+fn default_gate_spacing_km() -> f32 {
+    0.25
 }
 
 /// Build a synthetic sweep for tests/benchmarks: `n_radials` evenly spaced
@@ -112,6 +133,8 @@ pub fn synthetic_sweep(n_radials: usize, gates_per_radial: usize) -> SweepData {
     SweepData {
         elevation_deg: 0.5,
         radials,
+        first_gate_km: default_first_gate_km(),
+        gate_spacing_km: default_gate_spacing_km(),
     }
 }
 
@@ -171,6 +194,7 @@ impl ScanData {
                 ),
                 (Product::DifferentialPhase, &mut differential_phase),
             ] {
+                let mut geometry: Option<(f32, f32)> = None;
                 let radials: Vec<RadialData> = sweep
                     .radials()
                     .iter()
@@ -183,6 +207,12 @@ impl ScanData {
                             Product::CorrelationCoefficient => radial.correlation_coefficient(),
                             Product::DifferentialPhase => radial.differential_phase(),
                         }?;
+                        if geometry.is_none() {
+                            geometry = Some((
+                                moment.first_gate_range_km() as f32,
+                                moment.gate_interval_km() as f32,
+                            ));
+                        }
                         let values = moment.values();
                         let mut gates = Vec::with_capacity(values.len());
                         let mut range_folded = Vec::with_capacity(values.len());
@@ -216,9 +246,17 @@ impl ScanData {
                         .first()
                         .map(|r| r.elevation_angle_degrees())
                         .unwrap_or(0.0);
+                    let (first_gate_km, gate_spacing_km) = match geometry {
+                        Some((first, spacing)) if first != 0.0 && spacing != 0.0 => {
+                            (first, spacing)
+                        }
+                        _ => (default_first_gate_km(), default_gate_spacing_km()),
+                    };
                     out.push(SweepData {
                         elevation_deg,
                         radials,
+                        first_gate_km,
+                        gate_spacing_km,
                     });
                 }
             }
@@ -458,6 +496,33 @@ mod tests {
         let scan_data = ScanData::from_sweeps(&[s1], Utc::now(), 12);
         let sweep = &scan_data.correlation_coefficient[0];
         assert_eq!(sweep.radials[0].gates, vec![None, Some(0.8)]);
+    }
+
+    #[test]
+    fn from_sweeps_threads_gate_geometry_from_moment() {
+        // Legacy (non-super-res) geometry: 1.0 km first gate, 1.0 km spacing,
+        // encoded as raw 0.001-km units (1000, 1000) — distinct from the
+        // 2125/250 super-res fixtures used elsewhere in this file.
+        let legacy_ref_moment = |raws: Vec<u8>| {
+            let gate_count = raws.len() as u16;
+            MomentData::from_fixed_point(gate_count, 1000, 1000, 8, 2.0, 66.0, raws)
+        };
+        let s1 = Sweep::new(
+            1,
+            vec![radial(
+                0.0,
+                1,
+                0.5,
+                Some(legacy_ref_moment(vec![130])),
+                None,
+                None,
+                None,
+                None,
+            )],
+        );
+        let scan_data = ScanData::from_sweeps(&[s1], Utc::now(), 12);
+        assert_eq!(scan_data.reflectivity[0].first_gate_km, 1.0);
+        assert_eq!(scan_data.reflectivity[0].gate_spacing_km, 1.0);
     }
 
     #[test]

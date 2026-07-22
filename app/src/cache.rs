@@ -303,6 +303,8 @@ fn encode_sweeps(buf: &mut Vec<u8>, sweeps: &[SweepData]) {
     buf.extend_from_slice(&(sweeps.len() as u32).to_le_bytes());
     for sweep in sweeps {
         buf.extend_from_slice(&sweep.elevation_deg.to_le_bytes());
+        buf.extend_from_slice(&sweep.first_gate_km.to_le_bytes());
+        buf.extend_from_slice(&sweep.gate_spacing_km.to_le_bytes());
         buf.extend_from_slice(&(sweep.radials.len() as u32).to_le_bytes());
         for radial in &sweep.radials {
             buf.extend_from_slice(&radial.azimuth_deg.to_le_bytes());
@@ -354,6 +356,8 @@ fn decode_sweeps(r: &mut Reader) -> Result<Vec<SweepData>, String> {
     (0..count)
         .map(|_| {
             let elevation_deg = r.read_f32()?;
+            let first_gate_km = r.read_f32()?;
+            let gate_spacing_km = r.read_f32()?;
             let radial_count = r.read_u32()?;
             let radials = (0..radial_count)
                 .map(|_| {
@@ -388,6 +392,8 @@ fn decode_sweeps(r: &mut Reader) -> Result<Vec<SweepData>, String> {
             Ok(SweepData {
                 elevation_deg,
                 radials,
+                first_gate_km,
+                gate_spacing_km,
             })
         })
         .collect()
@@ -454,6 +460,8 @@ mod tests {
                     gates: vec![None, Some(32.0), None, None, Some(-5.5)],
                     range_folded: vec![],
                 }],
+                first_gate_km: 2.125,
+                gate_spacing_km: 0.25,
             }],
             velocity: vec![],
             spectrum_width: vec![],
@@ -498,6 +506,20 @@ mod tests {
     }
 
     #[test]
+    fn gate_geometry_survives_round_trip() {
+        // Legacy upper-tilt geometry (1.0 km first gate / spacing) — distinct
+        // from `sample_scan`'s super-res 2.125/0.25 to prove the new fields
+        // aren't just passing through defaults.
+        let mut scan = sample_scan();
+        scan.reflectivity[0].first_gate_km = 1.0;
+        scan.reflectivity[0].gate_spacing_km = 1.0;
+        let bytes = scan_to_bytes(&scan);
+        let restored = bytes_to_scan(&bytes).unwrap();
+        assert_eq!(restored.reflectivity[0].first_gate_km, 1.0);
+        assert_eq!(restored.reflectivity[0].gate_spacing_km, 1.0);
+    }
+
+    #[test]
     fn bytes_to_scan_rejects_truncated_input() {
         let bytes = scan_to_bytes(&sample_scan());
         let truncated = &bytes[..bytes.len() - 3];
@@ -513,6 +535,8 @@ mod tests {
         let sweeps: Vec<SweepData> = (0..16)
             .map(|s| SweepData {
                 elevation_deg: s as f32 * 0.5,
+                first_gate_km: 2.125,
+                gate_spacing_km: 0.25,
                 radials: (0..360)
                     .map(|az| RadialData {
                         azimuth_deg: az as f32,

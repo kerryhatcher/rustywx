@@ -214,6 +214,8 @@ fn synthetic_sweep() -> SweepData {
     SweepData {
         elevation_deg: 0.5,
         radials,
+        first_gate_km: scope::FIRST_GATE_KM,
+        gate_spacing_km: scope::GATE_SPACING_KM,
     }
 }
 

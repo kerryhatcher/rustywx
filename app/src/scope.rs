@@ -12,7 +12,12 @@ use crate::nhc::{ArrivalTimeContour, NhcBundle, WindProbContour};
 use macroquad::math::Vec2;
 use ply_engine::prelude::*;
 
-/// Level II super-res gate geometry.
+/// Level II super-res gate geometry. Legacy fallback/default only — real
+/// per-tilt/per-product geometry rides on `SweepData::first_gate_km` /
+/// `gate_spacing_km` (populated by `model::from_sweeps` from the moment's
+/// own `first_gate_range_km()`/`gate_interval_km()`). Kept here because
+/// `model::default_first_gate_km`/`default_gate_spacing_km` and the
+/// synthetic sweep in `main.rs` still reference these values.
 pub const FIRST_GATE_KM: f32 = 2.125;
 pub const GATE_SPACING_KM: f32 = 0.25;
 /// Display radius of the scope.
@@ -40,6 +45,8 @@ fn clean_sweep(
     let mut cleaned = SweepData {
         elevation_deg: sweep.elevation_deg,
         radials: sweep.radials.clone(),
+        first_gate_km: sweep.first_gate_km,
+        gate_spacing_km: sweep.gate_spacing_km,
     };
 
     // CC-gating: null Reflectivity gates whose co-located correlation
@@ -145,7 +152,7 @@ fn clean_sweep(
     if product == Product::Reflectivity {
         for radial in &mut cleaned.radials {
             for (i, gate) in radial.gates.iter_mut().enumerate() {
-                let range_km = FIRST_GATE_KM + i as f32 * GATE_SPACING_KM;
+                let range_km = sweep.first_gate_km + i as f32 * sweep.gate_spacing_km;
                 let mut floor: f32 = if range_km < 20.0 {
                     20.0
                 } else if range_km < 80.0 {
@@ -284,7 +291,7 @@ pub fn rasterize(
         for px in 0..size_px {
             let dx = (px as f32 + 0.5 - center) * km_per_px;
             let range_km = (dx * dx + dy * dy).sqrt();
-            if !(FIRST_GATE_KM..=max_range_km).contains(&range_km) {
+            if !(sweep.first_gate_km..=max_range_km).contains(&range_km) {
                 continue;
             }
 
@@ -296,7 +303,7 @@ pub fn rasterize(
             // Bilinear interpolation across azimuth (ξ) and range (η).
             // Replaces the old hard gate index that produced blocky
             // gate-aligned artifacts. Kvasov et al. show ~90% improvement.
-            let gate_frac = (range_km - FIRST_GATE_KM) / GATE_SPACING_KM;
+            let gate_frac = (range_km - sweep.first_gate_km) / sweep.gate_spacing_km;
             let gate = gate_frac.floor() as usize;
             let eta = gate_frac.fract().clamp(0.0, 1.0);
 
@@ -1325,6 +1332,8 @@ mod tests {
                 gates: vec![None; n_gates],
                 range_folded,
             }],
+            first_gate_km: 2.125,
+            gate_spacing_km: 0.25,
         };
 
         let velocity_pixels = rasterize(
@@ -1366,6 +1375,66 @@ mod tests {
             .chunks_exact(4)
             .any(|px| px == colors::RANGE_FOLDED_COLOR);
         assert!(!has_purple_refl, "Reflectivity must not render RF purple");
+    }
+
+    #[test]
+    fn rasterize_uses_per_sweep_gate_geometry_not_module_consts() {
+        // Gate 5 carries the only real value. Geometry is 1.0/1.0 km
+        // (legacy upper-tilt), not the super-res module consts (2.125/0.25)
+        // — the pixel bearing gate 5's value must land at
+        // range = 1.0 + 5*1.0 = 6.0 km, not the module-const range
+        // 2.125 + 5*0.25 = 3.375 km. This is the test that would have
+        // caught the original per-tilt/per-product geometry bug.
+        let mut gates = vec![None; 20];
+        gates[5] = Some(15.0);
+        let sweep = SweepData {
+            elevation_deg: 0.5,
+            radials: vec![radial(0.0, gates)],
+            first_gate_km: 1.0,
+            gate_spacing_km: 1.0,
+        };
+
+        let size_px = 400;
+        let max_range_km = 20.0;
+        let pixels = rasterize(
+            &sweep,
+            Product::Velocity,
+            size_px,
+            max_range_km,
+            3,
+            None,
+            false,
+            0.0,
+            false,
+            7.0,
+            false,
+            7.0,
+        );
+        let target = colors::velocity_color(15.0);
+        let km_per_px = 2.0 * max_range_km / size_px as f32;
+        let center = size_px as f32 / 2.0;
+
+        let mut ranges: Vec<f32> = Vec::new();
+        for py in 0..size_px {
+            let dy = (py as f32 + 0.5 - center) * km_per_px;
+            for px in 0..size_px {
+                let dx = (px as f32 + 0.5 - center) * km_per_px;
+                let idx = (py * size_px + px) * 4;
+                if pixels[idx..idx + 4] == target {
+                    ranges.push((dx * dx + dy * dy).sqrt());
+                }
+            }
+        }
+        assert!(
+            !ranges.is_empty(),
+            "expected some pixels colored for gate 5's value"
+        );
+        let min_r = ranges.iter().cloned().fold(f32::MAX, f32::min);
+        let max_r = ranges.iter().cloned().fold(f32::MIN, f32::max);
+        assert!(
+            min_r > 5.0 && max_r < 7.0,
+            "expected gate-5 pixels clustered around 6.0km (1.0/1.0 geometry), got range [{min_r}, {max_r}]"
+        );
     }
 
     #[test]
@@ -1450,6 +1519,8 @@ mod tests {
         let sweep = SweepData {
             elevation_deg: 0.0,
             radials: vec![radial(0.0, gates)],
+            first_gate_km: 2.125,
+            gate_spacing_km: 0.25,
         };
 
         let removed_count = |kernel_size: usize| {
@@ -1486,10 +1557,14 @@ mod tests {
         let ref_sweep = SweepData {
             elevation_deg: 0.5,
             radials: vec![radial(0.0, vec![Some(30.0), Some(40.0)])],
+            first_gate_km: 2.125,
+            gate_spacing_km: 0.25,
         };
         let cc_sweep = SweepData {
             elevation_deg: 0.5,
             radials: vec![radial(0.0, vec![Some(0.55), Some(0.98)])],
+            first_gate_km: 2.125,
+            gate_spacing_km: 0.25,
         };
         let cleaned = clean_sweep(
             &ref_sweep,
@@ -1553,6 +1628,8 @@ mod tests {
         let sweep = SweepData {
             elevation_deg: 0.5,
             radials: vec![radial(0.0, gates.clone())],
+            first_gate_km: 2.125,
+            gate_spacing_km: 0.25,
         };
 
         // With floor enabled (default), gate 312 should be nulled.
@@ -1622,6 +1699,8 @@ mod tests {
         let sweep = SweepData {
             elevation_deg: 0.5,
             radials,
+            first_gate_km: 2.125,
+            gate_spacing_km: 0.25,
         };
 
         let center_gate_after = |vel_sd_censor_enabled: bool| {
@@ -1680,6 +1759,8 @@ mod tests {
         let refl_sweep = SweepData {
             elevation_deg: 0.5,
             radials: refl_radials,
+            first_gate_km: 2.125,
+            gate_spacing_km: 0.25,
         };
         let refl_cleaned = clean_sweep(
             &refl_sweep,
