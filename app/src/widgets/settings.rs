@@ -22,6 +22,8 @@ pub const DYSLEXIC_TOGGLE_ID: &str = "settings-toggle-dyslexic";
 pub const SWEEP_TOGGLE_ID: &str = "settings-toggle-sweep";
 pub const SCOPE_RINGS_TOGGLE_ID: &str = "settings-toggle-scope-rings";
 pub const CC_GATE_TOGGLE_ID: &str = "settings-toggle-cc-gate";
+pub const REFL_FLOOR_TOGGLE_ID: &str = "settings-toggle-refl-floor";
+pub const VEL_SD_TOGGLE_ID: &str = "settings-toggle-vel-sd";
 pub const LOCATION_INPUT_ID: &str = "settings-location-input";
 pub const LOCATION_DETECT_ID: &str = "settings-location-detect";
 pub const CENTER_TOGGLE_ID: &str = "settings-toggle-center";
@@ -33,7 +35,11 @@ const ACTIVE_BG: u32 = 0x0dc5b8;
 const INACTIVE_BG: u32 = 0x1E1B1B;
 
 /// One row: a label on the left, a control on the right.
-fn row(ui: &mut Ui<'_, crate::widgets::ChartWidget>, label: &str, children: impl FnOnce(&mut Ui<'_, crate::widgets::ChartWidget>)) {
+fn row(
+    ui: &mut Ui<'_, crate::widgets::ChartWidget>,
+    label: &str,
+    children: impl FnOnce(&mut Ui<'_, crate::widgets::ChartWidget>),
+) {
     ui.element()
         .width(grow!())
         .height(fixed!(ROW_HEIGHT))
@@ -54,7 +60,12 @@ fn row(ui: &mut Ui<'_, crate::widgets::ChartWidget>, label: &str, children: impl
         });
 }
 
-fn bool_toggle(ui: &mut Ui<'_, crate::widgets::ChartWidget>, id: &'static str, label: &str, value: bool) {
+fn bool_toggle(
+    ui: &mut Ui<'_, crate::widgets::ChartWidget>,
+    id: &'static str,
+    label: &str,
+    value: bool,
+) {
     ui.element()
         .id(id)
         .width(fit!())
@@ -98,7 +109,7 @@ pub fn draw(
     location_status: &str,
 ) {
     let modal_w = 420.0;
-    let modal_h = 510.0;
+    let modal_h = 542.0;
     let modal_x = (screen_width() - modal_w) / 2.0;
     let modal_y = (screen_height() - modal_h) / 2.0;
 
@@ -236,6 +247,22 @@ pub fn draw(
                             CC_GATE_TOGGLE_ID,
                             "CC-gate reflectivity",
                             settings.cc_gate_enabled,
+                        );
+                    });
+                    row(ui, "Noise-floor cut (dBZ)", |ui| {
+                        bool_toggle(
+                            ui,
+                            REFL_FLOOR_TOGGLE_ID,
+                            "Noise-floor cut",
+                            settings.refl_floor_enabled,
+                        );
+                    });
+                    row(ui, "Velocity SD censor", |ui| {
+                        bool_toggle(
+                            ui,
+                            VEL_SD_TOGGLE_ID,
+                            "Velocity SD censor",
+                            settings.vel_sd_censor_enabled,
                         );
                     });
                     // ── My Location ──────────────────────────────

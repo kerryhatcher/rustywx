@@ -24,6 +24,7 @@ pub const RASTER_SIZE_PX: usize = 1024;
 // Rasterization
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn clean_sweep(
     sweep: &SweepData,
     product: Product,
@@ -31,6 +32,10 @@ fn clean_sweep(
     cc_sweep: Option<&SweepData>,
     cc_gate_enabled: bool,
     cc_gate_threshold: f32,
+    refl_floor_enabled: bool,
+    refl_floor_dbz: f32,
+    vel_sd_censor_enabled: bool,
+    vel_sd_threshold: f32,
 ) -> SweepData {
     let mut cleaned = SweepData {
         elevation_deg: sweep.elevation_deg,
@@ -78,17 +83,79 @@ fn clean_sweep(
         }
     }
 
+    // Velocity spatial-SD censoring: null a Velocity gate whose local ~9-azimuth
+    // x 5-gate window has too much scatter to be a coherent Doppler return
+    // (dealias residue, non-meteorological velocity noise). Two-pass
+    // read-then-write so the window always reads pre-censoring values.
+    if product == Product::Velocity && vel_sd_censor_enabled {
+        const AZ_HALF: i64 = 4;
+        const GATE_HALF: usize = 2;
+        const MIN_SAMPLES: u32 = 5;
+
+        let mut az_order: Vec<usize> = (0..cleaned.radials.len()).collect();
+        az_order.sort_by(|&a, &b| {
+            cleaned.radials[a]
+                .azimuth_deg
+                .total_cmp(&cleaned.radials[b].azimuth_deg)
+        });
+        let n_az = az_order.len();
+
+        if n_az > 0 {
+            let mut nulls: Vec<(usize, usize)> = Vec::new();
+            for (sorted_idx, &radial_idx) in az_order.iter().enumerate() {
+                let n_gates = cleaned.radials[radial_idx].gates.len();
+                for gate in 0..n_gates {
+                    if cleaned.radials[radial_idx].gates[gate].is_none() {
+                        continue;
+                    }
+                    let g_start = gate.saturating_sub(GATE_HALF);
+                    let g_end = (gate + GATE_HALF + 1).min(n_gates);
+
+                    let mut sum = 0.0f64;
+                    let mut sum_sq = 0.0f64;
+                    let mut count = 0u32;
+                    for d in -AZ_HALF..=AZ_HALF {
+                        let az_idx = (sorted_idx as i64 + d).rem_euclid(n_az as i64) as usize;
+                        let r = &cleaned.radials[az_order[az_idx]];
+                        for g in g_start..g_end.min(r.gates.len()) {
+                            if let Some(v) = r.gates[g] {
+                                sum += v as f64;
+                                sum_sq += (v as f64) * (v as f64);
+                                count += 1;
+                            }
+                        }
+                    }
+                    if count < MIN_SAMPLES {
+                        continue;
+                    }
+                    let mean = sum / count as f64;
+                    let variance = (sum_sq / count as f64) - mean * mean;
+                    let sd = variance.max(0.0).sqrt();
+                    if sd as f32 > vel_sd_threshold {
+                        nulls.push((radial_idx, gate));
+                    }
+                }
+            }
+            for (radial_idx, gate) in nulls {
+                cleaned.radials[radial_idx].gates[gate] = None;
+            }
+        }
+    }
+
     if product == Product::Reflectivity {
         for radial in &mut cleaned.radials {
             for (i, gate) in radial.gates.iter_mut().enumerate() {
                 let range_km = FIRST_GATE_KM + i as f32 * GATE_SPACING_KM;
-                let floor = if range_km < 20.0 {
+                let mut floor: f32 = if range_km < 20.0 {
                     20.0
                 } else if range_km < 80.0 {
                     10.0
                 } else {
                     5.0
                 };
+                if refl_floor_enabled {
+                    floor = floor.max(refl_floor_dbz);
+                }
                 if let Some(v) = *gate
                     && v < floor
                 {
@@ -156,6 +223,7 @@ fn clean_sweep(
 }
 
 /// Rasterize one sweep to raw RGBA bytes.
+#[allow(clippy::too_many_arguments)]
 pub fn rasterize(
     sweep: &SweepData,
     product: Product,
@@ -165,6 +233,10 @@ pub fn rasterize(
     cc_sweep: Option<&SweepData>,
     cc_gate_enabled: bool,
     cc_gate_threshold: f32,
+    refl_floor_enabled: bool,
+    refl_floor_dbz: f32,
+    vel_sd_censor_enabled: bool,
+    vel_sd_threshold: f32,
 ) -> Vec<u8> {
     let sweep = clean_sweep(
         sweep,
@@ -173,6 +245,10 @@ pub fn rasterize(
         cc_sweep,
         cc_gate_enabled,
         cc_gate_threshold,
+        refl_floor_enabled,
+        refl_floor_dbz,
+        vel_sd_censor_enabled,
+        vel_sd_threshold,
     );
     let mut pixels = vec![0u8; size_px * size_px * 4];
 
@@ -232,6 +308,12 @@ pub fn rasterize(
                 pixels[idx + 1] = c[1];
                 pixels[idx + 2] = c[2];
                 pixels[idx + 3] = c[3];
+            } else if matches!(product, Product::Velocity | Product::SpectrumWidth) {
+                if radial1.range_folded.get(gate).copied().unwrap_or(false) {
+                    let c = colors::RANGE_FOLDED_COLOR;
+                    let idx = (py * size_px + px) * 4;
+                    pixels[idx..idx + 4].copy_from_slice(&c);
+                }
             }
         }
     }
@@ -1226,7 +1308,64 @@ mod tests {
         RadialData {
             azimuth_deg: az,
             gates,
+            range_folded: vec![],
         }
+    }
+
+    #[test]
+    fn range_folded_gates_render_purple() {
+        // One radial, ~100 gates, all None; only gate 0 is flagged range-folded.
+        let n_gates = 100;
+        let mut range_folded = vec![false; n_gates];
+        range_folded[0] = true;
+        let sweep = SweepData {
+            elevation_deg: 0.5,
+            radials: vec![RadialData {
+                azimuth_deg: 0.0,
+                gates: vec![None; n_gates],
+                range_folded,
+            }],
+        };
+
+        let velocity_pixels = rasterize(
+            &sweep,
+            Product::Velocity,
+            200,
+            20.0,
+            3,
+            None,
+            false,
+            0.0,
+            false,
+            7.0,
+            false,
+            7.0,
+        );
+        let has_purple = velocity_pixels
+            .chunks_exact(4)
+            .any(|px| px == colors::RANGE_FOLDED_COLOR);
+        assert!(has_purple, "expected at least one RF-purple pixel");
+
+        // Product gating: Reflectivity never range-folds, so no purple pixels
+        // even though the RF flag is present in the sweep data.
+        let refl_pixels = rasterize(
+            &sweep,
+            Product::Reflectivity,
+            200,
+            20.0,
+            3,
+            None,
+            false,
+            0.0,
+            false,
+            7.0,
+            false,
+            7.0,
+        );
+        let has_purple_refl = refl_pixels
+            .chunks_exact(4)
+            .any(|px| px == colors::RANGE_FOLDED_COLOR);
+        assert!(!has_purple_refl, "Reflectivity must not render RF purple");
     }
 
     #[test]
@@ -1321,6 +1460,10 @@ mod tests {
                 None,
                 false,
                 0.80,
+                false,
+                7.0,
+                false,
+                7.0,
             )
             .radials[0]
                 .gates
@@ -1355,6 +1498,10 @@ mod tests {
             Some(&cc_sweep),
             true,
             0.80,
+            false,
+            7.0,
+            false,
+            7.0,
         );
         assert_eq!(cleaned.radials[0].gates[0], None, "low-CC gate suppressed");
         assert_eq!(
@@ -1371,11 +1518,185 @@ mod tests {
             Some(&cc_sweep),
             false,
             0.80,
+            false,
+            7.0,
+            false,
+            7.0,
         );
         assert_eq!(ungated.radials[0].gates[0], Some(30.0));
 
         // Fail-open: no CC sweep → both preserved.
-        let no_cc = clean_sweep(&ref_sweep, Product::Reflectivity, 9, None, true, 0.80);
+        let no_cc = clean_sweep(
+            &ref_sweep,
+            Product::Reflectivity,
+            9,
+            None,
+            true,
+            0.80,
+            false,
+            7.0,
+            false,
+            7.0,
+        );
         assert_eq!(no_cc.radials[0].gates[0], Some(30.0));
+    }
+
+    #[test]
+    fn refl_noise_floor_nulls_weak_long_range_gate() {
+        // Build a Reflectivity radial with enough gates to reach beyond 80 km.
+        // Gate index 312 → range = 2.125 + 312*0.25 = 80.125 km,
+        // so the range floor is 5 dBZ (not 10 dBZ). A user floor of 7 dBZ
+        // should cull this gate.
+        let n_gates = 320;
+        let mut gates = vec![None; n_gates];
+        gates[312] = Some(6.0); // Above 5 dBZ range floor, below 7 dBZ user floor
+        let sweep = SweepData {
+            elevation_deg: 0.5,
+            radials: vec![radial(0.0, gates.clone())],
+        };
+
+        // With floor enabled (default), gate 312 should be nulled.
+        let cleaned_with_floor = clean_sweep(
+            &sweep,
+            Product::Reflectivity,
+            3,
+            None,
+            false,
+            0.80,
+            true, // refl_floor_enabled
+            7.0,  // refl_floor_dbz
+            false,
+            7.0,
+        );
+        assert_eq!(
+            cleaned_with_floor.radials[0].gates[312], None,
+            "6.0 dBZ gate below 7.0 dBZ floor should be nulled"
+        );
+
+        // With floor disabled, gate 312 should be preserved.
+        let cleaned_without_floor = clean_sweep(
+            &sweep,
+            Product::Reflectivity,
+            3,
+            None,
+            false,
+            0.80,
+            false, // refl_floor_enabled
+            7.0,
+            false,
+            7.0,
+        );
+        assert_eq!(
+            cleaned_without_floor.radials[0].gates[312],
+            Some(6.0),
+            "6.0 dBZ gate preserved when floor disabled"
+        );
+    }
+
+    #[test]
+    fn velocity_sd_censor_nulls_noisy_gate_keeps_smooth() {
+        // 9 radials, 1 degree apart (all fall within the wrapping ±4-azimuth
+        // window). Each has 9 gates, all constant Some(10.0) except gate
+        // column 4 (the center gate under test), which alternates +/-
+        // strongly across radials to blow up the local SD. Gate 0 sits far
+        // enough away (window half is 2 gates) that its window never
+        // touches the noisy column, so it stays smooth.
+        let n_radials = 9;
+        let n_gates = 9;
+        let mut radials: Vec<RadialData> = (0..n_radials)
+            .map(|r| radial(r as f32, vec![Some(10.0); n_gates]))
+            .collect();
+
+        let center_radial = n_radials / 2;
+        let center_gate = n_gates / 2;
+        for r in 0..n_radials {
+            if r == center_radial {
+                continue;
+            }
+            // Alternate high/low so mean ~10, variance large, around the
+            // center gate's window.
+            let v = if r % 2 == 0 { 40.0 } else { -20.0 };
+            radials[r].gates[center_gate] = Some(v);
+        }
+
+        let sweep = SweepData {
+            elevation_deg: 0.5,
+            radials,
+        };
+
+        let center_gate_after = |vel_sd_censor_enabled: bool| {
+            clean_sweep(
+                &sweep,
+                Product::Velocity,
+                9,
+                None,
+                false,
+                0.80,
+                false,
+                7.0,
+                vel_sd_censor_enabled,
+                7.0,
+            )
+            .radials[center_radial]
+                .gates[center_gate]
+        };
+
+        assert_eq!(
+            center_gate_after(true),
+            None,
+            "noisy center gate should be censored"
+        );
+        assert_eq!(
+            center_gate_after(false),
+            Some(10.0),
+            "censoring disabled preserves the gate"
+        );
+
+        // A gate far from the noisy column (window never overlaps it)
+        // stays untouched.
+        let cleaned = clean_sweep(
+            &sweep,
+            Product::Velocity,
+            9,
+            None,
+            false,
+            0.80,
+            false,
+            7.0,
+            true,
+            7.0,
+        );
+        assert_eq!(
+            cleaned.radials[center_radial].gates[0],
+            Some(10.0),
+            "smooth-region gate unaffected"
+        );
+
+        // Product gating: Reflectivity input is untouched by this pass.
+        let mut refl_radials = sweep.radials.clone();
+        for r in &mut refl_radials {
+            r.gates = vec![Some(30.0); n_gates];
+        }
+        let refl_sweep = SweepData {
+            elevation_deg: 0.5,
+            radials: refl_radials,
+        };
+        let refl_cleaned = clean_sweep(
+            &refl_sweep,
+            Product::Reflectivity,
+            9,
+            None,
+            false,
+            0.80,
+            false,
+            7.0,
+            true,
+            7.0,
+        );
+        assert_eq!(
+            refl_cleaned.radials[center_radial].gates[center_gate],
+            Some(30.0),
+            "Reflectivity must not be affected by velocity SD censor"
+        );
     }
 }

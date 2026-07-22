@@ -93,6 +93,16 @@ fn default_cc_threshold() -> f32 {
     0.80
 }
 
+/// Serde default for [`Settings::refl_floor_dbz`] (missing in older configs).
+fn default_refl_floor() -> f32 {
+    7.0
+}
+
+/// Serde default for [`Settings::vel_sd_threshold`] (missing in older configs).
+fn default_vel_sd() -> f32 {
+    7.0
+}
+
 /// User-configurable app settings, persisted as `"settings.json"` via
 /// [`crate::cache::Cache::save_settings`] / [`crate::cache::Cache::load_settings`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -167,6 +177,22 @@ pub struct Settings {
     /// CC value below which a Reflectivity gate is suppressed when gating is on.
     #[serde(default = "default_cc_threshold")]
     pub cc_gate_threshold: f32,
+    /// Whether reflectivity noise-floor cut suppresses weak Reflectivity gates
+    /// below a fixed dBZ threshold. Default on.
+    #[serde(default = "default_true")]
+    pub refl_floor_enabled: bool,
+    /// Reflectivity floor (dBZ) below which gates are suppressed when floor is on.
+    /// Applied as a per-range maximum with the existing range floor.
+    #[serde(default = "default_refl_floor")]
+    pub refl_floor_dbz: f32,
+    /// Whether Velocity spatial-SD censoring nulls noisy gates (dealias
+    /// artifacts / non-meteorological velocity noise). Default on.
+    #[serde(default = "default_true")]
+    pub vel_sd_censor_enabled: bool,
+    /// Local velocity standard-deviation (m/s) above which a gate is
+    /// censored when SD-censoring is on.
+    #[serde(default = "default_vel_sd")]
+    pub vel_sd_threshold: f32,
 }
 
 impl Default for Settings {
@@ -194,6 +220,10 @@ impl Default for Settings {
             center_on_location: false,
             cc_gate_enabled: true,
             cc_gate_threshold: 0.80,
+            refl_floor_enabled: true,
+            refl_floor_dbz: 7.0,
+            vel_sd_censor_enabled: true,
+            vel_sd_threshold: 7.0,
         }
     }
 }
@@ -220,6 +250,10 @@ mod tests {
         assert_eq!(settings.tdbz_kernel.size(), 9);
         assert!(settings.cc_gate_enabled);
         assert_eq!(settings.cc_gate_threshold, 0.80);
+        assert!(settings.refl_floor_enabled);
+        assert_eq!(settings.refl_floor_dbz, 7.0);
+        assert!(settings.vel_sd_censor_enabled);
+        assert_eq!(settings.vel_sd_threshold, 7.0);
     }
 
     #[test]
@@ -247,6 +281,10 @@ mod tests {
             center_on_location: true,
             cc_gate_enabled: false,
             cc_gate_threshold: 0.85,
+            refl_floor_enabled: false,
+            refl_floor_dbz: 5.0,
+            vel_sd_censor_enabled: false,
+            vel_sd_threshold: 8.0,
         };
         let json = serde_json::to_string(&settings).expect("serialize");
         let restored: Settings = serde_json::from_str(&json).expect("deserialize");
@@ -296,5 +334,11 @@ mod tests {
         // Missing CC-gate fields default to on/0.80.
         assert!(s.cc_gate_enabled);
         assert_eq!(s.cc_gate_threshold, 0.80);
+        // Missing noise-floor fields default to on/7.0.
+        assert!(s.refl_floor_enabled);
+        assert_eq!(s.refl_floor_dbz, 7.0);
+        // Missing velocity-SD fields default to on/7.0.
+        assert!(s.vel_sd_censor_enabled);
+        assert_eq!(s.vel_sd_threshold, 7.0);
     }
 }

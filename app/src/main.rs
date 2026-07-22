@@ -208,6 +208,7 @@ fn synthetic_sweep() -> SweepData {
         radials.push(RadialData {
             azimuth_deg: azimuth,
             gates,
+            range_folded: vec![],
         });
     }
     SweepData {
@@ -974,6 +975,10 @@ async fn main() {
                 cc_sweep.as_ref(),
                 state.settings.cc_gate_enabled,
                 state.settings.cc_gate_threshold,
+                state.settings.refl_floor_enabled,
+                state.settings.refl_floor_dbz,
+                state.settings.vel_sd_censor_enabled,
+                state.settings.vel_sd_threshold,
             );
             let tex = Texture2D::from_rgba8(
                 scope::RASTER_SIZE_PX as u16,
@@ -2984,6 +2989,16 @@ fn handle_input(
         }
         if ply.is_just_pressed(settings_widget::CC_GATE_TOGGLE_ID) {
             state.settings.cc_gate_enabled = !state.settings.cc_gate_enabled;
+            state.cache.save_settings(&state.settings);
+            state.needs_reraster = true;
+        }
+        if ply.is_just_pressed(settings_widget::REFL_FLOOR_TOGGLE_ID) {
+            state.settings.refl_floor_enabled = !state.settings.refl_floor_enabled;
+            state.cache.save_settings(&state.settings);
+            state.needs_reraster = true;
+        }
+        if ply.is_just_pressed(settings_widget::VEL_SD_TOGGLE_ID) {
+            state.settings.vel_sd_censor_enabled = !state.settings.vel_sd_censor_enabled;
             state.cache.save_settings(&state.settings);
             state.needs_reraster = true;
         }

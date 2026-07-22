@@ -1,7 +1,9 @@
 //! Thin scan model — no egui dependency. Copied from rustywx.
-//! `Option<f32>` gates: `None` = below threshold / range folded (drawn
-//! transparent). Sweeps are sorted by elevation and deduplicated so split
-//! cuts at the same elevation appear once in the tilt selector.
+//! `Option<f32>` gates: `None` = below threshold or range folded; the
+//! parallel `RadialData::range_folded` flag distinguishes the two (range
+//! folded is drawn distinctly, below-threshold stays transparent). Sweeps
+//! are sorted by elevation and deduplicated so split cuts at the same
+//! elevation appear once in the tilt selector.
 
 use chrono::{DateTime, Utc};
 use nexrad_model::data::{MomentValue, Scan, Sweep, VCPNumber};
@@ -69,11 +71,16 @@ pub fn format_nyquist_velocity() -> &'static str {
     "Nyquist —"
 }
 
-/// One ray of gate values. `None` gates are below threshold or range folded.
+/// One ray of gate values. `None` gates are below threshold or range folded;
+/// `range_folded[i]` distinguishes range-folded (`true`) from below-threshold (`false`).
 #[derive(Clone, Serialize, Deserialize)]
 pub struct RadialData {
     pub azimuth_deg: f32,
     pub gates: Vec<Option<f32>>,
+    /// Parallel to `gates`; `true` = range-folded (drawn distinctly, value is None).
+    /// May be shorter/empty than `gates` when unknown — treat missing as false.
+    #[serde(default)]
+    pub range_folded: Vec<bool>,
 }
 
 /// One full rotation at a single elevation angle, for a single product.
@@ -99,6 +106,7 @@ pub fn synthetic_sweep(n_radials: usize, gates_per_radial: usize) -> SweepData {
         radials.push(RadialData {
             azimuth_deg: azimuth,
             gates,
+            range_folded: vec![],
         });
     }
     SweepData {
@@ -175,16 +183,29 @@ impl ScanData {
                             Product::CorrelationCoefficient => radial.correlation_coefficient(),
                             Product::DifferentialPhase => radial.differential_phase(),
                         }?;
+                        let values = moment.values();
+                        let mut gates = Vec::with_capacity(values.len());
+                        let mut range_folded = Vec::with_capacity(values.len());
+                        for value in values {
+                            match value {
+                                MomentValue::Value(v) => {
+                                    gates.push(Some(v));
+                                    range_folded.push(false);
+                                }
+                                MomentValue::BelowThreshold => {
+                                    gates.push(None);
+                                    range_folded.push(false);
+                                }
+                                MomentValue::RangeFolded => {
+                                    gates.push(None);
+                                    range_folded.push(true);
+                                }
+                            }
+                        }
                         Some(RadialData {
                             azimuth_deg: radial.azimuth_angle_degrees(),
-                            gates: moment
-                                .values()
-                                .into_iter()
-                                .map(|value| match value {
-                                    MomentValue::Value(v) => Some(v),
-                                    MomentValue::BelowThreshold | MomentValue::RangeFolded => None,
-                                })
-                                .collect(),
+                            gates,
+                            range_folded,
                         })
                     })
                     .collect();
@@ -351,11 +372,12 @@ mod tests {
     }
 
     #[test]
-    fn range_folded_becomes_none() {
+    fn range_folded_flagged() {
         let scan_data = ScanData::from_sweeps(&synthetic_sweeps(), Utc::now(), 12);
         // Velocity sweep at 0.5 deg: raws [0, 1, 65] -> [None, None(RF), Some(-32.0)].
         let sweep = &scan_data.velocity[0];
         assert_eq!(sweep.radials[0].gates, vec![None, None, Some(-32.0)]);
+        assert_eq!(sweep.radials[0].range_folded, vec![false, true, false]);
     }
 
     #[test]

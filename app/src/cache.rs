@@ -307,12 +307,13 @@ fn encode_sweeps(buf: &mut Vec<u8>, sweeps: &[SweepData]) {
         for radial in &sweep.radials {
             buf.extend_from_slice(&radial.azimuth_deg.to_le_bytes());
             buf.extend_from_slice(&(radial.gates.len() as u32).to_le_bytes());
-            for gate in &radial.gates {
+            for (i, gate) in radial.gates.iter().enumerate() {
                 match gate {
                     Some(v) => {
                         buf.push(1);
                         buf.extend_from_slice(&v.to_le_bytes());
                     }
+                    None if radial.range_folded.get(i).copied().unwrap_or(false) => buf.push(2),
                     None => buf.push(0),
                 }
             }
@@ -358,14 +359,30 @@ fn decode_sweeps(r: &mut Reader) -> Result<Vec<SweepData>, String> {
                 .map(|_| {
                     let azimuth_deg = r.read_f32()?;
                     let gate_count = r.read_u32()?;
-                    let gates = (0..gate_count)
-                        .map(|_| match r.read_u8()? {
-                            0 => Ok(None),
-                            1 => Ok(Some(r.read_f32()?)),
-                            other => Err(format!("cache: bad gate tag byte {other}")),
-                        })
-                        .collect::<Result<Vec<_>, String>>()?;
-                    Ok(RadialData { azimuth_deg, gates })
+                    let mut gates = Vec::with_capacity(gate_count as usize);
+                    let mut range_folded = Vec::with_capacity(gate_count as usize);
+                    for _ in 0..gate_count {
+                        match r.read_u8()? {
+                            0 => {
+                                gates.push(None);
+                                range_folded.push(false);
+                            }
+                            1 => {
+                                gates.push(Some(r.read_f32()?));
+                                range_folded.push(false);
+                            }
+                            2 => {
+                                gates.push(None);
+                                range_folded.push(true);
+                            }
+                            other => return Err(format!("cache: bad gate tag byte {other}")),
+                        }
+                    }
+                    Ok(RadialData {
+                        azimuth_deg,
+                        gates,
+                        range_folded,
+                    })
                 })
                 .collect::<Result<Vec<_>, String>>()?;
             Ok(SweepData {
@@ -435,6 +452,7 @@ mod tests {
                 radials: vec![RadialData {
                     azimuth_deg: 12.0,
                     gates: vec![None, Some(32.0), None, None, Some(-5.5)],
+                    range_folded: vec![],
                 }],
             }],
             velocity: vec![],
@@ -507,6 +525,7 @@ mod tests {
                                 }
                             })
                             .collect(),
+                        range_folded: vec![],
                     })
                     .collect(),
             })

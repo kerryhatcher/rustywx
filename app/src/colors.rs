@@ -98,6 +98,9 @@ pub const PHIDP_LEGEND: &[(f32, [u8; 4])] = &[
     (360.0, [0x80, 0x00, 0x80, 0xff]), // purple (wraps toward navy)
 ];
 
+/// Range-folded ("RF") gates — NWS convention draws these a distinct purple.
+pub const RANGE_FOLDED_COLOR: [u8; 4] = [0x77, 0x00, 0x77, 0xff];
+
 /// Catmull-Rom spline (Cardinal spline with tension 0) interpolation of
 /// a single channel. Interpolates between `p1` and `p2` using the
 /// neighbouring control points `p0` and `p3` for tangent estimation.
