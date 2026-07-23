@@ -16,6 +16,13 @@ const MUTED_COLOR: u32 = 0x9E9590;
 const ACCENT_COLOR: u32 = 0x0dc5b8;
 const SECTION_BG: u32 = 0x1E1B1B;
 
+/// Key-label font (Inter Regular), embedded so the binary doesn't depend on
+/// a CWD-relative `assets/` directory (see issue #11).
+static KEY_FONT: FontAsset = FontAsset::Bytes {
+    file_name: "Inter-Regular.ttf",
+    data: include_bytes!("../../assets/fonts/Inter-Regular.ttf"),
+};
+
 /// One shortcut row: key on the left, action on the right.
 fn shortcut_row(ui: &mut Ui<'_, crate::widgets::ChartWidget>, key: &str, action: &str) {
     ui.element()
@@ -29,11 +36,7 @@ fn shortcut_row(ui: &mut Ui<'_, crate::widgets::ChartWidget>, key: &str, action:
                 .height(grow!())
                 .layout(|l| l.align(Left, CenterY))
                 .children(|ui| {
-                    ui.text(key, |t| {
-                        t.font_size(11)
-                            .font(&FontAsset::Path("assets/fonts/Inter-Regular.ttf"))
-                            .color(ACCENT_COLOR)
-                    });
+                    ui.text(key, |t| t.font_size(11).font(&KEY_FONT).color(ACCENT_COLOR));
                 });
             // Action
             ui.element()

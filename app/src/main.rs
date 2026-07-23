@@ -483,14 +483,28 @@ async fn main() {
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let _rt_guard = rt.enter();
 
-    static DEFAULT_FONT: FontAsset = FontAsset::Path("assets/fonts/Inter-Regular.ttf");
-    static INTER_BOLD: FontAsset = FontAsset::Path("assets/fonts/Inter-Bold.ttf");
-    static MONO_FONT: FontAsset = FontAsset::Path("assets/fonts/Inter-Regular.ttf");
+    static DEFAULT_FONT: FontAsset = FontAsset::Bytes {
+        file_name: "Inter-Regular.ttf",
+        data: include_bytes!("../assets/fonts/Inter-Regular.ttf"),
+    };
+    static INTER_BOLD: FontAsset = FontAsset::Bytes {
+        file_name: "Inter-Bold.ttf",
+        data: include_bytes!("../assets/fonts/Inter-Bold.ttf"),
+    };
+    static MONO_FONT: FontAsset = FontAsset::Bytes {
+        file_name: "Inter-Regular.ttf",
+        data: include_bytes!("../assets/fonts/Inter-Regular.ttf"),
+    };
     // Optional dyslexia-friendly body font (accessibility). The default (body)
     // font is fixed at Ply::new, so switching means rebuilding Ply (see loop).
-    static DYSLEXIC_FONT: FontAsset =
-        FontAsset::Path("assets/fonts/OpenDyslexicNerdFont-Regular.otf");
-    static DYSLEXIC_BOLD: FontAsset = FontAsset::Path("assets/fonts/OpenDyslexicNerdFont-Bold.otf");
+    static DYSLEXIC_FONT: FontAsset = FontAsset::Bytes {
+        file_name: "OpenDyslexicNerdFont-Regular.otf",
+        data: include_bytes!("../assets/fonts/OpenDyslexicNerdFont-Regular.otf"),
+    };
+    static DYSLEXIC_BOLD: FontAsset = FontAsset::Bytes {
+        file_name: "OpenDyslexicNerdFont-Bold.otf",
+        data: include_bytes!("../assets/fonts/OpenDyslexicNerdFont-Bold.otf"),
+    };
     let mut ply = Ply::<rustywx::widgets::ChartWidget>::new(&DEFAULT_FONT).await;
     // Which body font Ply was last built with, so we can detect setting changes.
     let mut active_dyslexic = false;
