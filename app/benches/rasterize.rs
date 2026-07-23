@@ -3,7 +3,7 @@
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use rustywx::model::{Product, synthetic_sweep};
-use rustywx::scope::rasterize;
+use rustywx::scope::{QcConfig, rasterize};
 
 const MAX_RANGE_KM: f32 = 230.0;
 const TDBZ_KERNEL_SIZE: usize = 9; // matches settings::TdbzKernel::Default
@@ -22,15 +22,17 @@ fn bench_rasterize(c: &mut Criterion) {
                         Product::Reflectivity,
                         size_px,
                         MAX_RANGE_KM,
-                        TDBZ_KERNEL_SIZE,
-                        None,  // cc_sweep
-                        false, // cc_gate_enabled
-                        0.80,  // cc_gate_threshold
-                        false, // refl_floor_enabled
-                        7.0,   // refl_floor_dbz
-                        false, // vel_dealias_enabled
-                        false, // vel_sd_censor_enabled
-                        7.0,   // vel_sd_threshold
+                        &QcConfig {
+                            tdbz_kernel_size: TDBZ_KERNEL_SIZE,
+                            cc_sweep: None,
+                            cc_gate_enabled: false,
+                            cc_gate_threshold: 0.80,
+                            refl_floor_enabled: false,
+                            refl_floor_dbz: 7.0,
+                            vel_dealias_enabled: false,
+                            vel_sd_censor_enabled: false,
+                            vel_sd_threshold: 7.0,
+                        },
                     ))
                 });
             });

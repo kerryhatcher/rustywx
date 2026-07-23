@@ -30,20 +30,23 @@ pub const RASTER_SIZE_PX: usize = 1024;
 // Rasterization
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)]
-fn clean_sweep(
-    sweep: &SweepData,
-    product: Product,
-    tdbz_kernel_size: usize,
-    cc_sweep: Option<&SweepData>,
-    cc_gate_enabled: bool,
-    cc_gate_threshold: f32,
-    refl_floor_enabled: bool,
-    refl_floor_dbz: f32,
-    vel_dealias_enabled: bool,
-    vel_sd_censor_enabled: bool,
-    vel_sd_threshold: f32,
-) -> SweepData {
+/// QC pipeline inputs for `clean_sweep`/`rasterize`. Bundles what was
+/// previously 9-11 positional args; mechanical no-op refactor (same fields,
+/// same behavior) — see `docs/fuzzy-nonmet-classifier-plan.md` step 2. The
+/// fuzzy non-met fields (ZDR/ΦDP sweeps, toggle, threshold) land in step 3.
+pub struct QcConfig<'a> {
+    pub tdbz_kernel_size: usize,
+    pub cc_sweep: Option<&'a SweepData>,
+    pub cc_gate_enabled: bool,
+    pub cc_gate_threshold: f32,
+    pub refl_floor_enabled: bool,
+    pub refl_floor_dbz: f32,
+    pub vel_dealias_enabled: bool,
+    pub vel_sd_censor_enabled: bool,
+    pub vel_sd_threshold: f32,
+}
+
+fn clean_sweep(sweep: &SweepData, product: Product, qc: &QcConfig) -> SweepData {
     let mut cleaned = SweepData {
         elevation_deg: sweep.elevation_deg,
         radials: sweep.radials.clone(),
@@ -60,8 +63,8 @@ fn clean_sweep(
     // texture-processed. Fails open per-gate: a missing/absent CC sweep or an
     // out-of-range CC gate leaves the REF gate untouched.
     if product == Product::Reflectivity
-        && cc_gate_enabled
-        && let Some(cc) = cc_sweep
+        && qc.cc_gate_enabled
+        && let Some(cc) = qc.cc_sweep
         && !cc.radials.is_empty()
     {
         // Pre-sort CC azimuths once for nearest-azimuth lookup.
@@ -85,7 +88,7 @@ fn clean_sweep(
             for (i, gate) in radial.gates.iter_mut().enumerate() {
                 if gate.is_some()
                     && let Some(Some(cc_val)) = cc_radial.gates.get(i)
-                    && *cc_val < cc_gate_threshold
+                    && *cc_val < qc.cc_gate_threshold
                 {
                     *gate = None;
                 }
@@ -102,7 +105,7 @@ fn clean_sweep(
     // ponytail: recomputed per render, per sweep. Velocity is one sweep at a
     // time, so this is cheap; if profiling ever says otherwise, memoize on
     // the sweep at ingestion instead.
-    if product == Product::Velocity && vel_dealias_enabled && cleaned.nyquist_ms > 0.0 {
+    if product == Product::Velocity && qc.vel_dealias_enabled && cleaned.nyquist_ms > 0.0 {
         let mut az_order: Vec<usize> = (0..cleaned.radials.len()).collect();
         az_order.sort_by(|&a, &b| {
             cleaned.radials[a]
@@ -127,7 +130,7 @@ fn clean_sweep(
     // x 5-gate window has too much scatter to be a coherent Doppler return
     // (dealias residue, non-meteorological velocity noise). Two-pass
     // read-then-write so the window always reads pre-censoring values.
-    if product == Product::Velocity && vel_sd_censor_enabled {
+    if product == Product::Velocity && qc.vel_sd_censor_enabled {
         const AZ_HALF: i64 = 4;
         const GATE_HALF: usize = 2;
         const MIN_SAMPLES: u32 = 5;
@@ -171,7 +174,7 @@ fn clean_sweep(
                     let mean = sum / count as f64;
                     let variance = (sum_sq / count as f64) - mean * mean;
                     let sd = variance.max(0.0).sqrt();
-                    if sd as f32 > vel_sd_threshold {
+                    if sd as f32 > qc.vel_sd_threshold {
                         nulls.push((radial_idx, gate));
                     }
                 }
@@ -193,8 +196,8 @@ fn clean_sweep(
                 } else {
                     5.0
                 };
-                if refl_floor_enabled {
-                    floor = floor.max(refl_floor_dbz);
+                if qc.refl_floor_enabled {
+                    floor = floor.max(qc.refl_floor_dbz);
                 }
                 if let Some(v) = *gate
                     && v < floor
@@ -219,7 +222,7 @@ fn clean_sweep(
         const LOW_DBZ_GATE: f32 = 35.0;
         for radial in &mut cleaned.radials {
             let n = radial.gates.len();
-            let half = tdbz_kernel_size / 2;
+            let half = qc.tdbz_kernel_size / 2;
             let mut tdbz = vec![0.0f32; n];
             let mut mean = vec![f32::MAX; n]; // MAX = unknown → never counts as "low"
             for i in 0..n {
@@ -263,35 +266,14 @@ fn clean_sweep(
 }
 
 /// Rasterize one sweep to raw RGBA bytes.
-#[allow(clippy::too_many_arguments)]
 pub fn rasterize(
     sweep: &SweepData,
     product: Product,
     size_px: usize,
     max_range_km: f32,
-    tdbz_kernel_size: usize,
-    cc_sweep: Option<&SweepData>,
-    cc_gate_enabled: bool,
-    cc_gate_threshold: f32,
-    refl_floor_enabled: bool,
-    refl_floor_dbz: f32,
-    vel_dealias_enabled: bool,
-    vel_sd_censor_enabled: bool,
-    vel_sd_threshold: f32,
+    qc: &QcConfig,
 ) -> Vec<u8> {
-    let sweep = clean_sweep(
-        sweep,
-        product,
-        tdbz_kernel_size,
-        cc_sweep,
-        cc_gate_enabled,
-        cc_gate_threshold,
-        refl_floor_enabled,
-        refl_floor_dbz,
-        vel_dealias_enabled,
-        vel_sd_censor_enabled,
-        vel_sd_threshold,
-    );
+    let sweep = clean_sweep(sweep, product, qc);
     let mut pixels = vec![0u8; size_px * size_px * 4];
 
     if sweep.radials.is_empty() {
@@ -1378,15 +1360,17 @@ mod tests {
             Product::Velocity,
             200,
             20.0,
-            3,
-            None,
-            false,
-            0.0,
-            false,
-            7.0,
-            true,
-            false,
-            7.0,
+            &QcConfig {
+                tdbz_kernel_size: 3,
+                cc_sweep: None,
+                cc_gate_enabled: false,
+                cc_gate_threshold: 0.0,
+                refl_floor_enabled: false,
+                refl_floor_dbz: 7.0,
+                vel_dealias_enabled: true,
+                vel_sd_censor_enabled: false,
+                vel_sd_threshold: 7.0,
+            },
         );
         let has_purple = velocity_pixels
             .chunks_exact(4)
@@ -1400,15 +1384,17 @@ mod tests {
             Product::Reflectivity,
             200,
             20.0,
-            3,
-            None,
-            false,
-            0.0,
-            false,
-            7.0,
-            true,
-            false,
-            7.0,
+            &QcConfig {
+                tdbz_kernel_size: 3,
+                cc_sweep: None,
+                cc_gate_enabled: false,
+                cc_gate_threshold: 0.0,
+                refl_floor_enabled: false,
+                refl_floor_dbz: 7.0,
+                vel_dealias_enabled: true,
+                vel_sd_censor_enabled: false,
+                vel_sd_threshold: 7.0,
+            },
         );
         let has_purple_refl = refl_pixels
             .chunks_exact(4)
@@ -1441,15 +1427,17 @@ mod tests {
             Product::Velocity,
             size_px,
             max_range_km,
-            3,
-            None,
-            false,
-            0.0,
-            false,
-            7.0,
-            true,
-            false,
-            7.0,
+            &QcConfig {
+                tdbz_kernel_size: 3,
+                cc_sweep: None,
+                cc_gate_enabled: false,
+                cc_gate_threshold: 0.0,
+                refl_floor_enabled: false,
+                refl_floor_dbz: 7.0,
+                vel_dealias_enabled: true,
+                vel_sd_censor_enabled: false,
+                vel_sd_threshold: 7.0,
+            },
         );
         let target = colors::velocity_color(15.0);
         let km_per_px = 2.0 * max_range_km / size_px as f32;
@@ -1523,15 +1511,17 @@ mod tests {
             Product::Velocity,
             size_px,
             max_range_km,
-            3,
-            None,
-            false,
-            0.0,
-            false,
-            0.0,
-            true, // vel_dealias_enabled
-            false,
-            0.0,
+            &QcConfig {
+                tdbz_kernel_size: 3,
+                cc_sweep: None,
+                cc_gate_enabled: false,
+                cc_gate_threshold: 0.0,
+                refl_floor_enabled: false,
+                refl_floor_dbz: 0.0,
+                vel_dealias_enabled: true,
+                vel_sd_censor_enabled: false,
+                vel_sd_threshold: 0.0,
+            },
         );
         let unfolded_target = colors::velocity_color(27.8);
         let raw_target = colors::velocity_color(-25.0);
@@ -1550,15 +1540,17 @@ mod tests {
             Product::Velocity,
             size_px,
             max_range_km,
-            3,
-            None,
-            false,
-            0.0,
-            false,
-            0.0,
-            false, // vel_dealias_enabled
-            false,
-            0.0,
+            &QcConfig {
+                tdbz_kernel_size: 3,
+                cc_sweep: None,
+                cc_gate_enabled: false,
+                cc_gate_threshold: 0.0,
+                refl_floor_enabled: false,
+                refl_floor_dbz: 0.0,
+                vel_dealias_enabled: false,
+                vel_sd_censor_enabled: false,
+                vel_sd_threshold: 0.0,
+            },
         );
         assert!(
             color_at_gate3_range(&raw_pixels, raw_target),
@@ -1657,15 +1649,17 @@ mod tests {
             clean_sweep(
                 &sweep,
                 Product::Reflectivity,
-                kernel_size,
-                None,
-                false,
-                0.80,
-                false,
-                7.0,
-                true,
-                false,
-                7.0,
+                &QcConfig {
+                    tdbz_kernel_size: kernel_size,
+                    cc_sweep: None,
+                    cc_gate_enabled: false,
+                    cc_gate_threshold: 0.80,
+                    refl_floor_enabled: false,
+                    refl_floor_dbz: 7.0,
+                    vel_dealias_enabled: true,
+                    vel_sd_censor_enabled: false,
+                    vel_sd_threshold: 7.0,
+                },
             )
             .radials[0]
                 .gates
@@ -1702,15 +1696,17 @@ mod tests {
         let cleaned = clean_sweep(
             &ref_sweep,
             Product::Reflectivity,
-            9,
-            Some(&cc_sweep),
-            true,
-            0.80,
-            false,
-            7.0,
-            true,
-            false,
-            7.0,
+            &QcConfig {
+                tdbz_kernel_size: 9,
+                cc_sweep: Some(&cc_sweep),
+                cc_gate_enabled: true,
+                cc_gate_threshold: 0.80,
+                refl_floor_enabled: false,
+                refl_floor_dbz: 7.0,
+                vel_dealias_enabled: true,
+                vel_sd_censor_enabled: false,
+                vel_sd_threshold: 7.0,
+            },
         );
         assert_eq!(cleaned.radials[0].gates[0], None, "low-CC gate suppressed");
         assert_eq!(
@@ -1723,15 +1719,17 @@ mod tests {
         let ungated = clean_sweep(
             &ref_sweep,
             Product::Reflectivity,
-            9,
-            Some(&cc_sweep),
-            false,
-            0.80,
-            false,
-            7.0,
-            true,
-            false,
-            7.0,
+            &QcConfig {
+                tdbz_kernel_size: 9,
+                cc_sweep: Some(&cc_sweep),
+                cc_gate_enabled: false,
+                cc_gate_threshold: 0.80,
+                refl_floor_enabled: false,
+                refl_floor_dbz: 7.0,
+                vel_dealias_enabled: true,
+                vel_sd_censor_enabled: false,
+                vel_sd_threshold: 7.0,
+            },
         );
         assert_eq!(ungated.radials[0].gates[0], Some(30.0));
 
@@ -1739,15 +1737,17 @@ mod tests {
         let no_cc = clean_sweep(
             &ref_sweep,
             Product::Reflectivity,
-            9,
-            None,
-            true,
-            0.80,
-            false,
-            7.0,
-            true,
-            false,
-            7.0,
+            &QcConfig {
+                tdbz_kernel_size: 9,
+                cc_sweep: None,
+                cc_gate_enabled: true,
+                cc_gate_threshold: 0.80,
+                refl_floor_enabled: false,
+                refl_floor_dbz: 7.0,
+                vel_dealias_enabled: true,
+                vel_sd_censor_enabled: false,
+                vel_sd_threshold: 7.0,
+            },
         );
         assert_eq!(no_cc.radials[0].gates[0], Some(30.0));
     }
@@ -1773,15 +1773,17 @@ mod tests {
         let cleaned_with_floor = clean_sweep(
             &sweep,
             Product::Reflectivity,
-            3,
-            None,
-            false,
-            0.80,
-            true, // refl_floor_enabled
-            7.0,  // refl_floor_dbz
-            true,
-            false,
-            7.0,
+            &QcConfig {
+                tdbz_kernel_size: 3,
+                cc_sweep: None,
+                cc_gate_enabled: false,
+                cc_gate_threshold: 0.80,
+                refl_floor_enabled: true, // refl_floor_enabled
+                refl_floor_dbz: 7.0,      // refl_floor_dbz
+                vel_dealias_enabled: true,
+                vel_sd_censor_enabled: false,
+                vel_sd_threshold: 7.0,
+            },
         );
         assert_eq!(
             cleaned_with_floor.radials[0].gates[312], None,
@@ -1792,15 +1794,17 @@ mod tests {
         let cleaned_without_floor = clean_sweep(
             &sweep,
             Product::Reflectivity,
-            3,
-            None,
-            false,
-            0.80,
-            false, // refl_floor_enabled
-            7.0,
-            true,
-            false,
-            7.0,
+            &QcConfig {
+                tdbz_kernel_size: 3,
+                cc_sweep: None,
+                cc_gate_enabled: false,
+                cc_gate_threshold: 0.80,
+                refl_floor_enabled: false, // refl_floor_enabled
+                refl_floor_dbz: 7.0,
+                vel_dealias_enabled: true,
+                vel_sd_censor_enabled: false,
+                vel_sd_threshold: 7.0,
+            },
         );
         assert_eq!(
             cleaned_without_floor.radials[0].gates[312],
@@ -1847,15 +1851,17 @@ mod tests {
             clean_sweep(
                 &sweep,
                 Product::Velocity,
-                9,
-                None,
-                false,
-                0.80,
-                false,
-                7.0,
-                true,
-                vel_sd_censor_enabled,
-                7.0,
+                &QcConfig {
+                    tdbz_kernel_size: 9,
+                    cc_sweep: None,
+                    cc_gate_enabled: false,
+                    cc_gate_threshold: 0.80,
+                    refl_floor_enabled: false,
+                    refl_floor_dbz: 7.0,
+                    vel_dealias_enabled: true,
+                    vel_sd_censor_enabled,
+                    vel_sd_threshold: 7.0,
+                },
             )
             .radials[center_radial]
                 .gates[center_gate]
@@ -1877,15 +1883,17 @@ mod tests {
         let cleaned = clean_sweep(
             &sweep,
             Product::Velocity,
-            9,
-            None,
-            false,
-            0.80,
-            false,
-            7.0,
-            true,
-            true,
-            7.0,
+            &QcConfig {
+                tdbz_kernel_size: 9,
+                cc_sweep: None,
+                cc_gate_enabled: false,
+                cc_gate_threshold: 0.80,
+                refl_floor_enabled: false,
+                refl_floor_dbz: 7.0,
+                vel_dealias_enabled: true,
+                vel_sd_censor_enabled: true,
+                vel_sd_threshold: 7.0,
+            },
         );
         assert_eq!(
             cleaned.radials[center_radial].gates[0],
@@ -1908,15 +1916,17 @@ mod tests {
         let refl_cleaned = clean_sweep(
             &refl_sweep,
             Product::Reflectivity,
-            9,
-            None,
-            false,
-            0.80,
-            false,
-            7.0,
-            true,
-            true,
-            7.0,
+            &QcConfig {
+                tdbz_kernel_size: 9,
+                cc_sweep: None,
+                cc_gate_enabled: false,
+                cc_gate_threshold: 0.80,
+                refl_floor_enabled: false,
+                refl_floor_dbz: 7.0,
+                vel_dealias_enabled: true,
+                vel_sd_censor_enabled: true,
+                vel_sd_threshold: 7.0,
+            },
         );
         assert_eq!(
             refl_cleaned.radials[center_radial].gates[center_gate],
