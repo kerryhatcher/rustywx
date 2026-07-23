@@ -95,13 +95,15 @@ pub const RASTER_SIZE_PX: usize = 2048;
 /// ponytail: raise toward 6 for a softer look; lower/0 for maximum crispness.
 pub const SMOOTH_RADIUS_PX: usize = 3;
 
-/// Channel-sealing radius (raster pixels) for QC-hole filling. A hole leaks to
-/// the background — and so stays open — only if its opening is wider than
-/// ~2×this. At ~0.22 km/px, 8 seals openings up to ~3.6 km, enough to close the
-/// gate-cell notches QC punches while leaving real bays open. The one knob for
-/// how aggressively interior cutouts are filled.
-/// ponytail: seal is O(n·r²); if re-raster feels slow at 2048, make the mask
-/// dilation separable (O(n·r)) before growing r further.
+/// Channel-sealing radius (raster pixels) for QC-hole filling: the coverage
+/// mask is morphologically closed (dilate + erode) by this much before the
+/// open-air flood, so a hole leaks to the background — and stays open — only
+/// if its opening is wider than ~2×this. At ~0.22 km/px, 8 seals openings up
+/// to ~3.6 km, enough to close the gate-cell notches QC punches while leaving
+/// real bays open. The one knob for how aggressively interior cutouts are
+/// filled.
+/// ponytail: seal is O(n·r²) across two passes; if re-raster feels slow at
+/// 2048, make the dilate/erode separable (O(n·r)) before growing r further.
 pub const SEAL_RADIUS_PX: usize = 8;
 
 /// Lowest dBZ emitted into the reflectivity value texture. Below this the gate
@@ -1095,14 +1097,16 @@ fn despeckle(pixels: &mut [u8], size_px: usize, min_neighbors: usize) {
 /// precip; rasterized, those become hard rectangular cutouts. This fills them
 /// while leaving genuine boundary edges untouched.
 ///
-/// Topology: dilate the coverage mask by `seal_radius` to pinch shut thin NaN
-/// channels that leak a hole out to the background, then flood-fill "open air"
-/// from the image border through the *sealed* empty space. A hole stays open
-/// only if its opening to the background is wider than ~2·seal_radius; anything
-/// the flood can't reach is filled by repeated finite-neighbor averaging,
-/// propagating inward until closed (any hole size). Genuine wide bays and the
-/// storm's outer boundary are untouched — the dilation is used for topology
-/// only, never committed to output.
+/// Topology: morphologically *close* the coverage mask (dilate by
+/// `seal_radius`, then erode by the same) to pinch shut thin NaN channels that
+/// leak a hole out to the background, then flood-fill "open air" from the
+/// image border through the still-empty space. A hole stays open only if its
+/// opening to the background is wider than ~2·seal_radius; anything the flood
+/// can't reach is filled by repeated finite-neighbor averaging, propagating
+/// inward until closed (any hole size). Genuine wide bays and the storm's
+/// outer boundary are untouched — the erode step returns the boundary to its
+/// original footprint, so the seal is topology-only and never committed to
+/// output.
 fn fill_enclosed_holes(values: &mut [f32], size_px: usize, seal_radius: usize) {
     let s = size_px as i32;
     let n = size_px * size_px;
@@ -1128,6 +1132,35 @@ fn fill_enclosed_holes(values: &mut [f32], size_px: usize, seal_radius: usize) {
             sealed[(y * s + x) as usize] = hit;
         }
     }
+
+    // Erode back by the same radius — a proper morphological *closing*. The
+    // dilation exists only to bridge sub-2r channel necks; eroding restores
+    // the outer echo boundary so the halo around echo is never treated as
+    // enclosed. (Flooding against the bare dilated mask committed the halo:
+    // an r-px blocky rind grew along every storm edge and each isolated gate
+    // ballooned into a (2r+1)² square.) Out-of-bounds counts as unsealed so
+    // nothing phantom-seals at the grid edge.
+    let mut closed = vec![false; n];
+    for y in 0..s {
+        for x in 0..s {
+            let idx = (y * s + x) as usize;
+            if !sealed[idx] {
+                continue;
+            }
+            let mut all = true;
+            'e: for dy in -r..=r {
+                for dx in -r..=r {
+                    let (nx, ny) = (x + dx, y + dy);
+                    if nx < 0 || nx >= s || ny < 0 || ny >= s || !sealed[(ny * s + nx) as usize] {
+                        all = false;
+                        break 'e;
+                    }
+                }
+            }
+            closed[idx] = all;
+        }
+    }
+    let sealed = closed;
 
     // Flood-fill "open air": empty cells reachable from the border through
     // still-empty-after-sealing space.
@@ -1202,17 +1235,23 @@ fn fill_enclosed_holes(values: &mut [f32], size_px: usize, seal_radius: usize) {
     }
 }
 
-/// NaN-aware box blur of a scalar value grid, in place. Each cell becomes the
-/// mean of the finite (non-NaN) cells in its `(2r+1)²` neighborhood; a cell
-/// with no finite neighbors stays NaN, so smoothing softens echo *edges* and
-/// fills pinholes without inventing echo in genuinely empty space. Runs once
-/// per re-raster, not per frame.
+/// NaN-aware box blur of a scalar value grid, in place. Each *covered* cell
+/// becomes the mean of the finite (non-NaN) cells in its `(2r+1)²`
+/// neighborhood; empty (NaN) cells are never written, so the coverage mask is
+/// preserved exactly. Writing into NaN cells would dilate every echo boundary
+/// by a square (Chebyshev) footprint at full value — which rendered as blocky
+/// axis-aligned bumps along storm edges. Edge softening is the GPU's job
+/// (Linear interpolation of the value/coverage texture); interior holes are
+/// `fill_enclosed_holes`'s. Runs once per re-raster, not per frame.
 fn smooth_values(values: &mut [f32], size_px: usize, radius: usize) {
     let src = values.to_vec();
     let s = size_px as i32;
     let r = radius as i32;
     for y in 0..s {
         for x in 0..s {
+            if !src[(y * s + x) as usize].is_finite() {
+                continue;
+            }
             let mut sum = 0.0f32;
             let mut count = 0u32;
             for dy in -r..=r {
@@ -3340,36 +3379,39 @@ mod tests {
     }
 
     #[test]
-    fn smooth_values_softens_edges_and_preserves_empty_space() {
-        // 5x5 grid, radius 1. Single echo point at center (2,2) = 30 dBZ.
+    fn smooth_values_smooths_in_place_without_dilating_coverage() {
+        // 5x5 grid, radius 1. Echo pair at (2,1)=20 and (2,2)=40 dBZ.
         let n = f32::NAN;
         let mut g = vec![
             n, n, n, n, n, //
             n, n, n, n, n, //
-            n, n, 30.0, n, n, //
+            n, 20.0, 40.0, n, n, //
             n, n, n, n, n, //
             n, n, n, n, n,
         ];
         smooth_values(&mut g, 5, 1);
 
-        // Center: only itself is finite -> mean is 30.
+        // Covered cells are averaged with their finite neighbors: both become
+        // the mean of {20, 40}.
         assert!(
-            (g[12] - 30.0).abs() < 1e-6,
-            "center should stay 30, got {}",
+            (g[11] - 30.0).abs() < 1e-6 && (g[12] - 30.0).abs() < 1e-6,
+            "covered cells should blend, got {} / {}",
+            g[11],
             g[12]
         );
-        // Orthogonal neighbor (1,2 -> idx 7): within radius 1 of the point, so it
-        // gains echo — coverage softened outward past the single hard bin.
+        // Adjacent empty cell (2,3 -> idx 13) must NOT gain echo: writing into
+        // NaN cells dilates the coverage mask by a square (Chebyshev) footprint
+        // with no falloff, which rendered as blocky axis-aligned bumps along
+        // every echo boundary. Coverage shape is owned by the rasterized gates
+        // (plus fill_enclosed_holes for interior holes); smoothing only blends
+        // values inside it.
         assert!(
-            g[7].is_finite(),
-            "adjacent cell should gain echo, got {}",
-            g[7]
+            g[13].is_nan(),
+            "empty neighbor must stay empty (no coverage dilation), got {}",
+            g[13]
         );
-        // Corner (0,0): distance 2 from the point, no finite neighbor -> stays empty.
-        assert!(
-            g[0].is_nan(),
-            "empty space with no echo neighbor must stay NaN"
-        );
+        // Far empty corner stays empty too.
+        assert!(g[0].is_nan(), "empty space must stay NaN");
     }
 
     #[test]
@@ -3433,5 +3475,31 @@ mod tests {
             "sealed thin-channel hole should fill, got {}",
             g1[12]
         );
+    }
+
+    #[test]
+    fn seal_halo_around_echo_is_not_filled() {
+        // 7x7 grid, single echo gate at center (3,3), seal_radius 2. The seal
+        // dilation must be topology-only: committing it fills the (2r+1)²
+        // halo square around every isolated gate and grows a blocky r-px rind
+        // along every echo boundary — the "blocky radar edges" regression.
+        let n = f32::NAN;
+        let mut g = vec![n; 49];
+        g[24] = 30.0;
+        fill_enclosed_holes(&mut g, 7, 2);
+
+        assert!(
+            (g[24] - 30.0).abs() < 1e-6,
+            "echo gate must survive, got {}",
+            g[24]
+        );
+        for (i, v) in g.iter().enumerate() {
+            if i != 24 {
+                assert!(
+                    v.is_nan(),
+                    "open air at {i} must stay empty (seal halo committed), got {v}"
+                );
+            }
+        }
     }
 }
