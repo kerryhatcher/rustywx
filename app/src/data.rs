@@ -85,11 +85,14 @@ pub async fn fetch_latest_scan(
     let scan = file.scan().map_err(|e| anyhow!("decoding volume: {e}"))?;
     let nyquist_by_elev = nyquist_by_elevation(&file);
 
-    Ok(Some(ScanData::from_nexrad(
-        &scan,
-        timestamp,
-        &nyquist_by_elev,
-    )))
+    let mut scan_data = ScanData::from_nexrad(&scan, timestamp, &nyquist_by_elev);
+    // KDP isn't a decoded moment — derive it from the ΦDP sweeps just
+    // decoded above. Empty ΦDP (legacy scan) derives to an empty KDP, same
+    // convention as the other dual-pol products.
+    scan_data.specific_differential_phase =
+        crate::kdp::derive_kdp_sweeps(&scan_data.differential_phase);
+
+    Ok(Some(scan_data))
 }
 
 /// Nyquist velocity (m/s), by elevation number, recovered from Message 31

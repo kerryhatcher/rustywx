@@ -11,6 +11,7 @@ pub mod data;
 pub mod dealias;
 pub mod forecast;
 pub mod geo;
+pub mod kdp;
 pub mod location;
 pub mod model;
 pub mod nhc;

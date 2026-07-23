@@ -104,8 +104,14 @@ impl Cache {
     ///
     /// Separate key namespace from [`Self::scan_key`] — compressed and
     /// plain caches can coexist without clobbering each other.
+    ///
+    /// Suffixed with [`CACHE_FORMAT_VERSION`] so a binary-layout change to
+    /// [`scan_to_bytes`]/[`bytes_to_scan`] (a field added/removed/reordered)
+    /// invalidates old entries cleanly: they simply live under a key this
+    /// version never reads, rather than being misparsed. Bump the version
+    /// whenever that layout changes.
     fn scan_key_rle(site: &str) -> String {
-        format!("scan_rle_{site}")
+        format!("scan_rle_v{CACHE_FORMAT_VERSION}_{site}")
     }
 
     /// Flatten `scan` to bytes, RLE-compress ([`crate::rle::compress`]),
@@ -285,6 +291,13 @@ impl Cache {
 // `0x00` tag byte gives the RLE compressor the long runs it needs — real
 // volumes are mostly below-threshold gates.
 
+/// Bump whenever [`scan_to_bytes`]/[`bytes_to_scan`]'s binary layout changes
+/// (a field added/removed/reordered) — folded into [`Cache::scan_key_rle`]
+/// so a stale compressed cache from an old layout is never read/misparsed
+/// under the new one; it's just a normal cache miss (re-fetches from the
+/// network). Bumped for Stage 3 (KDP): added `specific_differential_phase`.
+const CACHE_FORMAT_VERSION: u32 = 2;
+
 /// Flatten a `ScanData` into bytes suitable for [`crate::rle::compress`].
 fn scan_to_bytes(scan: &ScanData) -> Vec<u8> {
     let mut buf = Vec::new();
@@ -296,6 +309,7 @@ fn scan_to_bytes(scan: &ScanData) -> Vec<u8> {
     encode_sweeps(&mut buf, &scan.differential_reflectivity);
     encode_sweeps(&mut buf, &scan.correlation_coefficient);
     encode_sweeps(&mut buf, &scan.differential_phase);
+    encode_sweeps(&mut buf, &scan.specific_differential_phase);
     buf
 }
 
@@ -340,6 +354,7 @@ fn bytes_to_scan(bytes: &[u8]) -> Result<ScanData, String> {
     let differential_reflectivity = decode_sweeps(&mut r)?;
     let correlation_coefficient = decode_sweeps(&mut r)?;
     let differential_phase = decode_sweeps(&mut r)?;
+    let specific_differential_phase = decode_sweeps(&mut r)?;
     Ok(ScanData {
         timestamp,
         reflectivity,
@@ -348,6 +363,7 @@ fn bytes_to_scan(bytes: &[u8]) -> Result<ScanData, String> {
         differential_reflectivity,
         correlation_coefficient,
         differential_phase,
+        specific_differential_phase,
         vcp_number,
     })
 }
@@ -472,6 +488,7 @@ mod tests {
             differential_reflectivity: vec![],
             correlation_coefficient: vec![],
             differential_phase: vec![],
+            specific_differential_phase: vec![],
             vcp_number: 12,
         }
     }
@@ -533,6 +550,34 @@ mod tests {
     }
 
     #[test]
+    fn specific_differential_phase_survives_round_trip() {
+        let mut scan = sample_scan();
+        scan.specific_differential_phase = vec![SweepData {
+            elevation_deg: 0.5,
+            radials: vec![RadialData {
+                azimuth_deg: 45.0,
+                gates: vec![None, Some(4.0), Some(-0.5)],
+                range_folded: vec![],
+            }],
+            first_gate_km: 2.125,
+            gate_spacing_km: 0.25,
+            nyquist_ms: 0.0,
+        }];
+        let bytes = scan_to_bytes(&scan);
+        let restored = bytes_to_scan(&bytes).unwrap();
+        assert_eq!(restored.specific_differential_phase.len(), 1);
+        assert_eq!(
+            restored.specific_differential_phase[0].radials[0].gates,
+            vec![None, Some(4.0), Some(-0.5)]
+        );
+        // Untouched fields still round-trip alongside the new one.
+        assert_eq!(
+            restored.reflectivity[0].radials[0].gates,
+            scan.reflectivity[0].radials[0].gates
+        );
+    }
+
+    #[test]
     fn bytes_to_scan_rejects_truncated_input() {
         let bytes = scan_to_bytes(&sample_scan());
         let truncated = &bytes[..bytes.len() - 3];
@@ -576,6 +621,7 @@ mod tests {
             differential_reflectivity: vec![],
             correlation_coefficient: vec![],
             differential_phase: vec![],
+            specific_differential_phase: vec![],
             vcp_number: 12,
         };
 

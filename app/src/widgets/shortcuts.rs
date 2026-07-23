@@ -138,6 +138,7 @@ pub fn draw(ui: &mut Ui<'_, crate::widgets::ChartWidget>) {
                             shortcut_row(ui, "Z", "Differential Reflectivity");
                             shortcut_row(ui, "C", "Correlation Coefficient");
                             shortcut_row(ui, "P", "Differential Phase");
+                            shortcut_row(ui, "K", "Specific Differential Phase (KDP)");
 
                             // Navigation section
                             section_header(ui, "NAVIGATION");

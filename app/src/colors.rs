@@ -98,6 +98,21 @@ pub const PHIDP_LEGEND: &[(f32, [u8; 4])] = &[
     (360.0, [0x80, 0x00, 0x80, 0xff]), // purple (wraps toward navy)
 ];
 
+/// Specific differential phase (KDP) in deg/km — derived (see `kdp.rs`), not
+/// decoded. Rain-rate proxy: near-zero/slightly-negative is noise (light
+/// rain or non-precip, no differential phase gradient); rising through
+/// green→yellow→orange→red for increasingly heavy rain and large/mixed-phase
+/// drops. Range ~ -1..8 deg/km, mirroring `ZDR_LEGEND`'s diverging shape.
+pub const KDP_LEGEND: &[(f32, [u8; 4])] = &[
+    (-1.0, [0x40, 0x00, 0x80, 0xff]), // deep purple (spurious negative)
+    (0.0, [0x80, 0x80, 0x80, 0xff]),  // neutral gray (near-zero KDP)
+    (0.5, [0x00, 0x80, 0x00, 0xff]),  // green
+    (1.5, [0x00, 0xe0, 0x00, 0xff]),  // bright green
+    (3.0, [0xfd, 0xf8, 0x02, 0xff]),  // yellow
+    (5.0, [0xfd, 0x95, 0x00, 0xff]),  // orange
+    (8.0, [0xfd, 0x00, 0x00, 0xff]),  // red
+];
+
 /// Range-folded ("RF") gates — NWS convention draws these a distinct purple.
 pub const RANGE_FOLDED_COLOR: [u8; 4] = [0x77, 0x00, 0x77, 0xff];
 
@@ -190,12 +205,16 @@ pub fn phidp_color(deg: f32) -> [u8; 4] {
     spline_color(PHIDP_LEGEND, deg)
 }
 
+pub fn kdp_color(deg_per_km: f32) -> [u8; 4] {
+    spline_color(KDP_LEGEND, deg_per_km)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        CC_LEGEND, DBZ_LEGEND, PHIDP_LEGEND, SPECTRUM_WIDTH_LEGEND, VELOCITY_LEGEND, ZDR_LEGEND,
-        catmull_rom, cc_color, dbz_color, phidp_color, spectrum_width_color, velocity_color,
-        zdr_color,
+        CC_LEGEND, DBZ_LEGEND, KDP_LEGEND, PHIDP_LEGEND, SPECTRUM_WIDTH_LEGEND, VELOCITY_LEGEND,
+        ZDR_LEGEND, catmull_rom, cc_color, dbz_color, kdp_color, phidp_color, spectrum_width_color,
+        velocity_color, zdr_color,
     };
 
     #[test]
@@ -302,6 +321,7 @@ mod tests {
         assert!(ZDR_LEGEND.windows(2).all(|w| w[0].0 < w[1].0));
         assert!(CC_LEGEND.windows(2).all(|w| w[0].0 < w[1].0));
         assert!(PHIDP_LEGEND.windows(2).all(|w| w[0].0 < w[1].0));
+        assert!(KDP_LEGEND.windows(2).all(|w| w[0].0 < w[1].0));
     }
 
     #[test]
@@ -344,6 +364,9 @@ mod tests {
         for &(threshold, color) in PHIDP_LEGEND {
             assert_eq!(phidp_color(threshold), color);
         }
+        for &(threshold, color) in KDP_LEGEND {
+            assert_eq!(kdp_color(threshold), color);
+        }
     }
 
     #[test]
@@ -354,6 +377,11 @@ mod tests {
     #[test]
     fn zdr_below_minimum_is_transparent() {
         assert_eq!(zdr_color(-5.0), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn kdp_below_minimum_is_transparent() {
+        assert_eq!(kdp_color(-5.0), [0, 0, 0, 0]);
     }
 
     #[test]

@@ -53,8 +53,8 @@ const TILT_DROPDOWN: DropdownConfig = DropdownConfig {
 
 // Product buttons stack vertically in the radar side panel (TopToBottom
 // layout, panel scrolls if needed) rather than sitting in a horizontal row,
-// so six buttons just add three more rows — no width-clipping concern.
-const PRODUCT_OPTIONS: [ToggleOption<Product>; 6] = [
+// so seven buttons just add rows — no width-clipping concern.
+const PRODUCT_OPTIONS: [ToggleOption<Product>; 7] = [
     ToggleOption {
         id: "btn-refl",
         label: "Reflectivity",
@@ -84,6 +84,11 @@ const PRODUCT_OPTIONS: [ToggleOption<Product>; 6] = [
         id: "btn-phidp",
         label: "PhiDP",
         value: Product::DifferentialPhase,
+    },
+    ToggleOption {
+        id: "btn-kdp",
+        label: "KDP",
+        value: Product::SpecificDifferentialPhase,
     },
 ];
 
@@ -2496,6 +2501,7 @@ async fn main() {
                             Product::DifferentialReflectivity => colors::ZDR_LEGEND,
                             Product::CorrelationCoefficient => colors::CC_LEGEND,
                             Product::DifferentialPhase => colors::PHIDP_LEGEND,
+                            Product::SpecificDifferentialPhase => colors::KDP_LEGEND,
                         };
 
                         // Left: two stacked rows (color key + radar readout).
@@ -2877,6 +2883,9 @@ fn handle_input(
             }
             if is_key_pressed(KeyCode::P) {
                 select_product(state, Product::DifferentialPhase);
+            }
+            if is_key_pressed(KeyCode::K) {
+                select_product(state, Product::SpecificDifferentialPhase);
             }
             if is_key_pressed(KeyCode::T) {
                 let tilt_count = state

@@ -669,6 +669,7 @@ pub fn rasterize(
         Product::DifferentialReflectivity => colors::zdr_color as fn(f32) -> [u8; 4],
         Product::CorrelationCoefficient => colors::cc_color as fn(f32) -> [u8; 4],
         Product::DifferentialPhase => colors::phidp_color as fn(f32) -> [u8; 4],
+        Product::SpecificDifferentialPhase => colors::kdp_color as fn(f32) -> [u8; 4],
     };
 
     let center = size_px as f32 / 2.0;
