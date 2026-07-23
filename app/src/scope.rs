@@ -31,7 +31,10 @@ uniform mat4 Model;
 uniform mat4 Projection;
 void main() {
     gl_Position = Projection * Model * vec4(position, 1);
-    color = color0;
+    // color0 arrives as unnormalized bytes (VertexFormat::Byte4, 0-255) —
+    // macroquad's own default shader divides by 255 and so must we, or the
+    // fragment multiply saturates every nonzero palette channel to 1.0.
+    color = color0 / 255.0;
     uv = texcoord;
 }"#;
 

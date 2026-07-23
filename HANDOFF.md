@@ -65,9 +65,18 @@ GLSL shader compiles. If the app is ever forced to Metal, an MSL variant would b
 
 ## WHAT'S LEFT
 
-1. **Visual verification (blocking).** Run `cargo run -p rustywx --release`, view KHGX
-   reflectivity, zoom in. Confirm: crisp color-band edges + smooth shapes + no fuzz + no hard
-   texel squares. I could not run the GUI to confirm — this is the #1 next step.
+1. **Visual verification — DONE 2026-07-23, found and fixed a shader bug.** First run
+   rendered every echo as saturated pure-primary blobs (green cells showed yellow/white).
+   Root cause: macroquad feeds the `color0` vertex attribute as *unnormalized bytes*
+   (`VertexFormat::Byte4`, 0–255); its default shader divides by 255 but `PALETTE_VERTEX`
+   didn't, so the fragment multiply scaled every LUT color ×255 and clamped each nonzero
+   channel to full. Fix: `color = color0 / 255.0;` in `scope.rs`. Regression harness:
+   `cargo run -p rustywx --example gpu_palette_check --release` renders a 0..255 value
+   gradient through the real material and asserts all 256 entries match the CPU LUT.
+   **Note for the next look:** with the user's saved settings (`refl_floor_enabled` at
+   20 dBZ + CC gate on), only ~7% of the scope has echo — the broad blue/green light-rain
+   shield is *QC'd away by settings, not a rendering bug*. Toggle the reflectivity floor
+   off in the settings panel to judge the smooth+sharp look against a reference viewer.
 2. **Tune to taste** once seen:
    - `SMOOTH_RADIUS_PX` (`scope.rs`): 0 = maximum crispness, higher = softer. Currently 3.
    - `SEAL_RADIUS_PX`: how aggressively interior QC holes fill.
