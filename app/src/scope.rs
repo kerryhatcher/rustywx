@@ -36,7 +36,8 @@ pub const RASTER_SIZE_PX: usize = 1024;
 /// same behavior) — see `docs/fuzzy-nonmet-classifier-plan.md` step 2.
 /// `zdr_sweep`/`phidp_sweep`/`nonmet_fuzzy_enabled`/`nonmet_threshold` are
 /// step 3's fuzzy non-met classifier (`nonmet.rs`); when disabled, `cc_sweep`
-/// alone still drives the fallback CC-only gate below.
+/// alone still drives the fallback CC-only gate below. `refl_gap_fill_enabled`
+/// drives the bounded azimuthal gap-fill pass for Reflectivity banding slits.
 ///
 /// Derives `Default` (all fields have a sane zero/`None`/`false` default) so
 /// tests can spread `..Default::default()` for the fields they don't
@@ -56,6 +57,7 @@ pub struct QcConfig<'a> {
     pub phidp_sweep: Option<&'a SweepData>,
     pub nonmet_fuzzy_enabled: bool,
     pub nonmet_threshold: f32,
+    pub refl_gap_fill_enabled: bool,
 }
 
 fn clean_sweep(sweep: &SweepData, product: Product, qc: &QcConfig) -> SweepData {
@@ -277,6 +279,129 @@ fn clean_sweep(sweep: &SweepData, product: Product, qc: &QcConfig) -> SweepData 
             for i in 0..n {
                 if tdbz[i] > TDBZ_THRESHOLD && mean[i] < LOW_DBZ_GATE {
                     radial.gates[i] = None;
+                }
+            }
+        }
+    }
+
+    // Azimuthal gap-fill: cosmetically heals thin radial "banding gap" slits
+    // caused by short runs of adjacent BelowThreshold radials in the raw
+    // Level II data (confirmed genuine data gaps, not QC — see docs/research).
+    // Reflectivity-only, default off (honest rendering by default). Runs
+    // after all the QC nulling passes above so it fills whatever remains
+    // transparent. Two-pass read-then-write: every fill is computed from the
+    // ORIGINAL gates so a filled gate can never seed another fill.
+    if product == Product::Reflectivity && qc.refl_gap_fill_enabled {
+        const MAX_FILL_GAP_DEG: f32 = 4.0;
+
+        let mut az_order: Vec<usize> = (0..cleaned.radials.len()).collect();
+        az_order.sort_by(|&a, &b| {
+            cleaned.radials[a]
+                .azimuth_deg
+                .total_cmp(&cleaned.radials[b].azimuth_deg)
+        });
+        let n_az = az_order.len();
+
+        if n_az > 1 {
+            let azimuths: Vec<f32> = az_order
+                .iter()
+                .map(|&i| cleaned.radials[i].azimuth_deg)
+                .collect();
+            let original_gates: Vec<Vec<Option<f32>>> = az_order
+                .iter()
+                .map(|&i| cleaned.radials[i].gates.clone())
+                .collect();
+            // Forward (directional) arc from sorted azimuth k to its successor,
+            // wrapping at 360°. Must NOT use angular_distance here: that returns
+            // the shortest wraparound distance, which for a hop >180° picks the
+            // *other* direction and silently shrinks a real gap (e.g. a
+            // 1°->359° span going the long way would read as ~2°). The walk
+            // below always advances in one consistent direction (increasing or
+            // decreasing sorted index), so each hop must be that forward arc,
+            // not whichever way happens to be shorter.
+            let gaps: Vec<f32> = (0..n_az)
+                .map(|k| (azimuths[(k + 1) % n_az] - azimuths[k]).rem_euclid(360.0))
+                .collect();
+            let n_gates = original_gates.iter().map(|g| g.len()).max().unwrap_or(0);
+
+            // ponytail: per-gate x per-radial bounded neighbor walk, Reflectivity
+            // is one sweep per render -- cheap. O(gates x radials x span) ceiling
+            // (span = steps to walk MAX_FILL_GAP_DEG); memoize at ingestion if
+            // profiling ever says the walk itself is the bottleneck.
+            let mut fills: Vec<(usize, usize, f32)> = Vec::new();
+            for (sorted_idx, &radial_idx) in az_order.iter().enumerate() {
+                for gate in 0..n_gates {
+                    if original_gates[sorted_idx]
+                        .get(gate)
+                        .copied()
+                        .flatten()
+                        .is_some()
+                    {
+                        continue;
+                    }
+                    // range_folded is a distinct condition from BelowThreshold;
+                    // leave those gates alone rather than gap-filling through them.
+                    if cleaned.radials[radial_idx]
+                        .range_folded
+                        .get(gate)
+                        .copied()
+                        .unwrap_or(false)
+                    {
+                        continue;
+                    }
+
+                    // Walk toward increasing sorted index (wrapping) for the
+                    // nearest data-bearing radial on that side.
+                    let mut right: Option<(f32, f32)> = None; // (span_deg, value)
+                    let mut span = 0.0f32;
+                    let mut cur = sorted_idx;
+                    while span <= MAX_FILL_GAP_DEG {
+                        span += gaps[cur];
+                        cur = (cur + 1) % n_az;
+                        if span > MAX_FILL_GAP_DEG {
+                            break;
+                        }
+                        if let Some(v) = original_gates[cur].get(gate).copied().flatten() {
+                            right = Some((span, v));
+                            break;
+                        }
+                    }
+                    let Some((right_span, right_val)) = right else {
+                        continue;
+                    };
+
+                    // Walk toward decreasing sorted index (wrapping) likewise.
+                    let mut left: Option<(f32, f32)> = None;
+                    let mut span = 0.0f32;
+                    let mut cur = sorted_idx;
+                    while span <= MAX_FILL_GAP_DEG {
+                        let prev = (cur + n_az - 1) % n_az;
+                        span += gaps[prev];
+                        cur = prev;
+                        if span > MAX_FILL_GAP_DEG {
+                            break;
+                        }
+                        if let Some(v) = original_gates[cur].get(gate).copied().flatten() {
+                            left = Some((span, v));
+                            break;
+                        }
+                    }
+                    let Some((left_span, left_val)) = left else {
+                        continue;
+                    };
+
+                    let total_span = left_span + right_span;
+                    if !(1e-6..=MAX_FILL_GAP_DEG).contains(&total_span) {
+                        continue;
+                    }
+                    let t = left_span / total_span;
+                    let value = left_val + (right_val - left_val) * t;
+                    fills.push((radial_idx, gate, value));
+                }
+            }
+            for (radial_idx, gate, value) in fills {
+                if let Some(g) = cleaned.radials[radial_idx].gates.get_mut(gate) {
+                    *g = Some(value);
                 }
             }
         }
@@ -2237,6 +2362,261 @@ mod tests {
             cleaned.radials[0].gates,
             vec![None],
             "no dual-pol texture evidence: CC-only legacy gate (cc < cc_gate_threshold) must govern"
+        );
+    }
+
+    /// Target gate index for the gap-fill tests below: range = 2.125 +
+    /// 315*0.25 = 80.875 km, past the 80 km breakpoint (floor 5 dBZ) so the
+    /// 10.0/30.0 test values used here clear the range floor untouched.
+    const GAP_FILL_TARGET_GATE: usize = 315;
+    const GAP_FILL_N_GATES: usize = 316;
+
+    fn gap_fill_sweep(radials: Vec<RadialData>) -> SweepData {
+        SweepData {
+            elevation_deg: 0.5,
+            radials,
+            first_gate_km: 2.125,
+            gate_spacing_km: 0.25,
+            nyquist_ms: 0.0,
+        }
+    }
+
+    fn gap_fill_clean(sweep: &SweepData, refl_gap_fill_enabled: bool) -> SweepData {
+        clean_sweep(
+            sweep,
+            Product::Reflectivity,
+            &QcConfig {
+                tdbz_kernel_size: 9,
+                cc_gate_threshold: 0.80,
+                vel_dealias_enabled: true,
+                vel_sd_threshold: 7.0,
+                refl_gap_fill_enabled,
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn gap_fill_interpolates_thin_two_radial_slit() {
+        // 4 radials 1° apart: az1/az4 carry data (10.0/30.0), az2/az3 are a
+        // 2-radial None slit at the target gate. Flanking span through the
+        // slit is 3° (<= MAX_FILL_GAP_DEG), so both slit gates should be
+        // linearly interpolated by angular distance.
+        let mut az1 = vec![Some(10.0); GAP_FILL_N_GATES];
+        let mut az4 = vec![Some(30.0); GAP_FILL_N_GATES];
+        let mut az2 = vec![Some(15.0); GAP_FILL_N_GATES];
+        let mut az3 = vec![Some(15.0); GAP_FILL_N_GATES];
+        az2[GAP_FILL_TARGET_GATE] = None;
+        az3[GAP_FILL_TARGET_GATE] = None;
+        // Keep az1/az4 uniform end-to-end too so the TDBZ texture pass sees
+        // zero gate-to-gate diff and doesn't null a donor gate.
+        az1[GAP_FILL_TARGET_GATE] = Some(10.0);
+        az4[GAP_FILL_TARGET_GATE] = Some(30.0);
+
+        let sweep = gap_fill_sweep(vec![
+            radial(1.0, az1),
+            radial(2.0, az2),
+            radial(3.0, az3),
+            radial(4.0, az4),
+        ]);
+
+        let cleaned = gap_fill_clean(&sweep, true);
+
+        // az2 (idx1): left flank az1 at span 1°, right flank az4 at span 2°
+        // (walking through the also-None az3) -> t = 1/3 -> 10 + 20*(1/3).
+        let v2 = cleaned.radials[1].gates[GAP_FILL_TARGET_GATE];
+        assert!(
+            matches!(v2, Some(v) if (v - 16.666_67).abs() < 0.01),
+            "az2 slit gate should interpolate to ~16.67, got {v2:?}"
+        );
+        // az3 (idx2): left flank az1 at span 2° (through az2), right flank
+        // az4 at span 1° -> t = 2/3 -> 10 + 20*(2/3).
+        let v3 = cleaned.radials[2].gates[GAP_FILL_TARGET_GATE];
+        assert!(
+            matches!(v3, Some(v) if (v - 23.333_33).abs() < 0.01),
+            "az3 slit gate should interpolate to ~23.33, got {v3:?}"
+        );
+    }
+
+    #[test]
+    fn gap_fill_toggle_off_leaves_slit_untouched() {
+        // Same thin-slit setup as above, but with the setting disabled.
+        let mut az1 = vec![Some(10.0); GAP_FILL_N_GATES];
+        let mut az4 = vec![Some(30.0); GAP_FILL_N_GATES];
+        let mut az2 = vec![Some(15.0); GAP_FILL_N_GATES];
+        let mut az3 = vec![Some(15.0); GAP_FILL_N_GATES];
+        az2[GAP_FILL_TARGET_GATE] = None;
+        az3[GAP_FILL_TARGET_GATE] = None;
+        az1[GAP_FILL_TARGET_GATE] = Some(10.0);
+        az4[GAP_FILL_TARGET_GATE] = Some(30.0);
+
+        let sweep = gap_fill_sweep(vec![
+            radial(1.0, az1),
+            radial(2.0, az2),
+            radial(3.0, az3),
+            radial(4.0, az4),
+        ]);
+
+        let cleaned = gap_fill_clean(&sweep, false);
+        assert_eq!(cleaned.radials[1].gates[GAP_FILL_TARGET_GATE], None);
+        assert_eq!(cleaned.radials[2].gates[GAP_FILL_TARGET_GATE], None);
+    }
+
+    #[test]
+    fn gap_fill_leaves_wide_gap_transparent() {
+        // Flanking data-radials are 20° apart through the None radial —
+        // exceeds MAX_FILL_GAP_DEG (4.0) — real blockage, must stay None.
+        let mut az0 = vec![Some(10.0); GAP_FILL_N_GATES];
+        let mut az10 = vec![Some(15.0); GAP_FILL_N_GATES];
+        let mut az20 = vec![Some(30.0); GAP_FILL_N_GATES];
+        az10[GAP_FILL_TARGET_GATE] = None;
+        az0[GAP_FILL_TARGET_GATE] = Some(10.0);
+        az20[GAP_FILL_TARGET_GATE] = Some(30.0);
+
+        let sweep = gap_fill_sweep(vec![
+            radial(0.0, az0),
+            radial(10.0, az10),
+            radial(20.0, az20),
+        ]);
+
+        let cleaned = gap_fill_clean(&sweep, true);
+        assert_eq!(
+            cleaned.radials[1].gates[GAP_FILL_TARGET_GATE], None,
+            "wide 20° flanking gap must not be filled"
+        );
+    }
+
+    #[test]
+    fn gap_fill_leaves_one_sided_gap_transparent() {
+        // az0 is a close (2°) left neighbor with data; the only other real
+        // radial (az100) is far outside MAX_FILL_GAP_DEG on the right side,
+        // so only one side ever finds data -> must stay None.
+        let mut az0 = vec![Some(10.0); GAP_FILL_N_GATES];
+        let mut az2 = vec![Some(15.0); GAP_FILL_N_GATES];
+        let mut az100 = vec![Some(30.0); GAP_FILL_N_GATES];
+        az2[GAP_FILL_TARGET_GATE] = None;
+        az0[GAP_FILL_TARGET_GATE] = Some(10.0);
+        az100[GAP_FILL_TARGET_GATE] = Some(30.0);
+
+        let sweep = gap_fill_sweep(vec![
+            radial(0.0, az0),
+            radial(2.0, az2),
+            radial(100.0, az100),
+        ]);
+
+        let cleaned = gap_fill_clean(&sweep, true);
+        assert_eq!(
+            cleaned.radials[1].gates[GAP_FILL_TARGET_GATE], None,
+            "one-sided neighbor data must not be filled"
+        );
+    }
+
+    #[test]
+    fn gap_fill_does_not_fill_range_folded_gate() {
+        // Same thin-slit geometry (flanks well within range), but the
+        // target gate on the slit radial is flagged range_folded — a
+        // distinct condition from BelowThreshold that must be left alone.
+        let az1 = radial(1.0, vec![Some(10.0); GAP_FILL_N_GATES]);
+        let az3 = radial(3.0, vec![Some(30.0); GAP_FILL_N_GATES]);
+        let mut range_folded = vec![false; GAP_FILL_N_GATES];
+        range_folded[GAP_FILL_TARGET_GATE] = true;
+        let mut az2_gates = vec![Some(15.0); GAP_FILL_N_GATES];
+        az2_gates[GAP_FILL_TARGET_GATE] = None;
+        let az2 = RadialData {
+            azimuth_deg: 2.0,
+            gates: az2_gates,
+            range_folded,
+        };
+
+        let sweep = gap_fill_sweep(vec![az1, az2, az3]);
+        let cleaned = gap_fill_clean(&sweep, true);
+        assert_eq!(
+            cleaned.radials[1].gates[GAP_FILL_TARGET_GATE], None,
+            "range_folded gate must not be gap-filled"
+        );
+    }
+
+    #[test]
+    fn gap_fill_unequal_gate_counts_does_not_panic() {
+        // az2 (the None-slit radial) has fewer gates than az1/az4, which
+        // carry the max gate count. The write-back must skip gates a short
+        // radial doesn't have instead of indexing out of bounds.
+        let mut az1 = vec![Some(10.0); GAP_FILL_N_GATES];
+        let mut az4 = vec![Some(30.0); GAP_FILL_N_GATES];
+        az1[GAP_FILL_TARGET_GATE] = Some(10.0);
+        az4[GAP_FILL_TARGET_GATE] = Some(30.0);
+        // Short radial: stops well before GAP_FILL_TARGET_GATE.
+        let az2 = vec![Some(15.0); GAP_FILL_TARGET_GATE - 5];
+        let az3 = vec![Some(15.0); GAP_FILL_N_GATES];
+
+        let sweep = gap_fill_sweep(vec![
+            radial(1.0, az1),
+            radial(2.0, az2),
+            radial(3.0, az3),
+            radial(4.0, az4),
+        ]);
+
+        // Must not panic.
+        let cleaned = gap_fill_clean(&sweep, true);
+        assert_eq!(
+            cleaned.radials[1].gates.len(),
+            GAP_FILL_TARGET_GATE - 5,
+            "short radial's gate vector must be left at its original length"
+        );
+    }
+
+    #[test]
+    fn gap_fill_directional_arc_rejects_large_gap_through_none_run() {
+        // Flanks at 1° and 359° are ~2° apart the short way, but the None
+        // radial at 358° sits on the *long* way around from the 1° flank
+        // (357° forward). A shortest-distance check on the 1->358 hop folds
+        // that into ~3°, wrongly bracketing the gap as small and filling it.
+        // The correct directional walk must reject it (left search never
+        // finds data within MAX_FILL_GAP_DEG).
+        let mut az1 = vec![Some(10.0); GAP_FILL_N_GATES];
+        let mut az358 = vec![Some(15.0); GAP_FILL_N_GATES];
+        let mut az359 = vec![Some(30.0); GAP_FILL_N_GATES];
+        az1[GAP_FILL_TARGET_GATE] = Some(10.0);
+        az358[GAP_FILL_TARGET_GATE] = None;
+        az359[GAP_FILL_TARGET_GATE] = Some(30.0);
+
+        let sweep = gap_fill_sweep(vec![
+            radial(1.0, az1),
+            radial(358.0, az358),
+            radial(359.0, az359),
+        ]);
+
+        let cleaned = gap_fill_clean(&sweep, true);
+        assert_eq!(
+            cleaned.radials[1].gates[GAP_FILL_TARGET_GATE], None,
+            "358° gate is 357° the wrong way from the 1° flank and must not be filled"
+        );
+    }
+
+    #[test]
+    fn gap_fill_directional_arc_fills_genuine_wraparound_gap() {
+        // Flanks at 359° and 1° (~2° apart the short way, straddling the
+        // 0/360 boundary), None radial at 0° directly between them. This
+        // must still be filled: a correct directional walk still recognizes
+        // a genuinely small gap that crosses the wraparound.
+        let mut az359 = vec![Some(10.0); GAP_FILL_N_GATES];
+        let mut az0 = vec![Some(15.0); GAP_FILL_N_GATES];
+        let mut az1 = vec![Some(30.0); GAP_FILL_N_GATES];
+        az359[GAP_FILL_TARGET_GATE] = Some(10.0);
+        az0[GAP_FILL_TARGET_GATE] = None;
+        az1[GAP_FILL_TARGET_GATE] = Some(30.0);
+
+        let sweep = gap_fill_sweep(vec![
+            radial(359.0, az359),
+            radial(0.0, az0),
+            radial(1.0, az1),
+        ]);
+
+        let cleaned = gap_fill_clean(&sweep, true);
+        let v = cleaned.radials[1].gates[GAP_FILL_TARGET_GATE];
+        assert!(
+            matches!(v, Some(x) if (x - 20.0).abs() < 0.01),
+            "0° gate straddling the wraparound should interpolate to ~20.0, got {v:?}"
         );
     }
 }

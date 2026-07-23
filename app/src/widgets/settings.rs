@@ -22,6 +22,7 @@ pub const DYSLEXIC_TOGGLE_ID: &str = "settings-toggle-dyslexic";
 pub const SWEEP_TOGGLE_ID: &str = "settings-toggle-sweep";
 pub const SCOPE_RINGS_TOGGLE_ID: &str = "settings-toggle-scope-rings";
 pub const CC_GATE_TOGGLE_ID: &str = "settings-toggle-cc-gate";
+pub const GAP_FILL_TOGGLE_ID: &str = "settings-toggle-gap-fill";
 pub const REFL_FLOOR_TOGGLE_ID: &str = "settings-toggle-refl-floor";
 pub const VEL_SD_TOGGLE_ID: &str = "settings-toggle-vel-sd";
 pub const VEL_DEALIAS_TOGGLE_ID: &str = "settings-toggle-vel-dealias";
@@ -257,6 +258,14 @@ pub fn draw(
                             NONMET_FUZZY_TOGGLE_ID,
                             "Fuzzy non-met filter",
                             settings.nonmet_fuzzy_enabled,
+                        );
+                    });
+                    row(ui, "Fill radial gaps", |ui| {
+                        bool_toggle(
+                            ui,
+                            GAP_FILL_TOGGLE_ID,
+                            "Fill radial gaps",
+                            settings.refl_gap_fill_enabled,
                         );
                     });
                     row(ui, "Noise-floor cut (dBZ)", |ui| {

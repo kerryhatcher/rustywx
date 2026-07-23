@@ -1044,6 +1044,7 @@ async fn main() {
                     phidp_sweep: phidp_sweep.as_ref(),
                     nonmet_fuzzy_enabled: state.settings.nonmet_fuzzy_enabled,
                     nonmet_threshold: state.settings.nonmet_threshold,
+                    refl_gap_fill_enabled: state.settings.refl_gap_fill_enabled,
                 },
             );
             let tex = Texture2D::from_rgba8(
@@ -3075,6 +3076,11 @@ fn handle_input(
         }
         if ply.is_just_pressed(settings_widget::VEL_SD_TOGGLE_ID) {
             state.settings.vel_sd_censor_enabled = !state.settings.vel_sd_censor_enabled;
+            state.cache.save_settings(&state.settings);
+            state.needs_reraster = true;
+        }
+        if ply.is_just_pressed(settings_widget::GAP_FILL_TOGGLE_ID) {
+            state.settings.refl_gap_fill_enabled = !state.settings.refl_gap_fill_enabled;
             state.cache.save_settings(&state.settings);
             state.needs_reraster = true;
         }
