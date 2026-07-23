@@ -14,6 +14,7 @@ pub mod geo;
 pub mod location;
 pub mod model;
 pub mod nhc;
+pub mod nonmet;
 pub mod rle;
 pub mod scope;
 pub mod settings;
