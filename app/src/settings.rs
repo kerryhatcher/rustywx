@@ -193,6 +193,12 @@ pub struct Settings {
     /// censored when SD-censoring is on.
     #[serde(default = "default_vel_sd")]
     pub vel_sd_threshold: f32,
+    /// Whether the full sweep-level Nyquist dealias (gate-to-gate unfold
+    /// plus azimuthal-continuity correction, with VAD fallback) runs on the
+    /// Velocity product before SD-censoring (`dealias::dealias_sweep`).
+    /// Default on. No-op per sweep when Nyquist is unknown (`nyquist_ms <= 0.0`).
+    #[serde(default = "default_true")]
+    pub vel_dealias_enabled: bool,
 }
 
 impl Default for Settings {
@@ -224,6 +230,7 @@ impl Default for Settings {
             refl_floor_dbz: 7.0,
             vel_sd_censor_enabled: true,
             vel_sd_threshold: 7.0,
+            vel_dealias_enabled: true,
         }
     }
 }
@@ -254,6 +261,7 @@ mod tests {
         assert_eq!(settings.refl_floor_dbz, 7.0);
         assert!(settings.vel_sd_censor_enabled);
         assert_eq!(settings.vel_sd_threshold, 7.0);
+        assert!(settings.vel_dealias_enabled);
     }
 
     #[test]
@@ -285,6 +293,7 @@ mod tests {
             refl_floor_dbz: 5.0,
             vel_sd_censor_enabled: false,
             vel_sd_threshold: 8.0,
+            vel_dealias_enabled: false,
         };
         let json = serde_json::to_string(&settings).expect("serialize");
         let restored: Settings = serde_json::from_str(&json).expect("deserialize");
@@ -340,5 +349,7 @@ mod tests {
         // Missing velocity-SD fields default to on/7.0.
         assert!(s.vel_sd_censor_enabled);
         assert_eq!(s.vel_sd_threshold, 7.0);
+        // Missing dealias field defaults on.
+        assert!(s.vel_dealias_enabled);
     }
 }

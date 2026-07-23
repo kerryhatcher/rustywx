@@ -6,7 +6,10 @@ use ply_engine::prelude::FontAsset;
 /// Icon font for UI symbols (Nerd Fonts Symbols-only). Glyphs are Private-Use
 /// codepoints (`\u{f0…}`) — see the `nf` module for the ones in use. Inter has
 /// no symbol coverage, so every icon must render with this font.
-pub static SYMBOL_FONT: FontAsset = FontAsset::Path("assets/fonts/SymbolsNerdFontMono-Regular.ttf");
+pub static SYMBOL_FONT: FontAsset = FontAsset::Bytes {
+    file_name: "SymbolsNerdFontMono-Regular.ttf",
+    data: include_bytes!("../../assets/fonts/SymbolsNerdFontMono-Regular.ttf"),
+};
 
 /// Nerd Font glyph codepoints used across the UI, named for grep-ability.
 pub mod nf {

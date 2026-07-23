@@ -216,6 +216,7 @@ fn synthetic_sweep() -> SweepData {
         radials,
         first_gate_km: scope::FIRST_GATE_KM,
         gate_spacing_km: scope::GATE_SPACING_KM,
+        nyquist_ms: 0.0,
     }
 }
 
@@ -482,14 +483,28 @@ async fn main() {
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let _rt_guard = rt.enter();
 
-    static DEFAULT_FONT: FontAsset = FontAsset::Path("assets/fonts/Inter-Regular.ttf");
-    static INTER_BOLD: FontAsset = FontAsset::Path("assets/fonts/Inter-Bold.ttf");
-    static MONO_FONT: FontAsset = FontAsset::Path("assets/fonts/Inter-Regular.ttf");
+    static DEFAULT_FONT: FontAsset = FontAsset::Bytes {
+        file_name: "Inter-Regular.ttf",
+        data: include_bytes!("../assets/fonts/Inter-Regular.ttf"),
+    };
+    static INTER_BOLD: FontAsset = FontAsset::Bytes {
+        file_name: "Inter-Bold.ttf",
+        data: include_bytes!("../assets/fonts/Inter-Bold.ttf"),
+    };
+    static MONO_FONT: FontAsset = FontAsset::Bytes {
+        file_name: "Inter-Regular.ttf",
+        data: include_bytes!("../assets/fonts/Inter-Regular.ttf"),
+    };
     // Optional dyslexia-friendly body font (accessibility). The default (body)
     // font is fixed at Ply::new, so switching means rebuilding Ply (see loop).
-    static DYSLEXIC_FONT: FontAsset =
-        FontAsset::Path("assets/fonts/OpenDyslexicNerdFont-Regular.otf");
-    static DYSLEXIC_BOLD: FontAsset = FontAsset::Path("assets/fonts/OpenDyslexicNerdFont-Bold.otf");
+    static DYSLEXIC_FONT: FontAsset = FontAsset::Bytes {
+        file_name: "OpenDyslexicNerdFont-Regular.otf",
+        data: include_bytes!("../assets/fonts/OpenDyslexicNerdFont-Regular.otf"),
+    };
+    static DYSLEXIC_BOLD: FontAsset = FontAsset::Bytes {
+        file_name: "OpenDyslexicNerdFont-Bold.otf",
+        data: include_bytes!("../assets/fonts/OpenDyslexicNerdFont-Bold.otf"),
+    };
     let mut ply = Ply::<rustywx::widgets::ChartWidget>::new(&DEFAULT_FONT).await;
     // Which body font Ply was last built with, so we can detect setting changes.
     let mut active_dyslexic = false;
@@ -981,6 +996,7 @@ async fn main() {
                 state.settings.cc_gate_threshold,
                 state.settings.refl_floor_enabled,
                 state.settings.refl_floor_dbz,
+                state.settings.vel_dealias_enabled,
                 state.settings.vel_sd_censor_enabled,
                 state.settings.vel_sd_threshold,
             );
@@ -3001,6 +3017,11 @@ fn handle_input(
             state.cache.save_settings(&state.settings);
             state.needs_reraster = true;
         }
+        if ply.is_just_pressed(settings_widget::VEL_DEALIAS_TOGGLE_ID) {
+            state.settings.vel_dealias_enabled = !state.settings.vel_dealias_enabled;
+            state.cache.save_settings(&state.settings);
+            state.needs_reraster = true;
+        }
         if ply.is_just_pressed(settings_widget::VEL_SD_TOGGLE_ID) {
             state.settings.vel_sd_censor_enabled = !state.settings.vel_sd_censor_enabled;
             state.cache.save_settings(&state.settings);
@@ -3453,7 +3474,26 @@ fn update_scan_status(state: &mut AppState, suffix: &str) {
             .unwrap_or_default();
         let vcp_num_enum = nexrad_model::data::VCPNumber::from_number(scan.vcp_number);
         let vcp_mode = vcp_mode_label(vcp_num_enum);
-        let nyquist = format_nyquist_velocity();
+        // Nyquist is a velocity-product quantity; show it for the current
+        // tilt regardless of which product is on screen (matches the
+        // elevation/VCP context info alongside it). `state.tilt_index`
+        // indexes the currently-displayed product's sweep list, not
+        // Velocity's — the per-product lists are built and
+        // sort_and_dedup'd independently and can diverge on split-cut
+        // VCPs — so look up the Velocity sweep by nearest elevation_deg
+        // instead of by index (mirrors the `cc_sweep` lookup above).
+        let nyquist_ms = sweeps
+            .get(state.tilt_index)
+            .and_then(|sweep| {
+                scan.sweeps(Product::Velocity).iter().min_by(|a, b| {
+                    (a.elevation_deg - sweep.elevation_deg)
+                        .abs()
+                        .total_cmp(&(b.elevation_deg - sweep.elevation_deg).abs())
+                })
+            })
+            .map(|sweep| sweep.nyquist_ms)
+            .unwrap_or(0.0);
+        let nyquist = format_nyquist_velocity(nyquist_ms);
         state.status_text = format!(
             "{} — {} — {} tilt(s){} — VCP {} — {} — {}{}",
             scan.timestamp.format("%Y-%m-%d %H:%M UTC"),

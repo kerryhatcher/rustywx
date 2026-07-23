@@ -14,6 +14,11 @@ publish = true
 ply-engine = { version = "1.1", features = ["net", "net-json", "storage", "built-in-shaders", "text-styling"] }
 nexrad-data = "=1.0.0-rc.7"
 nexrad-model = "=1.0.0-rc.2"
+# Direct dep so we can read Nyquist velocity off the Message 31 Radial Data
+# Block ourselves — nexrad-data already pulls this in transitively, but
+# `use`-ing its types requires a direct dependency entry. See
+# docs/velocity-dealiasing-plan.md.
+nexrad-decode = "=1.0.0-rc.3"
 tokio = { version = "1", features = ["rt", "time", "sync"] }
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"

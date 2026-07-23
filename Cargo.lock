@@ -2639,13 +2639,14 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "rustywx"
-version = "0.7.1"
+version = "0.7.3"
 dependencies = [
  "anyhow",
  "chrono",
  "criterion",
  "image 0.25.10",
  "nexrad-data",
+ "nexrad-decode",
  "nexrad-model",
  "objc2 0.6.4",
  "objc2-core-location",

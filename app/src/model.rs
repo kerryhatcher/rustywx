@@ -8,12 +8,7 @@
 use chrono::{DateTime, Utc};
 use nexrad_model::data::{DataMoment, MomentValue, Scan, Sweep, VCPNumber};
 use serde::{Deserialize, Serialize};
-
-/// NEXRAD WSR-88D wavelength in meters. Used for Nyquist velocity calculation.
-/// Source: FMH-11 Part A, NEXRAD Technical Specifications.
-/// ponytail: Nyquist computation currently shows "—" since PRT unavailable; this const for future use.
-#[allow(dead_code)]
-const NEXRAD_WAVELENGTH_M: f32 = 0.1071;
+use std::collections::HashMap;
 
 /// Radar products the app can display.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, Serialize, Deserialize)]
@@ -64,11 +59,15 @@ pub fn vcp_mode_label(vcp: VCPNumber) -> &'static str {
     }
 }
 
-/// Format the Nyquist velocity for display.
-/// Returns a string like "Nyquist ±26.4 m/s" or "Nyquist —" if unavailable.
-/// ponytail: PRT not available in decoded sweep data, so showing "—" as fallback.
-pub fn format_nyquist_velocity() -> &'static str {
-    "Nyquist —"
+/// Format a Nyquist velocity for display: `"Nyquist ±26.4 m/s"`, or
+/// `"Nyquist —"` when unavailable (`nyquist_ms <= 0.0` — decode failure or
+/// missing Radial Data Block; see [`SweepData::nyquist_ms`]).
+pub fn format_nyquist_velocity(nyquist_ms: f32) -> String {
+    if nyquist_ms > 0.0 {
+        format!("Nyquist ±{nyquist_ms:.1} m/s")
+    } else {
+        "Nyquist —".to_string()
+    }
 }
 
 /// One ray of gate values. `None` gates are below threshold or range folded;
@@ -97,6 +96,13 @@ pub struct SweepData {
     /// Distance between consecutive gates, km. See `first_gate_km`.
     #[serde(default = "default_gate_spacing_km")]
     pub gate_spacing_km: f32,
+    /// Nyquist velocity, m/s. `0.0` = unknown (decode failure or missing
+    /// Radial Data Block for this elevation — never guessed). Constant
+    /// within a Doppler cut; read from the Message 31 Radial Data
+    /// (Constant) Block, which `nexrad_model::Radial` drops on conversion.
+    /// See `data::fetch_latest_scan` and `docs/velocity-dealiasing-plan.md`.
+    #[serde(default)]
+    pub nyquist_ms: f32,
 }
 
 /// Legacy super-res split-cut first-gate range, km. Matches
@@ -135,6 +141,7 @@ pub fn synthetic_sweep(n_radials: usize, gates_per_radial: usize) -> SweepData {
         radials,
         first_gate_km: default_first_gate_km(),
         gate_spacing_km: default_gate_spacing_km(),
+        nyquist_ms: 0.0,
     }
 }
 
@@ -166,12 +173,26 @@ impl ScanData {
         }
     }
 
-    pub fn from_nexrad(scan: &Scan, timestamp: DateTime<Utc>) -> Self {
+    /// `nyquist_by_elev` is the per-elevation Nyquist map recovered by a
+    /// second decode pass over the volume bytes (see
+    /// `data::fetch_latest_scan`) — the model `Scan`/`Sweep` types don't
+    /// carry it. Pass an empty map when unavailable; sweeps then get
+    /// `nyquist_ms: 0.0` ("unknown").
+    pub fn from_nexrad(
+        scan: &Scan,
+        timestamp: DateTime<Utc>,
+        nyquist_by_elev: &HashMap<u8, f32>,
+    ) -> Self {
         let vcp_number = scan.coverage_pattern_number().number();
-        Self::from_sweeps(scan.sweeps(), timestamp, vcp_number)
+        Self::from_sweeps(scan.sweeps(), timestamp, vcp_number, nyquist_by_elev)
     }
 
-    pub fn from_sweeps(sweeps: &[Sweep], timestamp: DateTime<Utc>, vcp_number: u16) -> Self {
+    pub fn from_sweeps(
+        sweeps: &[Sweep],
+        timestamp: DateTime<Utc>,
+        vcp_number: u16,
+        nyquist_by_elev: &HashMap<u8, f32>,
+    ) -> Self {
         let mut reflectivity = Vec::new();
         let mut velocity = Vec::new();
         let mut spectrum_width = Vec::new();
@@ -180,6 +201,10 @@ impl ScanData {
         let mut differential_phase = Vec::new();
 
         for sweep in sweeps {
+            let nyquist_ms = nyquist_by_elev
+                .get(&sweep.elevation_number())
+                .copied()
+                .unwrap_or(0.0);
             for (product, out) in [
                 (Product::Reflectivity, &mut reflectivity),
                 (Product::Velocity, &mut velocity),
@@ -257,6 +282,7 @@ impl ScanData {
                         radials,
                         first_gate_km,
                         gate_spacing_km,
+                        nyquist_ms,
                     });
                 }
             }
@@ -295,6 +321,12 @@ mod tests {
     use super::{Product, ScanData, format_nyquist_velocity, vcp_mode_label};
     use chrono::Utc;
     use nexrad_model::data::{MomentData, Radial, RadialStatus, Sweep, VCPNumber};
+    use std::collections::HashMap;
+
+    /// Shorthand for call sites that don't care about Nyquist.
+    fn no_nyquist() -> HashMap<u8, f32> {
+        HashMap::new()
+    }
 
     /// A REF-encoded moment: value = (raw - 66.0) / 2.0 dBZ.
     fn ref_moment(raws: Vec<u8>) -> MomentData {
@@ -402,7 +434,7 @@ mod tests {
 
     #[test]
     fn converts_moment_values_to_gates() {
-        let scan_data = ScanData::from_sweeps(&synthetic_sweeps(), Utc::now(), 12);
+        let scan_data = ScanData::from_sweeps(&synthetic_sweeps(), Utc::now(), 12, &no_nyquist());
         let sweep = &scan_data.reflectivity[0];
         // raw 0 -> BelowThreshold -> None; raw 130 -> 32 dBZ; raw 190 -> 62 dBZ.
         assert_eq!(sweep.radials[0].gates, vec![None, Some(32.0), Some(62.0)]);
@@ -411,7 +443,7 @@ mod tests {
 
     #[test]
     fn range_folded_flagged() {
-        let scan_data = ScanData::from_sweeps(&synthetic_sweeps(), Utc::now(), 12);
+        let scan_data = ScanData::from_sweeps(&synthetic_sweeps(), Utc::now(), 12, &no_nyquist());
         // Velocity sweep at 0.5 deg: raws [0, 1, 65] -> [None, None(RF), Some(-32.0)].
         let sweep = &scan_data.velocity[0];
         assert_eq!(sweep.radials[0].gates, vec![None, None, Some(-32.0)]);
@@ -420,7 +452,7 @@ mod tests {
 
     #[test]
     fn products_split_and_dedup_by_elevation() {
-        let scan_data = ScanData::from_sweeps(&synthetic_sweeps(), Utc::now(), 12);
+        let scan_data = ScanData::from_sweeps(&synthetic_sweeps(), Utc::now(), 12, &no_nyquist());
         // Reflectivity: 0.5 deg (from CS cut) and 1.45 deg. The CD cut has no
         // reflectivity so nothing to dedup here, but elevations are ascending.
         let elevations: Vec<f32> = scan_data
@@ -463,15 +495,19 @@ mod tests {
                 None,
             )],
         );
-        let scan_data =
-            ScanData::from_sweeps(&[s1, s2], Utc::now(), VCPNumber::Precipitation12.into());
+        let scan_data = ScanData::from_sweeps(
+            &[s1, s2],
+            Utc::now(),
+            VCPNumber::Precipitation12.into(),
+            &no_nyquist(),
+        );
         assert_eq!(scan_data.reflectivity.len(), 1);
         assert_eq!(scan_data.reflectivity[0].radials[0].gates, vec![Some(32.0)]);
     }
 
     #[test]
     fn sweeps_accessor_selects_product() {
-        let scan_data = ScanData::from_sweeps(&synthetic_sweeps(), Utc::now(), 12);
+        let scan_data = ScanData::from_sweeps(&synthetic_sweeps(), Utc::now(), 12, &no_nyquist());
         assert_eq!(scan_data.sweeps(Product::Reflectivity).len(), 2);
         assert_eq!(scan_data.sweeps(Product::Velocity).len(), 2);
         assert_eq!(scan_data.sweeps(Product::CorrelationCoefficient).len(), 0);
@@ -493,7 +529,7 @@ mod tests {
                 None,
             )],
         );
-        let scan_data = ScanData::from_sweeps(&[s1], Utc::now(), 12);
+        let scan_data = ScanData::from_sweeps(&[s1], Utc::now(), 12, &no_nyquist());
         let sweep = &scan_data.correlation_coefficient[0];
         assert_eq!(sweep.radials[0].gates, vec![None, Some(0.8)]);
     }
@@ -520,9 +556,35 @@ mod tests {
                 None,
             )],
         );
-        let scan_data = ScanData::from_sweeps(&[s1], Utc::now(), 12);
+        let scan_data = ScanData::from_sweeps(&[s1], Utc::now(), 12, &no_nyquist());
         assert_eq!(scan_data.reflectivity[0].first_gate_km, 1.0);
         assert_eq!(scan_data.reflectivity[0].gate_spacing_km, 1.0);
+    }
+
+    #[test]
+    fn from_sweeps_threads_nyquist_from_map() {
+        // Sweep 3 (elevation number 3) has a mapped Nyquist; sweep 2 (elevation
+        // number 2) is absent from the map and must fall back to 0.0
+        // ("unknown"), never a guess.
+        let mut nyquist_by_elev = HashMap::new();
+        nyquist_by_elev.insert(3, 26.4);
+
+        let scan_data =
+            ScanData::from_sweeps(&synthetic_sweeps(), Utc::now(), 12, &nyquist_by_elev);
+        // synthetic_sweeps' sweep 3 (1.45 deg) is the one with elevation_number 3.
+        let mapped = scan_data
+            .velocity
+            .iter()
+            .find(|s| s.elevation_deg == 1.45)
+            .unwrap();
+        assert_eq!(mapped.nyquist_ms, 26.4);
+
+        let unmapped = scan_data
+            .velocity
+            .iter()
+            .find(|s| s.elevation_deg == 0.5)
+            .unwrap();
+        assert_eq!(unmapped.nyquist_ms, 0.0);
     }
 
     #[test]
@@ -543,6 +605,11 @@ mod tests {
 
     #[test]
     fn nyquist_velocity_returns_unavailable() {
-        assert_eq!(format_nyquist_velocity(), "Nyquist —");
+        assert_eq!(format_nyquist_velocity(0.0), "Nyquist —");
+    }
+
+    #[test]
+    fn nyquist_velocity_formats_known_value() {
+        assert_eq!(format_nyquist_velocity(26.4), "Nyquist ±26.4 m/s");
     }
 }
