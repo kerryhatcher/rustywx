@@ -311,9 +311,16 @@ fn clean_sweep(sweep: &SweepData, product: Product, qc: &QcConfig) -> SweepData 
                 .iter()
                 .map(|&i| cleaned.radials[i].gates.clone())
                 .collect();
-            // Gap between sorted azimuth k and its successor (wrapping at 360°).
+            // Forward (directional) arc from sorted azimuth k to its successor,
+            // wrapping at 360°. Must NOT use angular_distance here: that returns
+            // the shortest wraparound distance, which for a hop >180° picks the
+            // *other* direction and silently shrinks a real gap (e.g. a
+            // 1°->359° span going the long way would read as ~2°). The walk
+            // below always advances in one consistent direction (increasing or
+            // decreasing sorted index), so each hop must be that forward arc,
+            // not whichever way happens to be shorter.
             let gaps: Vec<f32> = (0..n_az)
-                .map(|k| angular_distance(azimuths[k], azimuths[(k + 1) % n_az]))
+                .map(|k| (azimuths[(k + 1) % n_az] - azimuths[k]).rem_euclid(360.0))
                 .collect();
             let n_gates = original_gates.iter().map(|g| g.len()).max().unwrap_or(0);
 
@@ -393,7 +400,9 @@ fn clean_sweep(sweep: &SweepData, product: Product, qc: &QcConfig) -> SweepData 
                 }
             }
             for (radial_idx, gate, value) in fills {
-                cleaned.radials[radial_idx].gates[gate] = Some(value);
+                if let Some(g) = cleaned.radials[radial_idx].gates.get_mut(gate) {
+                    *g = Some(value);
+                }
             }
         }
     }
@@ -2524,6 +2533,90 @@ mod tests {
         assert_eq!(
             cleaned.radials[1].gates[GAP_FILL_TARGET_GATE], None,
             "range_folded gate must not be gap-filled"
+        );
+    }
+
+    #[test]
+    fn gap_fill_unequal_gate_counts_does_not_panic() {
+        // az2 (the None-slit radial) has fewer gates than az1/az4, which
+        // carry the max gate count. The write-back must skip gates a short
+        // radial doesn't have instead of indexing out of bounds.
+        let mut az1 = vec![Some(10.0); GAP_FILL_N_GATES];
+        let mut az4 = vec![Some(30.0); GAP_FILL_N_GATES];
+        az1[GAP_FILL_TARGET_GATE] = Some(10.0);
+        az4[GAP_FILL_TARGET_GATE] = Some(30.0);
+        // Short radial: stops well before GAP_FILL_TARGET_GATE.
+        let az2 = vec![Some(15.0); GAP_FILL_TARGET_GATE - 5];
+        let az3 = vec![Some(15.0); GAP_FILL_N_GATES];
+
+        let sweep = gap_fill_sweep(vec![
+            radial(1.0, az1),
+            radial(2.0, az2),
+            radial(3.0, az3),
+            radial(4.0, az4),
+        ]);
+
+        // Must not panic.
+        let cleaned = gap_fill_clean(&sweep, true);
+        assert_eq!(
+            cleaned.radials[1].gates.len(),
+            GAP_FILL_TARGET_GATE - 5,
+            "short radial's gate vector must be left at its original length"
+        );
+    }
+
+    #[test]
+    fn gap_fill_directional_arc_rejects_large_gap_through_none_run() {
+        // Flanks at 1° and 359° are ~2° apart the short way, but the None
+        // radial at 358° sits on the *long* way around from the 1° flank
+        // (357° forward). A shortest-distance check on the 1->358 hop folds
+        // that into ~3°, wrongly bracketing the gap as small and filling it.
+        // The correct directional walk must reject it (left search never
+        // finds data within MAX_FILL_GAP_DEG).
+        let mut az1 = vec![Some(10.0); GAP_FILL_N_GATES];
+        let mut az358 = vec![Some(15.0); GAP_FILL_N_GATES];
+        let mut az359 = vec![Some(30.0); GAP_FILL_N_GATES];
+        az1[GAP_FILL_TARGET_GATE] = Some(10.0);
+        az358[GAP_FILL_TARGET_GATE] = None;
+        az359[GAP_FILL_TARGET_GATE] = Some(30.0);
+
+        let sweep = gap_fill_sweep(vec![
+            radial(1.0, az1),
+            radial(358.0, az358),
+            radial(359.0, az359),
+        ]);
+
+        let cleaned = gap_fill_clean(&sweep, true);
+        assert_eq!(
+            cleaned.radials[1].gates[GAP_FILL_TARGET_GATE], None,
+            "358° gate is 357° the wrong way from the 1° flank and must not be filled"
+        );
+    }
+
+    #[test]
+    fn gap_fill_directional_arc_fills_genuine_wraparound_gap() {
+        // Flanks at 359° and 1° (~2° apart the short way, straddling the
+        // 0/360 boundary), None radial at 0° directly between them. This
+        // must still be filled: a correct directional walk still recognizes
+        // a genuinely small gap that crosses the wraparound.
+        let mut az359 = vec![Some(10.0); GAP_FILL_N_GATES];
+        let mut az0 = vec![Some(15.0); GAP_FILL_N_GATES];
+        let mut az1 = vec![Some(30.0); GAP_FILL_N_GATES];
+        az359[GAP_FILL_TARGET_GATE] = Some(10.0);
+        az0[GAP_FILL_TARGET_GATE] = None;
+        az1[GAP_FILL_TARGET_GATE] = Some(30.0);
+
+        let sweep = gap_fill_sweep(vec![
+            radial(359.0, az359),
+            radial(0.0, az0),
+            radial(1.0, az1),
+        ]);
+
+        let cleaned = gap_fill_clean(&sweep, true);
+        let v = cleaned.radials[1].gates[GAP_FILL_TARGET_GATE];
+        assert!(
+            matches!(v, Some(x) if (x - 20.0).abs() < 0.01),
+            "0° gate straddling the wraparound should interpolate to ~20.0, got {v:?}"
         );
     }
 }
