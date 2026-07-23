@@ -59,6 +59,7 @@ pub struct QcConfig<'a> {
     pub nonmet_threshold: f32,
     pub refl_gap_fill_enabled: bool,
     pub multi_scale_texture_enabled: bool,
+    pub sun_spike_removal_enabled: bool,
 }
 
 /// Compute TDBZ (texture of dBZ) and mean dBZ over a symmetric window half-size
@@ -267,6 +268,93 @@ fn clean_sweep(sweep: &SweepData, product: Product, qc: &QcConfig) -> SweepData 
                 if let Some(v) = *gate
                     && v < floor
                 {
+                    *gate = None;
+                }
+            }
+        }
+    }
+
+    // Sun-spike / RFI radial removal: null narrow high-value "spoke" radials
+    // (solar noise at dawn/dusk, co-channel interference) that are bright and
+    // long-in-range but isolated in azimuth — real precip is azimuthally
+    // continuous, a spoke lights up one radial while its az-neighbors stay
+    // empty. Reflectivity-only. Runs after the dBZ floor (weak fringe echo
+    // is already gone) and before gap-fill (so a spoke's far-range void is
+    // never used as a fill donor/target). Two-pass read-then-write: every
+    // radial's own/neighbor stats are read from the pre-pass gates, so
+    // nulling one spoke can't distort another radial's neighbor average.
+    if product == Product::Reflectivity && qc.sun_spike_removal_enabled {
+        // ponytail: fixed calibration knobs tuned on the sun-spike case in
+        // docs/research/ (gwc-lsr-2604.png); upgrade path is a per-volume
+        // adaptive threshold (e.g. derived from the sweep's own azimuth-wide
+        // coverage distribution) if these fixed values misfire across VCPs.
+        const FAR_RANGE_FRACTION: f32 = 0.5; // gates in the far half (by index) of the radial
+        const NEIGHBOR_HALF: i64 = 3; // K nearest azimuth neighbors on each side
+        const MIN_OWN_COVERAGE: f32 = 0.5; // candidate's own far-range coverage floor ("long")
+        const NEIGHBOR_MAX_COVERAGE: f32 = 0.15; // neighbor avg far-range coverage ceiling ("isolated")
+        const SPIKE_RATIO: f32 = 4.0; // own coverage*intensity score must beat neighbor avg by this multiple
+
+        let (az_order, _) = sorted_azimuths(&cleaned.radials);
+        let n_az = az_order.len();
+
+        if n_az > (NEIGHBOR_HALF * 2) as usize {
+            // (coverage fraction, mean dBZ) over far-range gates per radial,
+            // read from the pre-pass gates, in sorted-azimuth order.
+            let far_stats: Vec<(f32, f32)> = az_order
+                .iter()
+                .map(|&idx| {
+                    let gates = &cleaned.radials[idx].gates;
+                    let mid = (gates.len() as f32 * FAR_RANGE_FRACTION) as usize;
+                    let far = &gates[mid.min(gates.len())..];
+                    let mut valid = 0u32;
+                    let mut sum = 0.0f32;
+                    for v in far.iter().flatten() {
+                        valid += 1;
+                        sum += v;
+                    }
+                    let coverage = if far.is_empty() {
+                        0.0
+                    } else {
+                        valid as f32 / far.len() as f32
+                    };
+                    let mean = if valid > 0 { sum / valid as f32 } else { 0.0 };
+                    (coverage, mean)
+                })
+                .collect();
+
+            let mut spoke_radials: Vec<usize> = Vec::new();
+            for (sorted_idx, &radial_idx) in az_order.iter().enumerate() {
+                let (own_coverage, own_mean) = far_stats[sorted_idx];
+                if own_coverage < MIN_OWN_COVERAGE {
+                    continue;
+                }
+                let mut nbr_coverage_sum = 0.0f32;
+                let mut nbr_mean_sum = 0.0f32;
+                for d in -NEIGHBOR_HALF..=NEIGHBOR_HALF {
+                    if d == 0 {
+                        continue;
+                    }
+                    let nbr = (sorted_idx as i64 + d).rem_euclid(n_az as i64) as usize;
+                    nbr_coverage_sum += far_stats[nbr].0;
+                    nbr_mean_sum += far_stats[nbr].1;
+                }
+                let nbr_count = (NEIGHBOR_HALF * 2) as f32;
+                let nbr_avg_coverage = nbr_coverage_sum / nbr_count;
+                let nbr_avg_mean = nbr_mean_sum / nbr_count;
+
+                let own_score = own_coverage * own_mean;
+                let nbr_score = nbr_avg_coverage * nbr_avg_mean;
+
+                if nbr_avg_coverage < NEIGHBOR_MAX_COVERAGE && own_score > nbr_score * SPIKE_RATIO {
+                    spoke_radials.push(radial_idx);
+                }
+            }
+
+            for radial_idx in spoke_radials {
+                let gates = &mut cleaned.radials[radial_idx].gates;
+                let n = gates.len();
+                let mid = (n as f32 * FAR_RANGE_FRACTION) as usize;
+                for gate in &mut gates[mid.min(n)..] {
                     *gate = None;
                 }
             }
@@ -2044,6 +2132,69 @@ mod tests {
             "multi-scale union should either remove gates single-scale keeps, \
              or produce identical results (union is at least identity)"
         );
+    }
+
+    #[test]
+    fn sun_spike_removal_nulls_isolated_bright_radial_but_keeps_precip_block() {
+        // Group A: one bright, fully-covered "spoke" radial (az 3) flanked
+        // by 3 empty radials on each side (az 0-2, 4-6) -- the classic
+        // sun-spike signature: bright-and-long-in-range, isolated in azimuth.
+        // Group B: 9 azimuths (100-108) of continuous, fully-covered precip
+        // -- azimuthally continuous, so neighbor coverage stays high there
+        // and the pass must leave it alone.
+        let n_gates = 20;
+        let spike_gates = vec![Some(60.0); n_gates];
+        let empty_gates = vec![None; n_gates];
+        let precip_gates = vec![Some(40.0); n_gates];
+
+        let mut radials: Vec<RadialData> = Vec::new();
+        for az in 0..7u32 {
+            let gates = if az == 3 {
+                spike_gates.clone()
+            } else {
+                empty_gates.clone()
+            };
+            radials.push(radial(az as f32, gates));
+        }
+        for az in 100..109u32 {
+            radials.push(radial(az as f32, precip_gates.clone()));
+        }
+
+        let sweep = SweepData {
+            elevation_deg: 0.5,
+            radials,
+            first_gate_km: 2.125,
+            gate_spacing_km: 0.25,
+            nyquist_ms: 0.0,
+        };
+
+        let cleaned = clean_sweep(
+            &sweep,
+            Product::Reflectivity,
+            &QcConfig {
+                tdbz_kernel_size: 9,
+                cc_gate_threshold: 0.80,
+                vel_dealias_enabled: true,
+                vel_sd_threshold: 7.0,
+                sun_spike_removal_enabled: true,
+                ..Default::default()
+            },
+        );
+
+        // Spoke radial (az 3, index 3): far-range gates nulled.
+        let spike_far = &cleaned.radials[3].gates[n_gates / 2..];
+        assert!(
+            spike_far.iter().all(|g| g.is_none()),
+            "spoke radial's far-range gates should be nulled, got {spike_far:?}"
+        );
+
+        // Precip block (az 100-108, indices 7..16): untouched end to end.
+        for i in 7..16 {
+            assert_eq!(
+                cleaned.radials[i].gates, precip_gates,
+                "continuous precip block must not be touched by sun-spike removal"
+            );
+        }
     }
 
     #[test]

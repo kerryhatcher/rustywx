@@ -24,6 +24,7 @@ pub const SCOPE_RINGS_TOGGLE_ID: &str = "settings-toggle-scope-rings";
 pub const CC_GATE_TOGGLE_ID: &str = "settings-toggle-cc-gate";
 pub const GAP_FILL_TOGGLE_ID: &str = "settings-toggle-gap-fill";
 pub const MULTI_SCALE_TEXTURE_TOGGLE_ID: &str = "settings-toggle-multi-scale-texture";
+pub const SUN_SPIKE_TOGGLE_ID: &str = "settings-toggle-sun-spike";
 pub const REFL_FLOOR_TOGGLE_ID: &str = "settings-toggle-refl-floor";
 pub const VEL_SD_TOGGLE_ID: &str = "settings-toggle-vel-sd";
 pub const VEL_DEALIAS_TOGGLE_ID: &str = "settings-toggle-vel-dealias";
@@ -275,6 +276,14 @@ pub fn draw(
                             MULTI_SCALE_TEXTURE_TOGGLE_ID,
                             "Multi-scale TDBZ",
                             settings.multi_scale_texture_enabled,
+                        );
+                    });
+                    row(ui, "Sun-spike / RFI removal", |ui| {
+                        bool_toggle(
+                            ui,
+                            SUN_SPIKE_TOGGLE_ID,
+                            "Sun-spike / RFI removal",
+                            settings.sun_spike_removal_enabled,
                         );
                     });
                     row(ui, "Noise-floor cut (dBZ)", |ui| {

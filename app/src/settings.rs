@@ -226,6 +226,12 @@ pub struct Settings {
     /// more aggressive than the single-scale pass (see `scope::clean_sweep`).
     #[serde(default)]
     pub multi_scale_texture_enabled: bool,
+    /// Whether sun-spike / RFI radial removal nulls narrow high-value
+    /// "spoke" radials (solar noise, co-channel interference) that are
+    /// bright-and-long-in-range but isolated in azimuth. Default OFF —
+    /// honest rendering by default (see `scope::clean_sweep`).
+    #[serde(default)]
+    pub sun_spike_removal_enabled: bool,
 }
 
 impl Default for Settings {
@@ -262,6 +268,7 @@ impl Default for Settings {
             nonmet_threshold: crate::nonmet::NONMET_THRESHOLD_DEFAULT,
             refl_gap_fill_enabled: false,
             multi_scale_texture_enabled: false,
+            sun_spike_removal_enabled: false,
         }
     }
 }
@@ -297,6 +304,7 @@ mod tests {
         assert_eq!(settings.nonmet_threshold, 0.5);
         assert!(!settings.refl_gap_fill_enabled);
         assert!(!settings.multi_scale_texture_enabled);
+        assert!(!settings.sun_spike_removal_enabled);
     }
 
     #[test]
@@ -333,6 +341,7 @@ mod tests {
             nonmet_threshold: 0.6,
             refl_gap_fill_enabled: true,
             multi_scale_texture_enabled: true,
+            sun_spike_removal_enabled: true,
         };
         let json = serde_json::to_string(&settings).expect("serialize");
         let restored: Settings = serde_json::from_str(&json).expect("deserialize");
@@ -395,5 +404,7 @@ mod tests {
         assert_eq!(s.nonmet_threshold, 0.5);
         // Missing gap-fill field defaults off (honest rendering by default).
         assert!(!s.refl_gap_fill_enabled);
+        // Missing sun-spike field defaults off (honest rendering by default).
+        assert!(!s.sun_spike_removal_enabled);
     }
 }
