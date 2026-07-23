@@ -82,13 +82,16 @@ fn mu_zdr_mag(zdr: f32) -> f32 {
 /// reduces to a pure `mu_cc` gate — a legacy single-pol / CC-only volume
 /// degrades gracefully to the old CC-gate behavior, never a worse mask.
 /// All-`None` inputs score 0.0 (never null).
+/// One `(value, weight, membership fn)` term in the weighted mean below.
+type ScoreTerm = (Option<f32>, f32, fn(f32) -> f32);
+
 pub fn nonmet_score(
     cc: Option<f32>,
     sd_phidp: Option<f32>,
     sd_zdr: Option<f32>,
     zdr: Option<f32>,
 ) -> f32 {
-    let terms: [(Option<f32>, f32, fn(f32) -> f32); 4] = [
+    let terms: [ScoreTerm; 4] = [
         (cc, W_CC, mu_cc),
         (sd_phidp, W_SD_PHIDP, mu_sd_phidp),
         (sd_zdr, W_SD_ZDR, mu_sd_zdr),
@@ -118,7 +121,7 @@ pub fn nonmet_score(
 pub fn range_texture(gates: &[Option<f32>], half_window: usize, wrap_deg: Option<f32>) -> Vec<f32> {
     let n = gates.len();
     let mut out = vec![0.0f32; n];
-    for i in 0..n {
+    for (i, out_i) in out.iter_mut().enumerate() {
         let start = i.saturating_sub(half_window);
         let end = (i + half_window + 1).min(n);
         if end - start < 2 {
@@ -140,7 +143,7 @@ pub fn range_texture(gates: &[Option<f32>], half_window: usize, wrap_deg: Option
             }
         }
         if diff_count > 0 {
-            out[i] = (sum_sq / diff_count as f32).sqrt();
+            *out_i = (sum_sq / diff_count as f32).sqrt();
         }
     }
     out
