@@ -303,8 +303,13 @@ fn sorted_azimuths(radials: &[RadialData]) -> (Vec<usize>, Vec<f32>) {
 /// not be blurred by interpolation, same rule the CC-only gate follows).
 ///
 /// Fails open per `nonmet_score`'s contract: any aux sweep that's absent
-/// just drops out of the weighted mean, degrading gracefully down to
-/// "leave REF untouched" if all three are absent.
+/// just drops out of the weighted mean. When *both* ΦDP and ZDR texture are
+/// absent for a gate (the pure CC-only degrade case), the decision defers
+/// to `nonmet::should_null_reflectivity_gate`'s legacy fallback — the exact
+/// hard `cc < qc.cc_gate_threshold` comparison the old CC-only gate used —
+/// rather than the fuzzy score, so CC-only volumes truly reduce to today's
+/// gate instead of a stricter one. Leaves REF untouched if CC is also
+/// absent.
 fn fuzzy_nonmet_gate(cleaned: &mut SweepData, qc: &QcConfig) {
     if qc.cc_sweep.is_none() && qc.zdr_sweep.is_none() && qc.phidp_sweep.is_none() {
         return;
@@ -366,8 +371,14 @@ fn fuzzy_nonmet_gate(cleaned: &mut SweepData, qc: &QcConfig) {
                 None => (None, None),
             };
             let sd_phidp = phidp_hit.and_then(|(_, tex)| tex.get(i).copied());
-            let score = nonmet::nonmet_score(cc_val, sd_phidp, sd_zdr, zdr_val);
-            if score >= qc.nonmet_threshold {
+            if nonmet::should_null_reflectivity_gate(
+                cc_val,
+                sd_phidp,
+                sd_zdr,
+                zdr_val,
+                qc.cc_gate_threshold,
+                qc.nonmet_threshold,
+            ) {
                 *gate = None;
             }
         }

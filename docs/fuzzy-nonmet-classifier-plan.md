@@ -42,9 +42,18 @@ fn nonmet_score(cc: Option<f32>, sd_phidp: Option<f32>, sd_zdr: Option<f32>, zdr
 ```
 
 - **Fail open, per variable:** any absent input (no ZDR volume, out-of-range gate) drops out
-  of the weighted mean; if *only* CC is available the score reduces to the old CC behavior, so
-  a legacy single-pol / CC-only volume degrades gracefully to today's gate — never a worse mask.
-- **Decision:** null the REF gate when `nonmet_score >= nonmet_threshold` (default `0.5`).
+  of the weighted mean. Note that `nonmet_score` itself, with only `cc` present, reduces
+  *mathematically* to `mu_cc(cc)` — but comparing that to `nonmet_threshold` is **not** the
+  same decision as the legacy `cc < cc_gate_threshold` hard gate (the ramp crosses
+  `nonmet_threshold` at a different CC value), so it would be a strictly *more aggressive*
+  mask on real precip, not an equivalent one.
+- **Decision:** the CC-only degrade is a true behavioral reduction, handled by a dedicated
+  `should_null_reflectivity_gate(cc, sd_phidp, sd_zdr, zdr, cc_gate_threshold, nonmet_threshold)`
+  wrapper: when *both* dual-pol texture terms (`sd_phidp`, `sd_zdr`) are unavailable at a gate,
+  it falls back to the exact legacy hard comparison `cc < cc_gate_threshold` — so a legacy
+  single-pol / CC-only volume degrades gracefully to *today's actual gate*, never a worse mask.
+  Only when at least one dual-pol texture term is present does the fuzzy
+  `nonmet_score >= nonmet_threshold` (default `0.5`) decision govern.
 - **Weights** (consts): `W_PHIDP = 0.4`, `W_CC = 0.35`, `W_SDZDR = 0.2`, `W_ZDRMAG = 0.05`;
   normalized over whichever inputs are present.
 

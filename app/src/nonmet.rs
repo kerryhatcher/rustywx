@@ -6,7 +6,8 @@
 //! ground clutter) that a CC-only gate misses; combining them gives fewer
 //! false nulls on real precip *and* better biology/chaff/AP rejection.
 //!
-//! Pure module — no wiring into `scope.rs`/`main.rs` yet. See
+//! Wired into the Reflectivity QC pass in `scope.rs` (`fuzzy_nonmet_gate`,
+//! gated by `QcConfig::nonmet_fuzzy_enabled`). See
 //! `docs/fuzzy-nonmet-classifier-plan.md`.
 
 /// CC membership: 1.0 (non-met) at cc<=0.80, ramp to 0.0 (precip) by cc>=0.95.
@@ -79,9 +80,14 @@ fn mu_zdr_mag(zdr: f32) -> f32 {
 /// Fail-open per variable: any `None` input drops out of the weighted mean
 /// (and its weight is excluded from the normalizer) rather than being
 /// treated as evidence either way. If only `cc` is available the score
-/// reduces to a pure `mu_cc` gate — a legacy single-pol / CC-only volume
-/// degrades gracefully to the old CC-gate behavior, never a worse mask.
-/// All-`None` inputs score 0.0 (never null).
+/// reduces mathematically to a pure `mu_cc(cc)` value — but that is *not*
+/// the same decision as the legacy `cc < cc_gate_threshold` hard gate (the
+/// `mu_cc` ramp crosses the default `NONMET_THRESHOLD_DEFAULT` at a
+/// different CC value than `cc_gate_threshold`, so comparing this score to
+/// `nonmet_threshold` in the CC-only case is a *stricter* mask, not an
+/// equivalent one). Callers that need the true CC-only degrade to legacy
+/// behavior should use [`should_null_reflectivity_gate`], not this function
+/// directly. All-`None` inputs score 0.0 (never null).
 /// One `(value, weight, membership fn)` term in the weighted mean below.
 type ScoreTerm = (Option<f32>, f32, fn(f32) -> f32);
 
@@ -109,6 +115,34 @@ pub fn nonmet_score(
         return 0.0;
     }
     weighted_sum / weight_total
+}
+
+/// Decide whether to null a Reflectivity gate, given the co-located dual-pol
+/// terms plus the legacy CC-gate threshold and the fuzzy non-met threshold.
+///
+/// This is the true CC-only degrade path: when *both* dual-pol texture
+/// terms (`sd_phidp`, `sd_zdr`) are unavailable at this gate — e.g. the ΦDP
+/// and ZDR aux sweeps are absent, or the gate falls outside their coverage —
+/// the decision falls back to the exact legacy hard comparison,
+/// `cc < cc_gate_threshold` (missing CC fails open: no null). Only when at
+/// least one dual-pol texture term is present does the fuzzy `nonmet_score`
+/// govern. This makes "CC-only reduces to today's CC gate" literally true,
+/// rather than merely reducing to `mu_cc` (see the note on [`nonmet_score`]
+/// — `mu_cc` crosses `nonmet_threshold` at a different CC value than
+/// `cc_gate_threshold`, which would otherwise be a strictly more aggressive
+/// mask on real precip).
+pub fn should_null_reflectivity_gate(
+    cc: Option<f32>,
+    sd_phidp: Option<f32>,
+    sd_zdr: Option<f32>,
+    zdr: Option<f32>,
+    cc_gate_threshold: f32,
+    nonmet_threshold: f32,
+) -> bool {
+    if sd_phidp.is_none() && sd_zdr.is_none() {
+        return matches!(cc, Some(cc_val) if cc_val < cc_gate_threshold);
+    }
+    nonmet_score(cc, sd_phidp, sd_zdr, zdr) >= nonmet_threshold
 }
 
 /// Gate-to-gate RMS texture along a radial, generalizing the TDBZ inner loop
@@ -244,6 +278,59 @@ mod tests {
     #[test]
     fn nonmet_score_all_none_is_zero() {
         assert_eq!(nonmet_score(None, None, None, None), 0.0);
+    }
+
+    // --- should_null_reflectivity_gate ---
+
+    #[test]
+    fn cc_only_gate_preserved_matches_legacy() {
+        // CC=0.85, no dual-pol texture, legacy threshold 0.80: legacy keeps
+        // this gate (0.85 >= 0.80). The old fuzzy-only degrade (mu_cc >=
+        // nonmet_threshold) would have nulled it instead — this is the
+        // regression the wrapper fixes.
+        let null = should_null_reflectivity_gate(
+            Some(0.85),
+            None,
+            None,
+            None,
+            0.80,
+            NONMET_THRESHOLD_DEFAULT,
+        );
+        assert!(!null);
+    }
+
+    #[test]
+    fn cc_only_gate_nulled_below_legacy_threshold() {
+        // CC=0.75, no dual-pol texture, legacy threshold 0.80: legacy nulls
+        // this gate (0.75 < 0.80).
+        let null = should_null_reflectivity_gate(
+            Some(0.75),
+            None,
+            None,
+            None,
+            0.80,
+            NONMET_THRESHOLD_DEFAULT,
+        );
+        assert!(null);
+    }
+
+    #[test]
+    fn dual_pol_texture_present_still_uses_fuzzy_score() {
+        // Low CC + high SD(ΦDP) (bird signature) with a dual-pol texture
+        // term present: the fuzzy score governs, unchanged from before this
+        // fix, even though CC alone (0.85) would clear the legacy gate.
+        let null = should_null_reflectivity_gate(
+            Some(0.85),
+            Some(40.0),
+            None,
+            None,
+            0.80,
+            NONMET_THRESHOLD_DEFAULT,
+        );
+        assert!(
+            null,
+            "bird gate with SD(PhiDP) present should still be nulled by the fuzzy score"
+        );
     }
 
     // --- range_texture ---
