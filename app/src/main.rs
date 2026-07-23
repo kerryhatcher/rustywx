@@ -3462,10 +3462,21 @@ fn update_scan_status(state: &mut AppState, suffix: &str) {
         let vcp_mode = vcp_mode_label(vcp_num_enum);
         // Nyquist is a velocity-product quantity; show it for the current
         // tilt regardless of which product is on screen (matches the
-        // elevation/VCP context info alongside it).
-        let nyquist_ms = scan
-            .sweeps(Product::Velocity)
+        // elevation/VCP context info alongside it). `state.tilt_index`
+        // indexes the currently-displayed product's sweep list, not
+        // Velocity's — the per-product lists are built and
+        // sort_and_dedup'd independently and can diverge on split-cut
+        // VCPs — so look up the Velocity sweep by nearest elevation_deg
+        // instead of by index (mirrors the `cc_sweep` lookup above).
+        let nyquist_ms = sweeps
             .get(state.tilt_index)
+            .and_then(|sweep| {
+                scan.sweeps(Product::Velocity).iter().min_by(|a, b| {
+                    (a.elevation_deg - sweep.elevation_deg)
+                        .abs()
+                        .total_cmp(&(b.elevation_deg - sweep.elevation_deg).abs())
+                })
+            })
             .map(|sweep| sweep.nyquist_ms)
             .unwrap_or(0.0);
         let nyquist = format_nyquist_velocity(nyquist_ms);

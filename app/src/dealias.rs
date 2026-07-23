@@ -255,6 +255,15 @@ fn radial_shift_verdict(
 /// Apply a confirmed whole-radial shift and flag any gate that still
 /// doesn't line up with the reference afterward as an isolated suspect —
 /// this radial's aliasing is confirmed, so a leftover outlier is residue.
+///
+/// A uniform additive shift doesn't change which gates are genuine local
+/// shear (couplets) versus noise — the same couplet-preservation reasoning
+/// that skips suspect-flagging entirely on the `k == 0` path still applies
+/// here. So a gate disagreeing with the reference is only flagged when it
+/// ALSO breaks gate-to-gate (Stage B) continuity against its own immediate
+/// neighbors *within this radial*: a coherent multi-gate shear feature stays
+/// smooth locally even where it splits from the reference, while a genuine
+/// residual outlier is discontinuous on both sides.
 fn apply_shift_and_flag_suspects(
     out: &mut [Vec<Option<f32>>],
     i: usize,
@@ -275,14 +284,34 @@ fn apply_shift_and_flag_suspects(
         *x += k as f32 * interval;
     }
     // This radial's aliasing is now confirmed by majority vote; a gate that
-    // *still* doesn't line up with the reference is residue, not signal.
-    for (g, (c, r)) in out[i].iter().zip(reference).enumerate() {
-        if let (Some(c), Some(r)) = (c, r)
-            && (c - r).abs() > nyquist
-        {
+    // *still* doesn't line up with the reference AND breaks continuity with
+    // its own neighbors is residue, not signal.
+    for g in 0..out[i].len() {
+        let (Some(c), Some(r)) = (out[i][g], reference[g]) else {
+            continue;
+        };
+        if (c - r).abs() > nyquist && local_discontinuity(&out[i], g, c, nyquist) {
             suspects.push((i, g));
         }
     }
+}
+
+/// True when gate `g` (value `val`) is discontinuous with every immediate,
+/// present neighbor within the same radial — i.e. an isolated jump rather
+/// than part of a locally-smooth (couplet) feature. With no neighbor to
+/// check against at all, falls back to flagging (no local evidence either
+/// way, so preserve the prior conservative behavior).
+fn local_discontinuity(radial: &[Option<f32>], g: usize, val: f32, nyquist: f32) -> bool {
+    let mut present_neighbors = [g.checked_sub(1), Some(g + 1)]
+        .into_iter()
+        .flatten()
+        .filter_map(|n| radial.get(n).copied().flatten());
+    let mut any = false;
+    let all_disagree = present_neighbors.all(|n| {
+        any = true;
+        (val - n).abs() > nyquist
+    });
+    !any || all_disagree
 }
 
 /// Retry every still-pending radial against a newly confirmed reference;
@@ -499,6 +528,41 @@ mod tests {
         let azimuths = vec![0.0, 1.0];
         let out = dealias_sweep(&azimuths, &[reference, cur], nyquist);
         assert_eq!(out[1][4], Some(-5.0), "couplet gate must not be shifted");
+    }
+
+    #[test]
+    fn dealias_sweep_preserves_couplet_in_mis_seeded_radial() {
+        // Radial 1's true field matches radial 0 everywhere except a
+        // couplet at gate 4 (25.0 -> -5.0) — but the whole radial was
+        // seeded one interval high, so every gate (including the couplet)
+        // arrives shifted by +interval. The majority vote correctly detects
+        // k=-1 and recovers gate 4 to -5.0 via the uniform shift. Before the
+        // fix, the post-shift suspect check then re-flagged gate 4 (it
+        // still disagrees with the reference by 30 m/s > Nyquist) and
+        // nulled/VAD-replaced it, flattening the couplet. The fix requires
+        // the suspect to ALSO break local (Stage B) continuity with its own
+        // neighbors — gate 4's shifted value (-5.0) is only 20 m/s from its
+        // neighbors (15.0), well under Nyquist, so it must survive.
+        let nyquist = 26.4;
+        let interval = 2.0 * nyquist;
+        let mut reference = vec![Some(15.0); 8];
+        reference[4] = Some(25.0);
+        let mut mis_seeded = vec![Some(15.0 + interval); 8];
+        mis_seeded[4] = Some(-5.0 + interval);
+        let azimuths = vec![0.0, 1.0];
+        let out = dealias_sweep(&azimuths, &[reference, mis_seeded], nyquist);
+        assert!(
+            (out[1][4].unwrap() - (-5.0)).abs() < 1e-3,
+            "couplet gate must survive the whole-radial shift, not be nulled: got {:?}",
+            out[1]
+        );
+        for (g, v) in out[1].iter().enumerate().filter(|&(g, _)| g != 4) {
+            assert!(
+                (v.unwrap() - 15.0).abs() < 1e-3,
+                "gate {g} should recover cleanly: {:?}",
+                out[1]
+            );
+        }
     }
 
     #[test]
