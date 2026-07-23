@@ -221,6 +221,11 @@ pub struct Settings {
     /// Default OFF — honest rendering by default (see `scope::clean_sweep`).
     #[serde(default)]
     pub refl_gap_fill_enabled: bool,
+    /// Whether multi-scale TDBZ texture filtering runs on Reflectivity
+    /// (two window sizes: single-scale kernel and size+6). Default OFF — it's
+    /// more aggressive than the single-scale pass (see `scope::clean_sweep`).
+    #[serde(default)]
+    pub multi_scale_texture_enabled: bool,
 }
 
 impl Default for Settings {
@@ -256,6 +261,7 @@ impl Default for Settings {
             nonmet_fuzzy_enabled: false,
             nonmet_threshold: crate::nonmet::NONMET_THRESHOLD_DEFAULT,
             refl_gap_fill_enabled: false,
+            multi_scale_texture_enabled: false,
         }
     }
 }
@@ -290,6 +296,7 @@ mod tests {
         assert!(!settings.nonmet_fuzzy_enabled);
         assert_eq!(settings.nonmet_threshold, 0.5);
         assert!(!settings.refl_gap_fill_enabled);
+        assert!(!settings.multi_scale_texture_enabled);
     }
 
     #[test]
@@ -325,6 +332,7 @@ mod tests {
             nonmet_fuzzy_enabled: true,
             nonmet_threshold: 0.6,
             refl_gap_fill_enabled: true,
+            multi_scale_texture_enabled: true,
         };
         let json = serde_json::to_string(&settings).expect("serialize");
         let restored: Settings = serde_json::from_str(&json).expect("deserialize");

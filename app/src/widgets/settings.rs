@@ -23,6 +23,7 @@ pub const SWEEP_TOGGLE_ID: &str = "settings-toggle-sweep";
 pub const SCOPE_RINGS_TOGGLE_ID: &str = "settings-toggle-scope-rings";
 pub const CC_GATE_TOGGLE_ID: &str = "settings-toggle-cc-gate";
 pub const GAP_FILL_TOGGLE_ID: &str = "settings-toggle-gap-fill";
+pub const MULTI_SCALE_TEXTURE_TOGGLE_ID: &str = "settings-toggle-multi-scale-texture";
 pub const REFL_FLOOR_TOGGLE_ID: &str = "settings-toggle-refl-floor";
 pub const VEL_SD_TOGGLE_ID: &str = "settings-toggle-vel-sd";
 pub const VEL_DEALIAS_TOGGLE_ID: &str = "settings-toggle-vel-dealias";
@@ -266,6 +267,14 @@ pub fn draw(
                             GAP_FILL_TOGGLE_ID,
                             "Fill radial gaps",
                             settings.refl_gap_fill_enabled,
+                        );
+                    });
+                    row(ui, "Multi-scale TDBZ", |ui| {
+                        bool_toggle(
+                            ui,
+                            MULTI_SCALE_TEXTURE_TOGGLE_ID,
+                            "Multi-scale TDBZ",
+                            settings.multi_scale_texture_enabled,
                         );
                     });
                     row(ui, "Noise-floor cut (dBZ)", |ui| {
