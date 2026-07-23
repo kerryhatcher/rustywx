@@ -13,34 +13,37 @@
   <a href="https://github.com/kerryhatcher/rustywx/releases"><img src="https://img.shields.io/github/v/release/kerryhatcher/rustywx?label=release" alt="Latest release"></a>
 </p>
 
-**rustywx** is a desktop radarscope that streams live NEXRAD Level II Doppler
-data straight from NOAA's public AWS archive, decodes it, and paints a classic
-PPI weather scope — reflectivity, velocity, and spectrum width — with live NWS
-warning polygons and National Hurricane Center overlays.
+**rustywx** is a desktop weather app that streams live NEXRAD Level II Doppler
+data straight from NOAA's public AWS archive and renders it on a pannable,
+zoomable map — reflectivity, velocity, and spectrum width — layered with live
+NWS warning polygons, National Hurricane Center tropical guidance, and a local
+forecast.
 
 <p align="center">
-  <img src="assets/screenshot-placeholder.svg" alt="rustywx radarscope showing a reflectivity PPI over KJGX" width="720">
+  <img src="assets/screenshot-radar.png" alt="rustywx showing live radar over the Southeast US with the NHC tropical-cyclone panel open" width="820">
 </p>
 
-> [!NOTE]
-> The image above is a placeholder mock. Drop a real capture at
-> `assets/screenshot.png` and swap the `src` above — a demo GIF is the single
-> highest-value thing this README is still missing.
+<p align="center">
+  <img src="assets/screenshot-forecast.png" alt="rustywx forecast view — current conditions, 7-day outlook, and hourly rain chance" width="640">
+</p>
 
 ## ✨ Features
 
 - **📡 Live Level II data** — pulls the newest volume scans from the public
   `unidata-nexrad-level2` S3 bucket. No AWS account, no API key.
+- **🗺️ Pannable radar map** — radar echoes rendered over a zoomable
+  geographic basemap with cities and state / county borders.
 - **🎨 Three products** — Reflectivity, Velocity, and Spectrum Width, on
   NWS-style color tables.
 - **🎚️ Tilt selector** — step through elevation angles with live VCP and
   Nyquist-velocity readout.
 - **⚠️ NWS alerts** — tornado / severe-thunderstorm warning and watch polygons
-  overlaid in real time.
-- **🌀 Tropical overlays** — National Hurricane Center storm tracks and
-  forecast cones.
-- **🗺️ Geographic context** — range rings, cardinal spokes, city markers, and
-  state / county borders.
+  overlaid in real time, with live counts.
+- **🌀 Tropical guidance** — National Hurricane Center tracks, forecast cones,
+  wind probabilities, and graphics products (5-day cone, key messages, wind
+  field, peak surge) with the full public advisory text.
+- **🌤️ Local forecast** — city search, current conditions, a 7-day outlook,
+  and an hourly rain-chance chart.
 - **🧹 TDBZ clutter filter** — knock out wind-turbine and ground clutter, with
   adjustable sensitivity.
 - **⏱️ Auto-refresh** — configurable poll interval (default 2 min) with smooth
@@ -80,7 +83,7 @@ Weather-radar viewers tend to be either heavyweight desktop suites or
 browser tabs at the mercy of a vendor's tile server. rustywx is a small,
 fast, native alternative: it talks directly to the same public Level II
 archive the pros use, decodes the raw Doppler volumes locally, and renders
-them on the GPU with the [ply-engine](https://github.com/kerryhatcher/rustywx)
+them on the GPU with the [ply-engine](https://crates.io/crates/ply-engine)
 graphics framework. Point it at a NEXRAD site and you have a self-contained
 radarscope — no subscriptions, no telemetry, no middleman.
 
