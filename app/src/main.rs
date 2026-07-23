@@ -577,6 +577,7 @@ async fn main() {
         radar_texture: None,
         needs_reraster: true,
         melting_layer_hint: None,
+        qc_report: scope::QcReport::default(),
         scan: None,
         tilt_index: 0,
         status_text: "Loading cached data…".to_string(),
@@ -1045,7 +1046,7 @@ async fn main() {
             } else {
                 None
             };
-            let rgba = scope::rasterize(
+            let (rgba, qc_report) = scope::rasterize_with_report(
                 &sweep,
                 state.product,
                 scope::RASTER_SIZE_PX,
@@ -1075,6 +1076,7 @@ async fn main() {
                 &rgba,
             );
             state.radar_texture = Some(tex);
+            state.qc_report = qc_report;
         }
 
         // Draw scope + overlays directly to screen (avoids render_to_texture
@@ -2449,6 +2451,8 @@ async fn main() {
                         &state.settings.location_input,
                         state.location_input_focused,
                         &loc_status,
+                        state.qc_report,
+                        state.product.label(),
                     );
                 }
 
@@ -3141,6 +3145,48 @@ fn handle_input(
             // Not a raster QC pass — this just re-triggers the hint
             // recompute that lives alongside the raster (see above).
             state.needs_reraster = true;
+        }
+        // Threshold steppers: nudge each QC knob, clamp to a sane range,
+        // persist, and re-raster so the effect is visible immediately.
+        {
+            let s = &mut state.settings;
+            let mut qc_changed = false;
+            if ply.is_just_pressed(settings_widget::CC_GATE_DEC_ID) {
+                s.cc_gate_threshold = (s.cc_gate_threshold - 0.05).clamp(0.0, 1.0);
+                qc_changed = true;
+            }
+            if ply.is_just_pressed(settings_widget::CC_GATE_INC_ID) {
+                s.cc_gate_threshold = (s.cc_gate_threshold + 0.05).clamp(0.0, 1.0);
+                qc_changed = true;
+            }
+            if ply.is_just_pressed(settings_widget::NONMET_DEC_ID) {
+                s.nonmet_threshold = (s.nonmet_threshold - 0.05).clamp(0.0, 1.0);
+                qc_changed = true;
+            }
+            if ply.is_just_pressed(settings_widget::NONMET_INC_ID) {
+                s.nonmet_threshold = (s.nonmet_threshold + 0.05).clamp(0.0, 1.0);
+                qc_changed = true;
+            }
+            if ply.is_just_pressed(settings_widget::REFL_FLOOR_DEC_ID) {
+                s.refl_floor_dbz = (s.refl_floor_dbz - 1.0).clamp(0.0, 40.0);
+                qc_changed = true;
+            }
+            if ply.is_just_pressed(settings_widget::REFL_FLOOR_INC_ID) {
+                s.refl_floor_dbz = (s.refl_floor_dbz + 1.0).clamp(0.0, 40.0);
+                qc_changed = true;
+            }
+            if ply.is_just_pressed(settings_widget::VEL_SD_DEC_ID) {
+                s.vel_sd_threshold = (s.vel_sd_threshold - 1.0).clamp(0.0, 20.0);
+                qc_changed = true;
+            }
+            if ply.is_just_pressed(settings_widget::VEL_SD_INC_ID) {
+                s.vel_sd_threshold = (s.vel_sd_threshold + 1.0).clamp(0.0, 20.0);
+                qc_changed = true;
+            }
+            if qc_changed {
+                state.cache.save_settings(&state.settings);
+                state.needs_reraster = true;
+            }
         }
         if ply.is_just_pressed(settings_widget::ANIMATION_CYCLE_ID) {
             state.settings.animation_level = state.settings.animation_level.next();

@@ -638,6 +638,32 @@ fn fuzzy_nonmet_gate(cleaned: &mut SweepData, qc: &QcConfig) {
 }
 
 /// Rasterize one sweep to raw RGBA bytes.
+/// Live QC feedback: how many gates the QC passes removed from the
+/// currently-rendered product, out of how many carried a value before QC.
+/// Surfaced in the settings panel so toggling a pass visibly confirms it did
+/// something even on a scene with little to remove.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct QcReport {
+    pub gates_before: usize,
+    pub gates_after: usize,
+}
+
+impl QcReport {
+    /// Net gates suppressed by QC (saturating; a fill-only pass never
+    /// reports negative).
+    pub fn removed(&self) -> usize {
+        self.gates_before.saturating_sub(self.gates_after)
+    }
+}
+
+fn count_valid(sweep: &SweepData) -> usize {
+    sweep
+        .radials
+        .iter()
+        .map(|r| r.gates.iter().filter(|g| g.is_some()).count())
+        .sum()
+}
+
 pub fn rasterize(
     sweep: &SweepData,
     product: Product,
@@ -645,7 +671,36 @@ pub fn rasterize(
     max_range_km: f32,
     qc: &QcConfig,
 ) -> Vec<u8> {
+    rasterize_with_report(sweep, product, size_px, max_range_km, qc).0
+}
+
+/// Like [`rasterize`] but also reports how many gates the QC passes removed
+/// (see [`QcReport`]) for the on-screen QC feedback readout.
+pub fn rasterize_with_report(
+    sweep: &SweepData,
+    product: Product,
+    size_px: usize,
+    max_range_km: f32,
+    qc: &QcConfig,
+) -> (Vec<u8>, QcReport) {
+    let before = count_valid(sweep);
     let sweep = clean_sweep(sweep, product, qc);
+    let report = QcReport {
+        gates_before: before,
+        gates_after: count_valid(&sweep),
+    };
+    (
+        rasterize_cleaned(&sweep, product, size_px, max_range_km),
+        report,
+    )
+}
+
+fn rasterize_cleaned(
+    sweep: &SweepData,
+    product: Product,
+    size_px: usize,
+    max_range_km: f32,
+) -> Vec<u8> {
     let mut pixels = vec![0u8; size_px * size_px * 4];
 
     if sweep.radials.is_empty() {
@@ -1864,6 +1919,59 @@ mod tests {
             "cc_gate on must null the low-CC block: off={} on={}",
             count_opaque(&off),
             count_opaque(&on),
+        );
+    }
+
+    #[test]
+    fn qc_report_counts_gates_removed_by_cc_gate() {
+        // The settings-panel feedback line reads QcReport.removed(). Prove it
+        // reflects reality: with cc_gate off nothing is removed; with it on,
+        // the 80-gate x 120-radial low-CC block (9600 gates) is nulled.
+        let n_gates = 250;
+        let mut ref_gates = vec![None; n_gates];
+        let mut cc_gates = vec![None; n_gates];
+        for i in 120..200 {
+            ref_gates[i] = Some(40.0);
+            cc_gates[i] = Some(0.50);
+        }
+        let build = |gates: &Vec<Option<f32>>| SweepData {
+            elevation_deg: 0.5,
+            radials: (0..120)
+                .map(|k| radial(k as f32 * 3.0, gates.clone()))
+                .collect(),
+            first_gate_km: 2.125,
+            gate_spacing_km: 0.25,
+            nyquist_ms: 0.0,
+        };
+        let ref_sweep = build(&ref_gates);
+        let cc_sweep = build(&cc_gates);
+        let report = |cc_gate_enabled| {
+            rasterize_with_report(
+                &ref_sweep,
+                Product::Reflectivity,
+                64,
+                MAX_RANGE_KM,
+                &QcConfig {
+                    tdbz_kernel_size: 3,
+                    cc_sweep: Some(&cc_sweep),
+                    cc_gate_enabled,
+                    cc_gate_threshold: 0.80,
+                    ..Default::default()
+                },
+            )
+            .1
+        };
+        let off = report(false);
+        let on = report(true);
+        assert_eq!(off.gates_before, 80 * 120);
+        // Off: the baked near-range floor still removes some weak gates, but
+        // the low-CC block itself is intact, so far fewer than the CC gate.
+        assert_eq!(on.gates_before, 80 * 120);
+        assert!(
+            on.removed() > off.removed(),
+            "cc_gate on must report more removed gates: off={} on={}",
+            off.removed(),
+            on.removed(),
         );
     }
 

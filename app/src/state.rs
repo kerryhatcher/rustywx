@@ -66,6 +66,9 @@ pub struct AppState {
     /// `melting_layer.rs`); recomputed alongside the raster when
     /// `Settings::melting_layer_hint_enabled` is on, `None` otherwise.
     pub melting_layer_hint: Option<crate::melting_layer::MeltingLayerHint>,
+    /// Gates removed by the QC passes on the last raster (current product),
+    /// surfaced as live feedback in the settings panel.
+    pub qc_report: crate::scope::QcReport,
 
     // ── Persistence ────────────────────────────────────────────
     /// Ply storage cache handle (Clone — cheap to share).

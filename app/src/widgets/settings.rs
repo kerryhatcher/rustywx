@@ -34,6 +34,18 @@ pub const LOCATION_INPUT_ID: &str = "settings-location-input";
 pub const LOCATION_DETECT_ID: &str = "settings-location-detect";
 pub const CENTER_TOGGLE_ID: &str = "settings-toggle-center";
 
+// Threshold steppers: each pass's numeric knob, adjusted by [-]/[+] buttons
+// (no continuous slider — the Ply layout doesn't expose element rects for
+// drag mapping, and click steppers reuse the proven is_just_pressed path).
+pub const CC_GATE_DEC_ID: &str = "settings-cc-gate-dec";
+pub const CC_GATE_INC_ID: &str = "settings-cc-gate-inc";
+pub const NONMET_DEC_ID: &str = "settings-nonmet-dec";
+pub const NONMET_INC_ID: &str = "settings-nonmet-inc";
+pub const REFL_FLOOR_DEC_ID: &str = "settings-refl-floor-dec";
+pub const REFL_FLOOR_INC_ID: &str = "settings-refl-floor-inc";
+pub const VEL_SD_DEC_ID: &str = "settings-vel-sd-dec";
+pub const VEL_SD_INC_ID: &str = "settings-vel-sd-inc";
+
 const ROW_HEIGHT: f32 = 32.0;
 const TEXT_COLOR: u32 = 0xE8E0DC;
 const MUTED_COLOR: u32 = 0x9E9590;
@@ -104,8 +116,63 @@ fn cycle_button(ui: &mut Ui<'_, crate::widgets::ChartWidget>, id: &'static str, 
         });
 }
 
+/// Lay a toggle and its threshold stepper side by side in one row's control
+/// area (keeps the row count unchanged so the panel stays compact).
+fn toggle_with_stepper(
+    ui: &mut Ui<'_, crate::widgets::ChartWidget>,
+    children: impl FnOnce(&mut Ui<'_, crate::widgets::ChartWidget>),
+) {
+    ui.element()
+        .width(fit!())
+        .height(grow!())
+        .layout(|l| l.direction(LeftToRight).gap(10).align(Left, CenterY))
+        .children(children);
+}
+
+/// A `[-] value [+]` numeric stepper. `dec_id`/`inc_id` are polled with
+/// `ply.is_just_pressed` in `main.rs` to nudge the underlying setting.
+/// Follows `bool_toggle`'s controlled-widget idiom: it renders `value_text`,
+/// the caller owns the value and re-clamps on press.
+fn stepper(
+    ui: &mut Ui<'_, crate::widgets::ChartWidget>,
+    dec_id: &'static str,
+    inc_id: &'static str,
+    label: &str,
+    value_text: &str,
+) {
+    let button = |ui: &mut Ui<'_, crate::widgets::ChartWidget>, id: &'static str, glyph: &str| {
+        ui.element()
+            .id(id)
+            .width(fixed!(24.0))
+            .height(fixed!(24.0))
+            .background_color(INACTIVE_BG)
+            .corner_radius(4.0)
+            .layout(|l| l.align(CenterX, CenterY))
+            .accessibility(|a| a.button(&format!("{label}: {glyph}")))
+            .children(|ui| {
+                ui.text(glyph, |t| t.font_size(14).color(TEXT_COLOR));
+            });
+    };
+    ui.element()
+        .width(fit!())
+        .height(grow!())
+        .layout(|l| l.direction(LeftToRight).gap(6).align(Left, CenterY))
+        .children(|ui| {
+            button(ui, dec_id, "-");
+            ui.element()
+                .width(fixed!(40.0))
+                .height(grow!())
+                .layout(|l| l.align(CenterX, CenterY))
+                .children(|ui| {
+                    ui.text(value_text, |t| t.font_size(12).color(TEXT_COLOR));
+                });
+            button(ui, inc_id, "+");
+        });
+}
+
 /// Draw the settings modal (backdrop + glass panel). No-op if the caller
 /// doesn't want it shown — check `state.show_settings_panel` before calling.
+#[allow(clippy::too_many_arguments)]
 pub fn draw(
     ui: &mut Ui<'_, crate::widgets::ChartWidget>,
     settings: &Settings,
@@ -113,6 +180,8 @@ pub fn draw(
     location_input: &str,
     location_focused: bool,
     location_status: &str,
+    qc_report: crate::scope::QcReport,
+    product_label: &str,
 ) {
     let modal_w = 420.0;
     let modal_h = 542.0;
@@ -167,8 +236,26 @@ pub fn draw(
                 .width(grow!())
                 .height(grow!())
                 .background_color(0x0a0d12)
+                .overflow(|o| {
+                    o.scroll_y()
+                        .scrollbar(|s| s.width(6.0).thumb_color(0x4a4a4a).track_color(0x1a1a1a))
+                })
                 .layout(|l| l.padding(12).gap(4).direction(TopToBottom))
                 .children(|ui| {
+                    // Live QC feedback: how many gates the active passes
+                    // removed from the current product on the last raster, so
+                    // a toggle visibly confirms it did something.
+                    let qc_line = if qc_report.gates_before == 0 {
+                        "QC: no radar gates loaded".to_string()
+                    } else {
+                        format!(
+                            "QC removed {} of {} {} gates",
+                            qc_report.removed(),
+                            qc_report.gates_before,
+                            product_label,
+                        )
+                    };
+                    ui.text(&qc_line, |t| t.font_size(11).color(ACTIVE_BG));
                     row(ui, "Default site", |ui| {
                         ui.text(&settings.default_site, |t| {
                             t.font_size(12).color(TEXT_COLOR)
@@ -248,20 +335,38 @@ pub fn draw(
                         );
                     });
                     row(ui, "CC-gate reflectivity", |ui| {
-                        bool_toggle(
-                            ui,
-                            CC_GATE_TOGGLE_ID,
-                            "CC-gate reflectivity",
-                            settings.cc_gate_enabled,
-                        );
+                        toggle_with_stepper(ui, |ui| {
+                            bool_toggle(
+                                ui,
+                                CC_GATE_TOGGLE_ID,
+                                "CC-gate reflectivity",
+                                settings.cc_gate_enabled,
+                            );
+                            stepper(
+                                ui,
+                                CC_GATE_DEC_ID,
+                                CC_GATE_INC_ID,
+                                "CC threshold",
+                                &format!("{:.2}", settings.cc_gate_threshold),
+                            );
+                        });
                     });
                     row(ui, "Fuzzy non-met filter", |ui| {
-                        bool_toggle(
-                            ui,
-                            NONMET_FUZZY_TOGGLE_ID,
-                            "Fuzzy non-met filter",
-                            settings.nonmet_fuzzy_enabled,
-                        );
+                        toggle_with_stepper(ui, |ui| {
+                            bool_toggle(
+                                ui,
+                                NONMET_FUZZY_TOGGLE_ID,
+                                "Fuzzy non-met filter",
+                                settings.nonmet_fuzzy_enabled,
+                            );
+                            stepper(
+                                ui,
+                                NONMET_DEC_ID,
+                                NONMET_INC_ID,
+                                "Non-met threshold",
+                                &format!("{:.2}", settings.nonmet_threshold),
+                            );
+                        });
                     });
                     row(ui, "Fill radial gaps", |ui| {
                         bool_toggle(
@@ -296,12 +401,21 @@ pub fn draw(
                         );
                     });
                     row(ui, "Noise-floor cut (dBZ)", |ui| {
-                        bool_toggle(
-                            ui,
-                            REFL_FLOOR_TOGGLE_ID,
-                            "Noise-floor cut",
-                            settings.refl_floor_enabled,
-                        );
+                        toggle_with_stepper(ui, |ui| {
+                            bool_toggle(
+                                ui,
+                                REFL_FLOOR_TOGGLE_ID,
+                                "Noise-floor cut",
+                                settings.refl_floor_enabled,
+                            );
+                            stepper(
+                                ui,
+                                REFL_FLOOR_DEC_ID,
+                                REFL_FLOOR_INC_ID,
+                                "Noise floor dBZ",
+                                &format!("{:.0}", settings.refl_floor_dbz),
+                            );
+                        });
                     });
                     row(ui, "Velocity dealias", |ui| {
                         bool_toggle(
@@ -312,12 +426,21 @@ pub fn draw(
                         );
                     });
                     row(ui, "Velocity SD censor", |ui| {
-                        bool_toggle(
-                            ui,
-                            VEL_SD_TOGGLE_ID,
-                            "Velocity SD censor",
-                            settings.vel_sd_censor_enabled,
-                        );
+                        toggle_with_stepper(ui, |ui| {
+                            bool_toggle(
+                                ui,
+                                VEL_SD_TOGGLE_ID,
+                                "Velocity SD censor",
+                                settings.vel_sd_censor_enabled,
+                            );
+                            stepper(
+                                ui,
+                                VEL_SD_DEC_ID,
+                                VEL_SD_INC_ID,
+                                "Velocity SD m/s",
+                                &format!("{:.0}", settings.vel_sd_threshold),
+                            );
+                        });
                     });
                     // ── My Location ──────────────────────────────
                     ui.text("My Location", |t| t.font_size(12).color(TEXT_COLOR));
