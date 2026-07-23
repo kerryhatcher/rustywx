@@ -575,6 +575,9 @@ async fn main() {
         pan_km: (0.0, 0.0),
         zoom: 1.0,
         radar_texture: None,
+        radar_texture_is_value: false,
+        palette_material: None,
+        dbz_lut_tex: None,
         needs_reraster: true,
         melting_layer_hint: None,
         qc_report: scope::QcReport::default(),
@@ -1075,7 +1078,28 @@ async fn main() {
                 scope::RASTER_SIZE_PX as u16,
                 &rgba,
             );
+            // Reflectivity is a value field colorized by the GPU palette shader:
+            // Linear so the GPU interpolates the dBZ value across screen pixels,
+            // then the Nearest-filtered LUT snaps to discrete colors — crisp
+            // bands, smooth edges at any zoom. Other products are CPU-colorized
+            // RGBA; Nearest keeps their band steps crisp.
+            let is_value = state.product == Product::Reflectivity;
+            tex.set_filter(if is_value {
+                macroquad::texture::FilterMode::Linear
+            } else {
+                macroquad::texture::FilterMode::Nearest
+            });
+            state.radar_texture_is_value = is_value;
             state.radar_texture = Some(tex);
+
+            // Build the palette material + LUT once, now that the GL context is
+            // live (can't be done at State construction).
+            if state.palette_material.is_none() {
+                let lut = Texture2D::from_rgba8(256, 1, &colors::dbz_lut());
+                lut.set_filter(macroquad::texture::FilterMode::Nearest);
+                state.dbz_lut_tex = Some(lut);
+                state.palette_material = Some(scope::load_palette_material());
+            }
             state.qc_report = qc_report;
         }
 
@@ -1084,6 +1108,20 @@ async fn main() {
         // causes a 180° rotation of the content).
         draw_observatory_background();
         if state.view_mode == ViewMode::Radar {
+            // Bind the LUT and hand the palette material to the draw when the
+            // radar texture is a reflectivity value field; None => CPU-colorized
+            // product drawn plainly.
+            let palette = if state.radar_texture_is_value {
+                match (state.palette_material.as_ref(), state.dbz_lut_tex.as_ref()) {
+                    (Some(mat), Some(lut)) => {
+                        mat.set_texture("Palette", lut.clone());
+                        Some(mat)
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
             scope::draw_scope_to_texture(
                 if state.show_radar_data {
                     state.radar_texture.as_ref()
@@ -1108,6 +1146,7 @@ async fn main() {
                 state.radar_panel_open, // show_sites arg — markers shown only while the Radar panel is open
                 state.settings.show_scope_rings,
                 state.melting_layer_hint.as_ref(),
+                palette,
             );
 
             // Radar sweep line (optional observatory visual flourish) — gated on

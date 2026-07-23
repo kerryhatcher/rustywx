@@ -13,7 +13,7 @@ use crate::nhc::{NhcBundle, NhcFetchState};
 use crate::settings::Settings;
 use crate::widgets::dropdown::DropdownState;
 use crate::widgets::toast::Toast;
-use ply_engine::prelude::Texture2D;
+use ply_engine::prelude::{Material, Texture2D};
 use std::collections::HashMap;
 use std::sync::mpsc;
 use tokio::sync::oneshot;
@@ -59,7 +59,15 @@ pub struct AppState {
     /// Zoom factor (1.0 = default).
     pub zoom: f32,
     /// Cached rasterised radar texture; rebuilt when `needs_reraster` is set.
+    /// For Reflectivity this holds a value field (R = dBZ, A = coverage) drawn
+    /// through `palette_material`; for other products it is a colorized RGBA.
     pub radar_texture: Option<Texture2D>,
+    /// True when `radar_texture` is a value field needing the GPU palette shader.
+    pub radar_texture_is_value: bool,
+    /// GPU palette material + LUT for reflectivity, built lazily once the
+    /// graphics context exists.
+    pub palette_material: Option<Material>,
+    pub dbz_lut_tex: Option<Texture2D>,
     /// Dirty flag — re-rasterise the sweep on the next frame.
     pub needs_reraster: bool,
     /// Melting-layer hint estimated from the latest scan's CC sweeps (see

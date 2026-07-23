@@ -185,6 +185,25 @@ pub fn dbz_color(dbz: f32) -> [u8; 4] {
     spline_color(DBZ_LEGEND, dbz)
 }
 
+/// dBZ palette range baked into the GPU lookup texture. Values are normalized
+/// to [0,1] over this span before indexing the LUT, so it must cover the whole
+/// visible reflectivity range (below ~5 dBZ `dbz_color` is transparent).
+pub const DBZ_LUT_MIN: f32 = 0.0;
+pub const DBZ_LUT_MAX: f32 = 80.0;
+
+/// Build a 256×1 RGBA lookup texture of the reflectivity palette, one entry per
+/// normalized dBZ step over [`DBZ_LUT_MIN`, `DBZ_LUT_MAX`]. Sampled with Nearest
+/// filtering on the GPU it reproduces the exact discrete `dbz_color` steps,
+/// while the value field it indexes is interpolated — crisp bands, smooth edges.
+pub fn dbz_lut() -> [u8; 256 * 4] {
+    let mut lut = [0u8; 256 * 4];
+    for i in 0..256 {
+        let dbz = DBZ_LUT_MIN + (i as f32 / 255.0) * (DBZ_LUT_MAX - DBZ_LUT_MIN);
+        lut[i * 4..i * 4 + 4].copy_from_slice(&dbz_color(dbz));
+    }
+    lut
+}
+
 pub fn velocity_color(ms: f32) -> [u8; 4] {
     spline_color(VELOCITY_LEGEND, ms.max(-64.0))
 }
