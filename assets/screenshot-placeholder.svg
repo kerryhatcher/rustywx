@@ -1,0 +1,51 @@
+<svg width="1200" height="720" viewBox="0 0 1200 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="rustywx radarscope — placeholder mock">
+  <defs>
+    <radialGradient id="scope" cx="50%" cy="48%" r="62%">
+      <stop offset="0%" stop-color="#0f2c26"/>
+      <stop offset="70%" stop-color="#0a1a1c"/>
+      <stop offset="100%" stop-color="#050d0f"/>
+    </radialGradient>
+    <linearGradient id="sweep" x1="50%" y1="50%" x2="100%" y2="12%">
+      <stop offset="0%" stop-color="#22D3EE" stop-opacity="0.85"/>
+      <stop offset="60%" stop-color="#2563EB" stop-opacity="0.25"/>
+      <stop offset="100%" stop-color="#2563EB" stop-opacity="0"/>
+    </linearGradient>
+    <clipPath id="disc"><circle cx="600" cy="330" r="300"/></clipPath>
+  </defs>
+
+  <rect width="1200" height="720" fill="#0b1220"/>
+  <circle cx="600" cy="330" r="300" fill="url(#scope)"/>
+
+  <g clip-path="url(#disc)">
+    <path d="M600 330 L600 30 A300 300 0 0 1 862 178 Z" fill="url(#sweep)"/>
+    <line x1="600" y1="330" x2="600" y2="30" stroke="#67E8F9" stroke-width="4" stroke-linecap="round"/>
+    <g fill="none" stroke="#2f7d6e" stroke-opacity="0.5" stroke-width="2">
+      <circle cx="600" cy="330" r="75"/><circle cx="600" cy="330" r="150"/>
+      <circle cx="600" cy="330" r="225"/><circle cx="600" cy="330" r="298"/>
+    </g>
+    <g stroke="#2f7d6e" stroke-opacity="0.4" stroke-width="2">
+      <line x1="300" y1="330" x2="900" y2="330"/><line x1="600" y1="30" x2="600" y2="630"/>
+    </g>
+    <!-- reflectivity echoes -->
+    <g opacity="0.95">
+      <ellipse cx="712" cy="404" rx="62" ry="46" fill="#2fbf4f"/>
+      <ellipse cx="726" cy="399" rx="38" ry="28" fill="#e8d43a"/>
+      <ellipse cx="739" cy="396" rx="18" ry="14" fill="#e23b2e"/>
+      <ellipse cx="470" cy="250" rx="44" ry="30" fill="#2fbf4f" opacity="0.8"/>
+      <ellipse cx="520" cy="470" rx="30" ry="22" fill="#3aa0e2" opacity="0.7"/>
+    </g>
+  </g>
+  <circle cx="600" cy="330" r="9" fill="#FF8C3A"/>
+
+  <!-- status bar -->
+  <rect x="0" y="662" width="1200" height="58" fill="#0f172a"/>
+  <text x="28" y="698" font-family="system-ui,sans-serif" font-size="20" font-weight="700" fill="#F0F9FF">KJGX</text>
+  <text x="120" y="698" font-family="system-ui,sans-serif" font-size="18" fill="#93C5FD">VCP 12 — Precipitation</text>
+  <text x="430" y="698" font-family="system-ui,sans-serif" font-size="18" fill="#93C5FD">Tilt 0.5°</text>
+  <text x="580" y="698" font-family="system-ui,sans-serif" font-size="18" fill="#93C5FD">Nyquist ±26.4 m/s</text>
+  <text x="980" y="698" font-family="system-ui,sans-serif" font-size="18" fill="#22D3EE">Reflectivity</text>
+
+  <!-- watermark -->
+  <text x="600" y="360" text-anchor="middle" font-family="system-ui,sans-serif" font-size="22"
+        font-weight="600" fill="#e2e8f0" opacity="0.28">screenshot placeholder — replace with a real capture</text>
+</svg>

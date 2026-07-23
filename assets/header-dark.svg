@@ -1,0 +1,48 @@
+<svg width="1200" height="300" viewBox="0 0 1200 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="rustywx — live NEXRAD Level II radarscope in Rust">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0F172A"/>
+      <stop offset="60%" stop-color="#12233F"/>
+      <stop offset="100%" stop-color="#1E3A5F"/>
+    </linearGradient>
+    <linearGradient id="arm" x1="10%" y1="0%" x2="90%" y2="100%">
+      <stop offset="0%" stop-color="#22D3EE"/>
+      <stop offset="55%" stop-color="#3B82F6"/>
+      <stop offset="100%" stop-color="#1E3A5F"/>
+    </linearGradient>
+    <radialGradient id="eye" cx="45%" cy="40%" r="60%">
+      <stop offset="0%" stop-color="#FFB067"/>
+      <stop offset="60%" stop-color="#FF8C3A"/>
+      <stop offset="100%" stop-color="#F26A1B"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1200" height="300" rx="0" fill="url(#bg)"/>
+
+  <!-- Faint range rings, right side -->
+  <g fill="none" stroke="#2563EB" stroke-opacity="0.14" stroke-width="2">
+    <circle cx="980" cy="150" r="70"/>
+    <circle cx="980" cy="150" r="130"/>
+    <circle cx="980" cy="150" r="190"/>
+    <circle cx="980" cy="150" r="250"/>
+  </g>
+  <g stroke="#2563EB" stroke-opacity="0.10" stroke-width="2">
+    <line x1="730" y1="150" x2="1230" y2="150"/>
+    <line x1="980" y1="-100" x2="980" y2="400"/>
+  </g>
+
+  <!-- Cyclone mark -->
+  <g transform="translate(96 78) scale(0.28)">
+    <g fill="url(#arm)">
+      <path d="M262 96 C356 104 430 178 424 276 C420 340 380 384 330 392 C368 350 372 292 340 258 C388 268 402 214 372 172 C338 124 292 108 262 96 Z"/>
+      <path transform="rotate(180 256 256)" d="M262 96 C356 104 430 178 424 276 C420 340 380 384 330 392 C368 350 372 292 340 258 C388 268 402 214 372 172 C338 124 292 108 262 96 Z"/>
+    </g>
+    <circle cx="256" cy="256" r="34" fill="url(#eye)"/>
+    <circle cx="256" cy="256" r="34" fill="none" stroke="#0F172A" stroke-width="5"/>
+  </g>
+
+  <text x="248" y="150" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif"
+        font-size="76" font-weight="800" letter-spacing="-2" fill="#F0F9FF">rusty<tspan fill="#FF8C3A">wx</tspan></text>
+  <text x="250" y="196" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif"
+        font-size="27" font-weight="500" fill="#93C5FD">Live NEXRAD Level II radarscope, in Rust.</text>
+</svg>
