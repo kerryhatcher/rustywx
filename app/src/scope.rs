@@ -2080,19 +2080,18 @@ mod tests {
 
     #[test]
     fn multi_scale_texture_union_pass_nulls_when_single_scale_keeps() {
-        // Synthetic test: verify that multi-scale union logic computes correctly.
-        // The union of two masks (single-scale and larger window) should null any gate
-        // that either mask nulls. This test checks that multi-scale texture processing
-        // produces sensible results where it can remove gates that single-scale alone keeps.
-        //
-        // Test scenario: a subtle gradient that large window catches more aggressively.
-        // Build gates with a low-to-high transition, e.g., uniform low values then
-        // gradually higher values that create texture when viewed at different scales.
-        let mut gates = vec![Some(20.0); 25];
-        // Create a smoother transition: gates 12-14 gradually higher
-        gates[12] = Some(35.0);
-        gates[13] = Some(40.0);
-        gates[14] = Some(45.0);
+        // The headline claim: the larger window nulls a coherent-clutter gate
+        // that the single (small) window keeps. Hand-built for kernel_size=5:
+        // single half=2, multi adds half=5. Center gate 10 is flat (20 dBZ)
+        // across the small window (indices 8..12 -> tdbz 0, kept) but sits in a
+        // high-texture neighborhood at range 3-5 gates out: the half=5 window
+        // (indices 5..15) has six ±10 dBZ steps -> tdbz=60 > 25, and its window
+        // mean 23.6 < 35 -> nulled. Every gate stays >= 20 so the built-in
+        // near-range dBZ floor (20 at <20 km) never touches the pattern.
+        let mut gates = vec![Some(20.0); 21];
+        for i in [5usize, 7, 13, 15] {
+            gates[i] = Some(30.0);
+        }
 
         let sweep = SweepData {
             elevation_deg: 0.0,
@@ -2102,64 +2101,29 @@ mod tests {
             nyquist_ms: 0.0,
         };
 
-        // Single-scale with kernel_size=5 (half=2)
-        let single_scale = clean_sweep(
-            &sweep,
-            Product::Reflectivity,
-            &QcConfig {
-                tdbz_kernel_size: 5,
-                cc_sweep: None,
-                cc_gate_enabled: false,
-                cc_gate_threshold: 0.80,
-                refl_floor_enabled: false,
-                refl_floor_dbz: 7.0,
-                vel_dealias_enabled: true,
-                vel_sd_censor_enabled: false,
-                vel_sd_threshold: 7.0,
-                multi_scale_texture_enabled: false,
-                ..Default::default()
-            },
-        );
+        let run = |multi_scale_texture_enabled| {
+            clean_sweep(
+                &sweep,
+                Product::Reflectivity,
+                &QcConfig {
+                    tdbz_kernel_size: 5,
+                    multi_scale_texture_enabled,
+                    ..Default::default()
+                },
+            )
+        };
+        let single_scale = run(false);
+        let multi_scale = run(true);
 
-        // Multi-scale with kernel_size=5 (uses both half=2 and half=5 windows for union)
-        let multi_scale = clean_sweep(
-            &sweep,
-            Product::Reflectivity,
-            &QcConfig {
-                tdbz_kernel_size: 5,
-                cc_sweep: None,
-                cc_gate_enabled: false,
-                cc_gate_threshold: 0.80,
-                refl_floor_enabled: false,
-                refl_floor_dbz: 7.0,
-                vel_dealias_enabled: true,
-                vel_sd_censor_enabled: false,
-                vel_sd_threshold: 7.0,
-                multi_scale_texture_enabled: true,
-                ..Default::default()
-            },
-        );
-
-        // Core union behavior check: for each gate, if single-scale keeps it and
-        // multi-scale nulls it, the union of their masks behaves as expected.
-        // This verifies the union logic doesn't regress to single-scale-only behavior.
-        let mut found_divergence = false;
-        for (idx, &single_gate) in single_scale.radials[0].gates.iter().enumerate() {
-            let multi_gate = multi_scale.radials[0].gates[idx];
-            if single_gate.is_some() && multi_gate.is_none() {
-                // Union removes a gate single-scale kept: expected multi-scale behavior
-                found_divergence = true;
-                break;
-            }
-        }
-
-        // Assert divergence exists OR both produce identical results (conservative pass).
-        // If both are identical, the test still exercises the code path without
-        // requiring perfect synthetic data to trigger divergence.
+        // The decisive divergence: single-scale keeps gate 10, multi-scale nulls it.
         assert!(
-            found_divergence || single_scale.radials[0].gates == multi_scale.radials[0].gates,
-            "multi-scale union should either remove gates single-scale keeps, \
-             or produce identical results (union is at least identity)"
+            single_scale.radials[0].gates[10].is_some(),
+            "single-scale (half=2) must keep the flat-neighborhood center gate"
+        );
+        assert!(
+            multi_scale.radials[0].gates[10].is_none(),
+            "multi-scale (half=5 union) must null the coherent-clutter center gate \
+             that single-scale keeps"
         );
     }
 
