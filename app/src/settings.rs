@@ -193,9 +193,10 @@ pub struct Settings {
     /// censored when SD-censoring is on.
     #[serde(default = "default_vel_sd")]
     pub vel_sd_threshold: f32,
-    /// Whether the 1D gate-to-gate Nyquist unfold runs on the Velocity
-    /// product before SD-censoring (`dealias::dealias_radial`). Default on.
-    /// No-op per sweep when Nyquist is unknown (`nyquist_ms <= 0.0`).
+    /// Whether the full sweep-level Nyquist dealias (gate-to-gate unfold
+    /// plus azimuthal-continuity correction, with VAD fallback) runs on the
+    /// Velocity product before SD-censoring (`dealias::dealias_sweep`).
+    /// Default on. No-op per sweep when Nyquist is unknown (`nyquist_ms <= 0.0`).
     #[serde(default = "default_true")]
     pub vel_dealias_enabled: bool,
 }

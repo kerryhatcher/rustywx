@@ -81,9 +81,8 @@ const MIN_VAD_SAMPLES: usize = 8;
 /// range gate (FMH-11D §3.3.3).
 ///
 /// `azimuths_deg` and `gates` are parallel and must already be sorted by
-/// azimuth ascending — the caller (`scope::clean_sweep`) already builds that
-/// ordering for the CC-gating and SD-censor passes, so this reuses it rather
-/// than re-deriving it.
+/// azimuth ascending — the caller (`scope::clean_sweep`) builds this
+/// ordering immediately before invoking `dealias_sweep`.
 ///
 /// Azimuthal correction is decided per *radial*, not per gate: a candidate
 /// whole-interval shift is only applied when a clear majority of the
@@ -287,7 +286,10 @@ fn apply_shift_and_flag_suspects(
     // *still* doesn't line up with the reference AND breaks continuity with
     // its own neighbors is residue, not signal.
     for g in 0..out[i].len() {
-        let (Some(c), Some(r)) = (out[i][g], reference[g]) else {
+        let Some(c) = out[i][g] else {
+            continue;
+        };
+        let Some(r) = reference.get(g).copied().flatten() else {
             continue;
         };
         if (c - r).abs() > nyquist && local_discontinuity(&out[i], g, c, nyquist) {
@@ -560,6 +562,32 @@ mod tests {
             assert!(
                 (v.unwrap() - 15.0).abs() < 1e-3,
                 "gate {g} should recover cleanly: {:?}",
+                out[1]
+            );
+        }
+    }
+
+    #[test]
+    fn dealias_sweep_handles_shorter_reference_radial_without_panic() {
+        // Adjacent radials with differing gate counts: radial 0 (the
+        // reference) has fewer gates than radial 1 (current). Radial 1 needs
+        // a whole-interval shift (majority vote over the 5 overlapping
+        // gates), and the post-shift suspect check used to index
+        // `reference[g]` directly for every `g` up to `out[i].len()`,
+        // panicking once `g` ran past the shorter reference's length. Must
+        // complete without panicking, and the gates beyond the reference's
+        // length are simply shifted (not flagged as suspects or replaced).
+        let nyquist = 26.4;
+        let interval = 2.0 * nyquist;
+        let reference = vec![Some(15.0); 5];
+        let cur = vec![Some(15.0 + interval); 8];
+        let azimuths = vec![0.0, 1.0];
+        let out = dealias_sweep(&azimuths, &[reference, cur], nyquist);
+        assert_eq!(out[1].len(), 8);
+        for (g, v) in out[1].iter().enumerate() {
+            assert!(
+                (v.unwrap() - 15.0).abs() < 1e-3,
+                "gate {g} should be corrected by the whole-radial shift, not flagged/nulled: {:?}",
                 out[1]
             );
         }

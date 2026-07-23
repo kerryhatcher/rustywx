@@ -86,7 +86,7 @@ fallback.
 
 New module `app/src/dealias.rs`. Pure function over one radial:
 
-```
+```rust
 fn dealias_radial(gates: &[Option<f32>], nyquist: f32) -> Vec<Option<f32>>
 ```
 
@@ -121,7 +121,7 @@ Semver: minor. This is the payload the whole plan exists for.
 
 ## Stage C — 2D azimuthal continuity (refinement, later)
 
-Upgrade to operational-grade (FMH-11D §3.3.3). Only after B is validated on real volumes.
+Upgrade to operational-grade (FMH-11D §3.3.3). Shipped together with Stage B in this PR (`dealias::dealias_sweep` in `app/src/dealias.rs`, wired into `scope::rasterize`).
 
 - Also check azimuthal continuity against the previous dealiased radial.
 - **Preserve couplets:** allow large gate-to-gate jumps over short distance so
@@ -134,7 +134,7 @@ Needs a VAD wind estimate (new, self-contained sub-task) and processing the swee
 array rather than independent radials — so C likely moves dealiasing to a
 compute-once-at-ingestion pass and drops the per-render approach from B.
 
-Semver: minor. Defer until B ships and is eyeballed against known couplet cases.
+Semver: minor. Implemented and shipped alongside Stage B in this PR.
 
 ---
 
@@ -143,7 +143,7 @@ Semver: minor. Defer until B ships and is eyeballed against known couplet cases.
 Work order (each step compiles, tests pass):
 1. Stage A: `data.rs` map → `model.rs` field + signature → `cache.rs` → fixtures/readout.
 2. Stage B: `dealias.rs` + unit tests → wire into `rasterize` behind toggle → integration test.
-3. Stage C: separate branch/PR after B is field-validated.
+3. Stage C: azimuthal continuity + VAD fallback (`dealias_sweep`), wired into `scope.rs::rasterize` — shipped together with Stage B in this PR, not deferred.
 
 Risks / notes:
 - **Split cuts:** one elevation number can carry separate surveillance (CS) and Doppler (CD)
