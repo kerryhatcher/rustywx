@@ -328,7 +328,7 @@ fn fuzzy_nonmet_gate(cleaned: &mut SweepData, qc: &QcConfig) {
     });
     let zdr = qc.zdr_sweep.filter(|s| !s.radials.is_empty()).map(|s| {
         let (order, azimuths) = sorted_azimuths(&s.radials);
-        let textures: Vec<Vec<f32>> = s
+        let textures: Vec<Vec<Option<f32>>> = s
             .radials
             .iter()
             .map(|r| nonmet::range_texture(&r.gates, half, None))
@@ -339,7 +339,7 @@ fn fuzzy_nonmet_gate(cleaned: &mut SweepData, qc: &QcConfig) {
         let (order, azimuths) = sorted_azimuths(&s.radials);
         // ΦDP wraps 0-360°: fold the gate-to-gate difference so a 358°->2°
         // step reads as ~4° of texture, not a ~356° spike.
-        let textures: Vec<Vec<f32>> = s
+        let textures: Vec<Vec<Option<f32>>> = s
             .radials
             .iter()
             .map(|r| nonmet::range_texture(&r.gates, half, Some(360.0)))
@@ -367,10 +367,13 @@ fn fuzzy_nonmet_gate(cleaned: &mut SweepData, qc: &QcConfig) {
             }
             let cc_val = cc_radial.and_then(|r| r.gates.get(i).copied().flatten());
             let (zdr_val, sd_zdr) = match zdr_hit {
-                Some((r, tex)) => (r.gates.get(i).copied().flatten(), tex.get(i).copied()),
+                Some((r, tex)) => (
+                    r.gates.get(i).copied().flatten(),
+                    tex.get(i).copied().flatten(),
+                ),
                 None => (None, None),
             };
-            let sd_phidp = phidp_hit.and_then(|(_, tex)| tex.get(i).copied());
+            let sd_phidp = phidp_hit.and_then(|(_, tex)| tex.get(i).copied().flatten());
             if nonmet::should_null_reflectivity_gate(
                 cc_val,
                 sd_phidp,
@@ -2170,5 +2173,70 @@ mod tests {
             },
         );
         assert_eq!(cleaned.radials[0].gates, vec![Some(30.0), Some(30.0)]);
+    }
+
+    #[test]
+    fn fuzzy_nonmet_gate_no_texture_evidence_uses_cc_only_legacy_fallback() {
+        // ZDR/PhiDP aux sweeps are present but each radial has only a single
+        // gate, so the range-texture window (half_window=1) never has two
+        // gates to diff: nonmet::range_texture yields None at every gate for
+        // both aux moments (no real dual-pol texture evidence). This must
+        // NOT be misread as texture "present" (a stale Some(0.0)) or the
+        // fuzzy score wins out over the CC-only legacy gate.
+        //
+        // CC=0.75 is below cc_gate_threshold=0.80, so the legacy CC-only gate
+        // nulls this gate. But the fuzzy score computed from spuriously
+        // "present" zero-texture terms (mu_sd_phidp(0)=0, mu_sd_zdr(0)=0
+        // dragging the weighted mean down) would score well under
+        // nonmet_threshold and NOT null it -- the exact regression this test
+        // guards against.
+        let ref_sweep = SweepData {
+            elevation_deg: 0.5,
+            radials: vec![radial(0.0, vec![Some(30.0)])],
+            first_gate_km: 2.125,
+            gate_spacing_km: 0.25,
+            nyquist_ms: 0.0,
+        };
+        let cc_sweep = SweepData {
+            elevation_deg: 0.5,
+            radials: vec![radial(0.0, vec![Some(0.75)])],
+            first_gate_km: 2.125,
+            gate_spacing_km: 0.25,
+            nyquist_ms: 0.0,
+        };
+        let zdr_sweep = SweepData {
+            elevation_deg: 0.5,
+            radials: vec![radial(0.0, vec![Some(0.0)])],
+            first_gate_km: 2.125,
+            gate_spacing_km: 0.25,
+            nyquist_ms: 0.0,
+        };
+        let phidp_sweep = SweepData {
+            elevation_deg: 0.5,
+            radials: vec![radial(0.0, vec![Some(0.0)])],
+            first_gate_km: 2.125,
+            gate_spacing_km: 0.25,
+            nyquist_ms: 0.0,
+        };
+
+        let cleaned = clean_sweep(
+            &ref_sweep,
+            Product::Reflectivity,
+            &QcConfig {
+                tdbz_kernel_size: 3,
+                cc_sweep: Some(&cc_sweep),
+                zdr_sweep: Some(&zdr_sweep),
+                phidp_sweep: Some(&phidp_sweep),
+                cc_gate_threshold: 0.80,
+                nonmet_fuzzy_enabled: true,
+                nonmet_threshold: nonmet::NONMET_THRESHOLD_DEFAULT,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            cleaned.radials[0].gates,
+            vec![None],
+            "no dual-pol texture evidence: CC-only legacy gate (cc < cc_gate_threshold) must govern"
+        );
     }
 }

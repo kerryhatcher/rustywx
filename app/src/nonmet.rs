@@ -75,6 +75,9 @@ fn mu_zdr_mag(zdr: f32) -> f32 {
     ramp(zdr.abs(), ZDR_MAG_PRECIP_MAX, ZDR_MAG_NONMET_MIN)
 }
 
+/// One `(value, weight, membership fn)` term in the weighted mean below.
+type ScoreTerm = (Option<f32>, f32, fn(f32) -> f32);
+
 /// Weighted non-met score in `[0,1]` over whichever inputs are present.
 ///
 /// Fail-open per variable: any `None` input drops out of the weighted mean
@@ -88,9 +91,6 @@ fn mu_zdr_mag(zdr: f32) -> f32 {
 /// equivalent one). Callers that need the true CC-only degrade to legacy
 /// behavior should use [`should_null_reflectivity_gate`], not this function
 /// directly. All-`None` inputs score 0.0 (never null).
-/// One `(value, weight, membership fn)` term in the weighted mean below.
-type ScoreTerm = (Option<f32>, f32, fn(f32) -> f32);
-
 pub fn nonmet_score(
     cc: Option<f32>,
     sd_phidp: Option<f32>,
@@ -152,9 +152,13 @@ pub fn should_null_reflectivity_gate(
 /// each gate-to-gate difference is folded into `[-wrap/2, wrap/2]` before
 /// squaring — otherwise a 358°->2° step reads as a ~356° spike instead of the
 /// true ~4° step. Pass `None` for a variable that doesn't wrap (ZDR).
-pub fn range_texture(gates: &[Option<f32>], half_window: usize, wrap_deg: Option<f32>) -> Vec<f32> {
+pub fn range_texture(
+    gates: &[Option<f32>],
+    half_window: usize,
+    wrap_deg: Option<f32>,
+) -> Vec<Option<f32>> {
     let n = gates.len();
-    let mut out = vec![0.0f32; n];
+    let mut out = vec![None; n];
     for (i, out_i) in out.iter_mut().enumerate() {
         let start = i.saturating_sub(half_window);
         let end = (i + half_window + 1).min(n);
@@ -177,7 +181,7 @@ pub fn range_texture(gates: &[Option<f32>], half_window: usize, wrap_deg: Option
             }
         }
         if diff_count > 0 {
-            *out_i = (sum_sq / diff_count as f32).sqrt();
+            *out_i = Some((sum_sq / diff_count as f32).sqrt());
         }
     }
     out
@@ -339,7 +343,7 @@ mod tests {
     fn range_texture_flat_signal_is_zero() {
         let gates: Vec<Option<f32>> = vec![Some(0.98); 10];
         let tex = range_texture(&gates, 2, None);
-        assert!(tex.iter().all(|&t| t.abs() < 1e-6));
+        assert!(tex.iter().all(|t| t.is_some_and(|v| v.abs() < 1e-6)));
     }
 
     #[test]
@@ -350,25 +354,48 @@ mod tests {
         let gates: Vec<Option<f32>> = vec![Some(358.0), Some(2.0), Some(6.0), Some(10.0)];
         let tex = range_texture(&gates, 1, Some(360.0));
         for (i, &t) in tex.iter().enumerate() {
-            assert!(t < 10.0, "gate {i} texture too high: {t}");
+            // A fully-valid radial still yields real texture evidence (Some),
+            // never None.
+            let v = t.expect("fully-valid radial must yield Some texture");
+            assert!(v < 10.0, "gate {i} texture too high: {v}");
         }
 
         // Without the wrap fold, the same data spikes hugely at the 358->2 step.
         let tex_unwrapped = range_texture(&gates, 1, None);
-        assert!(tex_unwrapped.iter().any(|&t| t > 100.0));
+        assert!(tex_unwrapped.iter().any(|&t| t.is_some_and(|v| v > 100.0)));
     }
 
     #[test]
-    fn range_texture_zdr_no_wrap_short_window_returns_zero() {
+    fn range_texture_zdr_no_wrap_short_window_returns_none() {
+        // A single-gate window has no neighbor to diff against, so there's
+        // no valid consecutive-gate diff and the gate must read as "no
+        // texture evidence" (None), not a false Some(0.0).
         let gates: Vec<Option<f32>> = vec![Some(0.0)];
         let tex = range_texture(&gates, 1, None);
-        assert_eq!(tex, vec![0.0]);
+        assert_eq!(tex, vec![None]);
     }
 
     #[test]
     fn range_texture_none_gates_are_skipped() {
         let gates: Vec<Option<f32>> = vec![Some(1.0), None, Some(1.0), Some(1.0)];
         let tex = range_texture(&gates, 2, None);
-        assert!(tex.iter().all(|&t| t.abs() < 1e-6));
+        // Gate 0's window (indices 0..3) only has None-adjacent pairs, so it
+        // has no valid consecutive-gate diff at all: None, not a false
+        // Some(0.0). The other gates' windows do reach the flat Some(1.0),
+        // Some(1.0) pair and read as real (zero) texture.
+        assert_eq!(tex[0], None);
+        for (i, &t) in tex.iter().enumerate().skip(1) {
+            assert!(t.is_some_and(|v| v.abs() < 1e-6), "gate {i}: {t:?}");
+        }
+    }
+
+    #[test]
+    fn range_texture_all_none_aux_yields_none_everywhere() {
+        // No valid consecutive-gate diffs anywhere (all-None aux gates): every
+        // gate must read as None ("no texture evidence"), never a false
+        // Some(0.0) that would look like real precip-smooth texture.
+        let gates: Vec<Option<f32>> = vec![None; 6];
+        let tex = range_texture(&gates, 2, None);
+        assert!(tex.iter().all(|t| t.is_none()));
     }
 }
