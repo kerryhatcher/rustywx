@@ -9,6 +9,7 @@ pub mod cities;
 pub mod colors;
 pub mod data;
 pub mod dealias;
+pub mod demo;
 pub mod forecast;
 pub mod geo;
 pub mod kdp;
