@@ -963,14 +963,54 @@ async fn main() {
 
         let site = &geo::RADAR_SITES[state.site_index];
 
-        // For CC-gating: find the CC sweep at the nearest elevation to the REF
-        // sweep we are about to rasterize. Only needed for Reflectivity; None
-        // for every other product (and when there is no dual-pol CC volume).
-        let cc_sweep: Option<SweepData> =
-            if state.product == Product::Reflectivity && state.settings.cc_gate_enabled {
+        // For CC-gating (and the fuzzy non-met classifier below): find the CC
+        // sweep at the nearest elevation to the REF sweep we are about to
+        // rasterize. Only needed for Reflectivity; None for every other
+        // product (and when there is no dual-pol CC volume). The fuzzy
+        // classifier also wants CC even when the plain CC gate is off, since
+        // fuzzy supersedes it — so it's fetched whenever either is enabled.
+        let cc_sweep: Option<SweepData> = if state.product == Product::Reflectivity
+            && (state.settings.cc_gate_enabled || state.settings.nonmet_fuzzy_enabled)
+        {
+            state.scan.as_ref().and_then(|scan| {
+                let cc = &scan.correlation_coefficient;
+                cc.iter()
+                    .min_by(|a, b| {
+                        (a.elevation_deg - sweep.elevation_deg)
+                            .abs()
+                            .total_cmp(&(b.elevation_deg - sweep.elevation_deg).abs())
+                    })
+                    .cloned()
+            })
+        } else {
+            None
+        };
+
+        // ZDR/ΦDP sweeps for the fuzzy non-met classifier, selected by
+        // nearest elevation exactly like `cc_sweep` above. Only needed when
+        // the classifier is on; fails open to None otherwise (and if the
+        // volume lacks the moment), same as `cc_sweep`.
+        let zdr_sweep: Option<SweepData> =
+            if state.product == Product::Reflectivity && state.settings.nonmet_fuzzy_enabled {
                 state.scan.as_ref().and_then(|scan| {
-                    let cc = &scan.correlation_coefficient;
-                    cc.iter()
+                    let zdr = &scan.differential_reflectivity;
+                    zdr.iter()
+                        .min_by(|a, b| {
+                            (a.elevation_deg - sweep.elevation_deg)
+                                .abs()
+                                .total_cmp(&(b.elevation_deg - sweep.elevation_deg).abs())
+                        })
+                        .cloned()
+                })
+            } else {
+                None
+            };
+        let phidp_sweep: Option<SweepData> =
+            if state.product == Product::Reflectivity && state.settings.nonmet_fuzzy_enabled {
+                state.scan.as_ref().and_then(|scan| {
+                    let phidp = &scan.differential_phase;
+                    phidp
+                        .iter()
                         .min_by(|a, b| {
                             (a.elevation_deg - sweep.elevation_deg)
                                 .abs()
@@ -1000,6 +1040,10 @@ async fn main() {
                     vel_dealias_enabled: state.settings.vel_dealias_enabled,
                     vel_sd_censor_enabled: state.settings.vel_sd_censor_enabled,
                     vel_sd_threshold: state.settings.vel_sd_threshold,
+                    zdr_sweep: zdr_sweep.as_ref(),
+                    phidp_sweep: phidp_sweep.as_ref(),
+                    nonmet_fuzzy_enabled: state.settings.nonmet_fuzzy_enabled,
+                    nonmet_threshold: state.settings.nonmet_threshold,
                 },
             );
             let tex = Texture2D::from_rgba8(
@@ -3011,6 +3055,11 @@ fn handle_input(
         }
         if ply.is_just_pressed(settings_widget::CC_GATE_TOGGLE_ID) {
             state.settings.cc_gate_enabled = !state.settings.cc_gate_enabled;
+            state.cache.save_settings(&state.settings);
+            state.needs_reraster = true;
+        }
+        if ply.is_just_pressed(settings_widget::NONMET_FUZZY_TOGGLE_ID) {
+            state.settings.nonmet_fuzzy_enabled = !state.settings.nonmet_fuzzy_enabled;
             state.cache.save_settings(&state.settings);
             state.needs_reraster = true;
         }

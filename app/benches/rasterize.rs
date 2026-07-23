@@ -32,6 +32,10 @@ fn bench_rasterize(c: &mut Criterion) {
                             vel_dealias_enabled: false,
                             vel_sd_censor_enabled: false,
                             vel_sd_threshold: 7.0,
+                            zdr_sweep: None,
+                            phidp_sweep: None,
+                            nonmet_fuzzy_enabled: false,
+                            nonmet_threshold: 0.5,
                         },
                     ))
                 });

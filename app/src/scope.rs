@@ -10,6 +10,7 @@ use crate::geo::{self, RadarSite};
 use crate::location::Coords;
 use crate::model::{Product, RadialData, SweepData};
 use crate::nhc::{ArrivalTimeContour, NhcBundle, WindProbContour};
+use crate::nonmet;
 use macroquad::math::Vec2;
 use ply_engine::prelude::*;
 
@@ -32,8 +33,15 @@ pub const RASTER_SIZE_PX: usize = 1024;
 
 /// QC pipeline inputs for `clean_sweep`/`rasterize`. Bundles what was
 /// previously 9-11 positional args; mechanical no-op refactor (same fields,
-/// same behavior) — see `docs/fuzzy-nonmet-classifier-plan.md` step 2. The
-/// fuzzy non-met fields (ZDR/ΦDP sweeps, toggle, threshold) land in step 3.
+/// same behavior) — see `docs/fuzzy-nonmet-classifier-plan.md` step 2.
+/// `zdr_sweep`/`phidp_sweep`/`nonmet_fuzzy_enabled`/`nonmet_threshold` are
+/// step 3's fuzzy non-met classifier (`nonmet.rs`); when disabled, `cc_sweep`
+/// alone still drives the fallback CC-only gate below.
+///
+/// Derives `Default` (all fields have a sane zero/`None`/`false` default) so
+/// tests can spread `..Default::default()` for the fields they don't
+/// exercise instead of restating all of them.
+#[derive(Default)]
 pub struct QcConfig<'a> {
     pub tdbz_kernel_size: usize,
     pub cc_sweep: Option<&'a SweepData>,
@@ -44,6 +52,10 @@ pub struct QcConfig<'a> {
     pub vel_dealias_enabled: bool,
     pub vel_sd_censor_enabled: bool,
     pub vel_sd_threshold: f32,
+    pub zdr_sweep: Option<&'a SweepData>,
+    pub phidp_sweep: Option<&'a SweepData>,
+    pub nonmet_fuzzy_enabled: bool,
+    pub nonmet_threshold: f32,
 }
 
 fn clean_sweep(sweep: &SweepData, product: Product, qc: &QcConfig) -> SweepData {
@@ -55,18 +67,26 @@ fn clean_sweep(sweep: &SweepData, product: Product, qc: &QcConfig) -> SweepData 
         nyquist_ms: sweep.nyquist_ms,
     };
 
-    // CC-gating: null Reflectivity gates whose co-located correlation
-    // coefficient is below threshold (non-meteorological echo — birds, chaff,
-    // AP, ground clutter). Dual-pol REF/CC come from the same surveillance cut,
-    // so they share gate geometry; align by nearest azimuth and equal index.
+    // Non-met rejection: fuzzy multi-variable classifier (CC + SD(ΦDP) +
+    // SD(ZDR) + |ZDR|, see `nonmet.rs`) when enabled — it supersedes, not
+    // stacks with, the single-threshold CC gate below (CC membership already
+    // subsumes the CC-only gate, and running both would double-null the same
+    // gates). Falls back to the CC-only gate when fuzzy is off, unchanged.
     // Runs before the dBZ floor / TDBZ block so a suppressed gate is not also
-    // texture-processed. Fails open per-gate: a missing/absent CC sweep or an
-    // out-of-range CC gate leaves the REF gate untouched.
-    if product == Product::Reflectivity
+    // texture-processed.
+    if product == Product::Reflectivity && qc.nonmet_fuzzy_enabled {
+        fuzzy_nonmet_gate(&mut cleaned, qc);
+    } else if product == Product::Reflectivity
         && qc.cc_gate_enabled
         && let Some(cc) = qc.cc_sweep
         && !cc.radials.is_empty()
     {
+        // CC-gating: null Reflectivity gates whose co-located correlation
+        // coefficient is below threshold (non-meteorological echo — birds,
+        // chaff, AP, ground clutter). Dual-pol REF/CC come from the same
+        // surveillance cut, so they share gate geometry; align by nearest
+        // azimuth and equal index. Fails open per-gate: a missing/absent CC
+        // sweep or an out-of-range CC gate leaves the REF gate untouched.
         // Pre-sort CC azimuths once for nearest-azimuth lookup.
         let mut cc_order: Vec<usize> = (0..cc.radials.len()).collect();
         cc_order.sort_by(|&a, &b| {
@@ -263,6 +283,95 @@ fn clean_sweep(sweep: &SweepData, product: Product, qc: &QcConfig) -> SweepData 
     }
 
     cleaned
+}
+
+/// Sort a sweep's radials by azimuth once, returning the index permutation
+/// alongside the sorted azimuth values — the shared prep behind every
+/// nearest-azimuth radial lookup (`nearest_two_radial_indices`) in this file.
+fn sorted_azimuths(radials: &[RadialData]) -> (Vec<usize>, Vec<f32>) {
+    let mut order: Vec<usize> = (0..radials.len()).collect();
+    order.sort_by(|&a, &b| radials[a].azimuth_deg.total_cmp(&radials[b].azimuth_deg));
+    let azimuths = order.iter().map(|&i| radials[i].azimuth_deg).collect();
+    (order, azimuths)
+}
+
+/// Fuzzy multi-variable non-met gate (`nonmet::nonmet_score`): nulls a
+/// Reflectivity gate whose weighted CC / SD(ΦDP) / SD(ZDR) / |ZDR| membership
+/// score clears `qc.nonmet_threshold`. Dual-pol REF/CC/ZDR/ΦDP come from the
+/// same surveillance cut and share gate geometry; each aux sweep is aligned
+/// to the REF radial by nearest azimuth (primary index only — a QC mask must
+/// not be blurred by interpolation, same rule the CC-only gate follows).
+///
+/// Fails open per `nonmet_score`'s contract: any aux sweep that's absent
+/// just drops out of the weighted mean, degrading gracefully down to
+/// "leave REF untouched" if all three are absent.
+fn fuzzy_nonmet_gate(cleaned: &mut SweepData, qc: &QcConfig) {
+    if qc.cc_sweep.is_none() && qc.zdr_sweep.is_none() && qc.phidp_sweep.is_none() {
+        return;
+    }
+    // Mirrors the TDBZ kernel's window so ΦDP/ZDR texture is computed over
+    // the same range-neighborhood the reflectivity texture pass uses.
+    let half = qc.tdbz_kernel_size / 2;
+
+    // Nearest-azimuth lookup table per aux sweep, built once per sweep (not
+    // per REF radial). ZDR/ΦDP additionally carry their gate-to-gate range
+    // texture, also computed once per aux radial and reused across every REF
+    // radial that nearest-azimuth-matches it (plan: "once per aux sweep").
+    let cc = qc.cc_sweep.filter(|s| !s.radials.is_empty()).map(|s| {
+        let (order, azimuths) = sorted_azimuths(&s.radials);
+        (s, order, azimuths)
+    });
+    let zdr = qc.zdr_sweep.filter(|s| !s.radials.is_empty()).map(|s| {
+        let (order, azimuths) = sorted_azimuths(&s.radials);
+        let textures: Vec<Vec<f32>> = s
+            .radials
+            .iter()
+            .map(|r| nonmet::range_texture(&r.gates, half, None))
+            .collect();
+        (s, order, azimuths, textures)
+    });
+    let phidp = qc.phidp_sweep.filter(|s| !s.radials.is_empty()).map(|s| {
+        let (order, azimuths) = sorted_azimuths(&s.radials);
+        // ΦDP wraps 0-360°: fold the gate-to-gate difference so a 358°->2°
+        // step reads as ~4° of texture, not a ~356° spike.
+        let textures: Vec<Vec<f32>> = s
+            .radials
+            .iter()
+            .map(|r| nonmet::range_texture(&r.gates, half, Some(360.0)))
+            .collect();
+        (s, order, azimuths, textures)
+    });
+
+    for radial in &mut cleaned.radials {
+        let cc_radial = cc.as_ref().map(|(s, order, azimuths)| {
+            let (i1, _i2, _w1, _w2) = nearest_two_radial_indices(azimuths, radial.azimuth_deg);
+            &s.radials[order[i1]]
+        });
+        let zdr_hit = zdr.as_ref().map(|(s, order, azimuths, textures)| {
+            let (i1, _i2, _w1, _w2) = nearest_two_radial_indices(azimuths, radial.azimuth_deg);
+            (&s.radials[order[i1]], &textures[order[i1]])
+        });
+        let phidp_hit = phidp.as_ref().map(|(s, order, azimuths, textures)| {
+            let (i1, _i2, _w1, _w2) = nearest_two_radial_indices(azimuths, radial.azimuth_deg);
+            (&s.radials[order[i1]], &textures[order[i1]])
+        });
+
+        for (i, gate) in radial.gates.iter_mut().enumerate() {
+            if gate.is_none() {
+                continue;
+            }
+            let cc_val = cc_radial.and_then(|r| r.gates.get(i).copied().flatten());
+            let (zdr_val, sd_zdr) = match zdr_hit {
+                Some((r, tex)) => (r.gates.get(i).copied().flatten(), tex.get(i).copied()),
+                None => (None, None),
+            };
+            let sd_phidp = phidp_hit.and_then(|(_, tex)| tex.get(i).copied());
+            let score = nonmet::nonmet_score(cc_val, sd_phidp, sd_zdr, zdr_val);
+            if score >= qc.nonmet_threshold {
+                *gate = None;
+            }
+        }
+    }
 }
 
 /// Rasterize one sweep to raw RGBA bytes.
@@ -1370,6 +1479,7 @@ mod tests {
                 vel_dealias_enabled: true,
                 vel_sd_censor_enabled: false,
                 vel_sd_threshold: 7.0,
+                ..Default::default()
             },
         );
         let has_purple = velocity_pixels
@@ -1394,6 +1504,7 @@ mod tests {
                 vel_dealias_enabled: true,
                 vel_sd_censor_enabled: false,
                 vel_sd_threshold: 7.0,
+                ..Default::default()
             },
         );
         let has_purple_refl = refl_pixels
@@ -1437,6 +1548,7 @@ mod tests {
                 vel_dealias_enabled: true,
                 vel_sd_censor_enabled: false,
                 vel_sd_threshold: 7.0,
+                ..Default::default()
             },
         );
         let target = colors::velocity_color(15.0);
@@ -1521,6 +1633,7 @@ mod tests {
                 vel_dealias_enabled: true,
                 vel_sd_censor_enabled: false,
                 vel_sd_threshold: 0.0,
+                ..Default::default()
             },
         );
         let unfolded_target = colors::velocity_color(27.8);
@@ -1550,6 +1663,7 @@ mod tests {
                 vel_dealias_enabled: false,
                 vel_sd_censor_enabled: false,
                 vel_sd_threshold: 0.0,
+                ..Default::default()
             },
         );
         assert!(
@@ -1659,6 +1773,7 @@ mod tests {
                     vel_dealias_enabled: true,
                     vel_sd_censor_enabled: false,
                     vel_sd_threshold: 7.0,
+                    ..Default::default()
                 },
             )
             .radials[0]
@@ -1706,6 +1821,7 @@ mod tests {
                 vel_dealias_enabled: true,
                 vel_sd_censor_enabled: false,
                 vel_sd_threshold: 7.0,
+                ..Default::default()
             },
         );
         assert_eq!(cleaned.radials[0].gates[0], None, "low-CC gate suppressed");
@@ -1729,6 +1845,7 @@ mod tests {
                 vel_dealias_enabled: true,
                 vel_sd_censor_enabled: false,
                 vel_sd_threshold: 7.0,
+                ..Default::default()
             },
         );
         assert_eq!(ungated.radials[0].gates[0], Some(30.0));
@@ -1747,6 +1864,7 @@ mod tests {
                 vel_dealias_enabled: true,
                 vel_sd_censor_enabled: false,
                 vel_sd_threshold: 7.0,
+                ..Default::default()
             },
         );
         assert_eq!(no_cc.radials[0].gates[0], Some(30.0));
@@ -1783,6 +1901,7 @@ mod tests {
                 vel_dealias_enabled: true,
                 vel_sd_censor_enabled: false,
                 vel_sd_threshold: 7.0,
+                ..Default::default()
             },
         );
         assert_eq!(
@@ -1804,6 +1923,7 @@ mod tests {
                 vel_dealias_enabled: true,
                 vel_sd_censor_enabled: false,
                 vel_sd_threshold: 7.0,
+                ..Default::default()
             },
         );
         assert_eq!(
@@ -1861,6 +1981,7 @@ mod tests {
                     vel_dealias_enabled: true,
                     vel_sd_censor_enabled,
                     vel_sd_threshold: 7.0,
+                    ..Default::default()
                 },
             )
             .radials[center_radial]
@@ -1893,6 +2014,7 @@ mod tests {
                 vel_dealias_enabled: true,
                 vel_sd_censor_enabled: true,
                 vel_sd_threshold: 7.0,
+                ..Default::default()
             },
         );
         assert_eq!(
@@ -1926,6 +2048,7 @@ mod tests {
                 vel_dealias_enabled: true,
                 vel_sd_censor_enabled: true,
                 vel_sd_threshold: 7.0,
+                ..Default::default()
             },
         );
         assert_eq!(
@@ -1933,5 +2056,108 @@ mod tests {
             Some(30.0),
             "Reflectivity must not be affected by velocity SD censor"
         );
+    }
+
+    #[test]
+    fn fuzzy_nonmet_gate_nulls_bird_radial_keeps_precip_radial() {
+        // Two REF radials at well-separated azimuths so nearest-azimuth
+        // matching against the aux sweeps is unambiguous. tdbz_kernel_size=3
+        // -> half_window=1, so with only 2 gates per radial the texture
+        // window covers the whole radial: a single gate-to-gate step sets
+        // the SD for both gate indices.
+        let ref_sweep = SweepData {
+            elevation_deg: 0.5,
+            radials: vec![
+                radial(0.0, vec![Some(30.0), Some(30.0)]),  // "bird" radial
+                radial(90.0, vec![Some(40.0), Some(40.0)]), // "precip" radial
+            ],
+            first_gate_km: 2.125,
+            gate_spacing_km: 0.25,
+            nyquist_ms: 0.0,
+        };
+        // CC: low (0.5) on the bird radial, high (0.98) on the precip radial.
+        let cc_sweep = SweepData {
+            elevation_deg: 0.5,
+            radials: vec![
+                radial(0.0, vec![Some(0.5), Some(0.5)]),
+                radial(90.0, vec![Some(0.98), Some(0.98)]),
+            ],
+            first_gate_km: 2.125,
+            gate_spacing_km: 0.25,
+            nyquist_ms: 0.0,
+        };
+        // ZDR: an 8 dB gate-to-gate step on the bird radial (SD(ZDR)=8dB,
+        // well past the 3dB non-met breakpoint); flat (SD=0) on precip.
+        let zdr_sweep = SweepData {
+            elevation_deg: 0.5,
+            radials: vec![
+                radial(0.0, vec![Some(0.0), Some(8.0)]),
+                radial(90.0, vec![Some(0.0), Some(0.0)]),
+            ],
+            first_gate_km: 2.125,
+            gate_spacing_km: 0.25,
+            nyquist_ms: 0.0,
+        };
+        // PhiDP: a 40 deg gate-to-gate step on the bird radial (SD(PhiDP)=40,
+        // past the 30deg non-met breakpoint); flat (SD=0) on precip.
+        let phidp_sweep = SweepData {
+            elevation_deg: 0.5,
+            radials: vec![
+                radial(0.0, vec![Some(0.0), Some(40.0)]),
+                radial(90.0, vec![Some(0.0), Some(0.0)]),
+            ],
+            first_gate_km: 2.125,
+            gate_spacing_km: 0.25,
+            nyquist_ms: 0.0,
+        };
+
+        let cleaned = clean_sweep(
+            &ref_sweep,
+            Product::Reflectivity,
+            &QcConfig {
+                tdbz_kernel_size: 3,
+                cc_sweep: Some(&cc_sweep),
+                zdr_sweep: Some(&zdr_sweep),
+                phidp_sweep: Some(&phidp_sweep),
+                nonmet_fuzzy_enabled: true,
+                nonmet_threshold: nonmet::NONMET_THRESHOLD_DEFAULT,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            cleaned.radials[0].gates,
+            vec![None, None],
+            "bird radial (low CC, noisy ZDR/PhiDP) should be nulled"
+        );
+        assert_eq!(
+            cleaned.radials[1].gates,
+            vec![Some(40.0), Some(40.0)],
+            "precip radial (high CC, smooth ZDR/PhiDP) should be preserved"
+        );
+    }
+
+    #[test]
+    fn fuzzy_nonmet_gate_fails_open_with_no_aux_sweeps() {
+        // Fuzzy enabled but every aux sweep absent -> nonmet_score is always
+        // 0.0 (see nonmet::nonmet_score), so REF is left untouched, same as
+        // if the classifier weren't wired in at all.
+        let ref_sweep = SweepData {
+            elevation_deg: 0.5,
+            radials: vec![radial(0.0, vec![Some(30.0), Some(30.0)])],
+            first_gate_km: 2.125,
+            gate_spacing_km: 0.25,
+            nyquist_ms: 0.0,
+        };
+        let cleaned = clean_sweep(
+            &ref_sweep,
+            Product::Reflectivity,
+            &QcConfig {
+                tdbz_kernel_size: 3,
+                nonmet_fuzzy_enabled: true,
+                nonmet_threshold: nonmet::NONMET_THRESHOLD_DEFAULT,
+                ..Default::default()
+            },
+        );
+        assert_eq!(cleaned.radials[0].gates, vec![Some(30.0), Some(30.0)]);
     }
 }

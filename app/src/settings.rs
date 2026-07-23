@@ -103,6 +103,11 @@ fn default_vel_sd() -> f32 {
     7.0
 }
 
+/// Serde default for [`Settings::nonmet_threshold`] (missing in older configs).
+fn default_nonmet_threshold() -> f32 {
+    crate::nonmet::NONMET_THRESHOLD_DEFAULT
+}
+
 /// User-configurable app settings, persisted as `"settings.json"` via
 /// [`crate::cache::Cache::save_settings`] / [`crate::cache::Cache::load_settings`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -199,6 +204,17 @@ pub struct Settings {
     /// Default on. No-op per sweep when Nyquist is unknown (`nyquist_ms <= 0.0`).
     #[serde(default = "default_true")]
     pub vel_dealias_enabled: bool,
+    /// Whether the fuzzy multi-variable non-met classifier (CC + SD(ΦDP) +
+    /// SD(ZDR) + |ZDR|, see `nonmet.rs`) replaces the single-threshold CC
+    /// gate on Reflectivity. Default **off**: it changes the default
+    /// Reflectivity view everyone sees, so it ships opt-in until eyeballed
+    /// on real dual-pol volumes (see `docs/fuzzy-nonmet-classifier-plan.md`).
+    #[serde(default)]
+    pub nonmet_fuzzy_enabled: bool,
+    /// Non-met score (0.0-1.0) at/above which a Reflectivity gate is nulled
+    /// when the fuzzy classifier is on.
+    #[serde(default = "default_nonmet_threshold")]
+    pub nonmet_threshold: f32,
 }
 
 impl Default for Settings {
@@ -231,6 +247,8 @@ impl Default for Settings {
             vel_sd_censor_enabled: true,
             vel_sd_threshold: 7.0,
             vel_dealias_enabled: true,
+            nonmet_fuzzy_enabled: false,
+            nonmet_threshold: crate::nonmet::NONMET_THRESHOLD_DEFAULT,
         }
     }
 }
@@ -262,6 +280,8 @@ mod tests {
         assert!(settings.vel_sd_censor_enabled);
         assert_eq!(settings.vel_sd_threshold, 7.0);
         assert!(settings.vel_dealias_enabled);
+        assert!(!settings.nonmet_fuzzy_enabled);
+        assert_eq!(settings.nonmet_threshold, 0.5);
     }
 
     #[test]
@@ -294,6 +314,8 @@ mod tests {
             vel_sd_censor_enabled: false,
             vel_sd_threshold: 8.0,
             vel_dealias_enabled: false,
+            nonmet_fuzzy_enabled: true,
+            nonmet_threshold: 0.6,
         };
         let json = serde_json::to_string(&settings).expect("serialize");
         let restored: Settings = serde_json::from_str(&json).expect("deserialize");
@@ -351,5 +373,8 @@ mod tests {
         assert_eq!(s.vel_sd_threshold, 7.0);
         // Missing dealias field defaults on.
         assert!(s.vel_dealias_enabled);
+        // Missing fuzzy non-met fields default off/0.5 (ship opt-in).
+        assert!(!s.nonmet_fuzzy_enabled);
+        assert_eq!(s.nonmet_threshold, 0.5);
     }
 }
