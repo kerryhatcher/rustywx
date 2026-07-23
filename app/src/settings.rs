@@ -94,8 +94,12 @@ fn default_cc_threshold() -> f32 {
 }
 
 /// Serde default for [`Settings::refl_floor_dbz`] (missing in older configs).
+/// 20 dBZ, deliberately *above* the always-on baked range floor (20/10/5 by
+/// range in `scope::clean_sweep`) so enabling the toggle actually cuts weak
+/// echo — a lower value (the old 7.0) sits under the baked floor and is a
+/// visible no-op. Adjustable per-user via the settings stepper.
 fn default_refl_floor() -> f32 {
-    7.0
+    20.0
 }
 
 /// Serde default for [`Settings::vel_sd_threshold`] (missing in older configs).
@@ -266,7 +270,7 @@ impl Default for Settings {
             cc_gate_enabled: true,
             cc_gate_threshold: 0.80,
             refl_floor_enabled: true,
-            refl_floor_dbz: 7.0,
+            refl_floor_dbz: 20.0,
             vel_sd_censor_enabled: true,
             vel_sd_threshold: 7.0,
             vel_dealias_enabled: true,
@@ -303,7 +307,7 @@ mod tests {
         assert!(settings.cc_gate_enabled);
         assert_eq!(settings.cc_gate_threshold, 0.80);
         assert!(settings.refl_floor_enabled);
-        assert_eq!(settings.refl_floor_dbz, 7.0);
+        assert_eq!(settings.refl_floor_dbz, 20.0);
         assert!(settings.vel_sd_censor_enabled);
         assert_eq!(settings.vel_sd_threshold, 7.0);
         assert!(settings.vel_dealias_enabled);
@@ -400,9 +404,9 @@ mod tests {
         // Missing CC-gate fields default to on/0.80.
         assert!(s.cc_gate_enabled);
         assert_eq!(s.cc_gate_threshold, 0.80);
-        // Missing noise-floor fields default to on/7.0.
+        // Missing noise-floor fields default to on/20.0.
         assert!(s.refl_floor_enabled);
-        assert_eq!(s.refl_floor_dbz, 7.0);
+        assert_eq!(s.refl_floor_dbz, 20.0);
         // Missing velocity-SD fields default to on/7.0.
         assert!(s.vel_sd_censor_enabled);
         assert_eq!(s.vel_sd_threshold, 7.0);
