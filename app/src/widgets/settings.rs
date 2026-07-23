@@ -25,6 +25,7 @@ pub const CC_GATE_TOGGLE_ID: &str = "settings-toggle-cc-gate";
 pub const GAP_FILL_TOGGLE_ID: &str = "settings-toggle-gap-fill";
 pub const MULTI_SCALE_TEXTURE_TOGGLE_ID: &str = "settings-toggle-multi-scale-texture";
 pub const SUN_SPIKE_TOGGLE_ID: &str = "settings-toggle-sun-spike";
+pub const MELTING_LAYER_TOGGLE_ID: &str = "settings-toggle-melting-layer";
 pub const REFL_FLOOR_TOGGLE_ID: &str = "settings-toggle-refl-floor";
 pub const VEL_SD_TOGGLE_ID: &str = "settings-toggle-vel-sd";
 pub const VEL_DEALIAS_TOGGLE_ID: &str = "settings-toggle-vel-dealias";
@@ -284,6 +285,14 @@ pub fn draw(
                             SUN_SPIKE_TOGGLE_ID,
                             "Sun-spike / RFI removal",
                             settings.sun_spike_removal_enabled,
+                        );
+                    });
+                    row(ui, "Melting-layer hint", |ui| {
+                        bool_toggle(
+                            ui,
+                            MELTING_LAYER_TOGGLE_ID,
+                            "Melting-layer hint",
+                            settings.melting_layer_hint_enabled,
                         );
                     });
                     row(ui, "Noise-floor cut (dBZ)", |ui| {

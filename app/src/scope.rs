@@ -8,6 +8,7 @@ use crate::colors;
 use crate::dealias::dealias_sweep;
 use crate::geo::{self, RadarSite};
 use crate::location::Coords;
+use crate::melting_layer::MeltingLayerHint;
 use crate::model::{Product, RadialData, SweepData};
 use crate::nhc::{ArrivalTimeContour, NhcBundle, WindProbContour};
 use crate::nonmet;
@@ -1019,6 +1020,9 @@ pub fn project_site(
 ///
 /// Stage 4 adds optional border and alert overlay drawing.
 /// Stage 5 adds optional NHC tropical cyclone overlay drawing.
+/// `melting_layer` adds the optional melting-layer hint ring (see
+/// `melting_layer.rs`); `Some` only when the feature is on and a ring was
+/// detected in the current scan.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_scope_to_texture(
     radar_texture: Option<&Texture2D>,
@@ -1031,6 +1035,7 @@ pub fn draw_scope_to_texture(
     user: Option<Coords>,
     show_sites: bool,
     show_rings: bool,
+    melting_layer: Option<&MeltingLayerHint>,
 ) {
     let side = screen_width().min(screen_height());
     let px_per_km = (side / 2.0) / MAX_RANGE_KM * zoom;
@@ -1193,6 +1198,11 @@ pub fn draw_scope_to_texture(
         draw_borders(rings, site, center_x, center_y, px_per_km);
     }
 
+    // ── Melting-layer hint overlay ────────────────────────────────
+    if let Some(hint) = melting_layer {
+        draw_melting_layer_ring(hint, center_x, center_y, px_per_km);
+    }
+
     // ── Alert overlays (Stage 4) ─────────────────────────────────
     if let Some((alerts, show_watches, show_warnings)) = alerts
         && (show_watches || show_warnings)
@@ -1253,6 +1263,24 @@ fn draw_borders(rings: &[Ring], site: &RadarSite, center_x: f32, center_y: f32, 
             draw_line(ax, ay, bx, by, 1.0, border_color);
         }
     }
+}
+
+/// Draw a faint ring at the melting-layer hint's estimated slant range
+/// (see `melting_layer.rs`), labeled with the estimated height. A single
+/// ring, not a top/bottom band — the detector estimates one CC-minimum
+/// range per volume. ponytail: single ring only; upgrade path is drawing
+/// a top/bottom band if `melting_layer::detect` ever returns a range pair.
+fn draw_melting_layer_ring(hint: &MeltingLayerHint, center_x: f32, center_y: f32, px_per_km: f32) {
+    let ring_color = MacroquadColor::from_rgba(0xa0, 0xd8, 0xff, 140);
+    let radius_px = hint.range_km * px_per_km;
+    draw_circle_lines(center_x, center_y, radius_px, 1.5, ring_color);
+    draw_text(
+        format!("Melting layer ~{:.1} km", hint.height_km),
+        center_x + 4.0,
+        center_y - radius_px,
+        14.0,
+        ring_color,
+    );
 }
 
 /// Draw active NWS warning/watch polygons across the full screen.

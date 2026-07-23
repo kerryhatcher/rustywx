@@ -62,6 +62,10 @@ pub struct AppState {
     pub radar_texture: Option<Texture2D>,
     /// Dirty flag — re-rasterise the sweep on the next frame.
     pub needs_reraster: bool,
+    /// Melting-layer hint estimated from the latest scan's CC sweeps (see
+    /// `melting_layer.rs`); recomputed alongside the raster when
+    /// `Settings::melting_layer_hint_enabled` is on, `None` otherwise.
+    pub melting_layer_hint: Option<crate::melting_layer::MeltingLayerHint>,
 
     // ── Persistence ────────────────────────────────────────────
     /// Ply storage cache handle (Clone — cheap to share).

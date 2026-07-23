@@ -13,6 +13,7 @@ pub mod forecast;
 pub mod geo;
 pub mod kdp;
 pub mod location;
+pub mod melting_layer;
 pub mod model;
 pub mod nhc;
 pub mod nonmet;

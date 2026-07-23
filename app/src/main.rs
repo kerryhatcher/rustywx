@@ -13,6 +13,7 @@ use rustywx::colors;
 use rustywx::data::{self, WorkerMessage};
 use rustywx::forecast;
 use rustywx::geo;
+use rustywx::melting_layer;
 use rustywx::model::{Product, RadialData, SweepData, format_nyquist_velocity, vcp_mode_label};
 use rustywx::nhc;
 use rustywx::scope;
@@ -575,6 +576,7 @@ async fn main() {
         zoom: 1.0,
         radar_texture: None,
         needs_reraster: true,
+        melting_layer_hint: None,
         scan: None,
         tilt_index: 0,
         status_text: "Loading cached data…".to_string(),
@@ -1030,6 +1032,19 @@ async fn main() {
         // Rasterize when needed
         if state.needs_reraster {
             state.needs_reraster = false;
+
+            // Melting-layer hint (annotation overlay, not part of the QC
+            // pipeline above) — recomputed alongside the raster so it
+            // stays in step with new scans and the settings toggle without
+            // its own dirty-flag plumbing.
+            state.melting_layer_hint = if state.settings.melting_layer_hint_enabled {
+                state
+                    .scan
+                    .as_ref()
+                    .and_then(|scan| melting_layer::detect(&scan.correlation_coefficient))
+            } else {
+                None
+            };
             let rgba = scope::rasterize(
                 &sweep,
                 state.product,
@@ -1090,6 +1105,7 @@ async fn main() {
                 },
                 state.radar_panel_open, // show_sites arg — markers shown only while the Radar panel is open
                 state.settings.show_scope_rings,
+                state.melting_layer_hint.as_ref(),
             );
 
             // Radar sweep line (optional observatory visual flourish) — gated on
@@ -2613,6 +2629,19 @@ async fn main() {
                                                         .color(0x9E9590)
                                                 },
                                             );
+                                            if let Some(hint) = &state.melting_layer_hint {
+                                                ui.text(
+                                                    &format!(
+                                                        "Melting layer: ~{:.1} km ({:.1}° tilt)",
+                                                        hint.height_km, hint.elevation_deg
+                                                    ),
+                                                    |text| {
+                                                        text.font_size(11)
+                                                            .font(&MONO_FONT)
+                                                            .color(0x9E9590)
+                                                    },
+                                                );
+                                            }
                                         });
                                 });
                         }
@@ -3104,6 +3133,13 @@ fn handle_input(
         if ply.is_just_pressed(settings_widget::SUN_SPIKE_TOGGLE_ID) {
             state.settings.sun_spike_removal_enabled = !state.settings.sun_spike_removal_enabled;
             state.cache.save_settings(&state.settings);
+            state.needs_reraster = true;
+        }
+        if ply.is_just_pressed(settings_widget::MELTING_LAYER_TOGGLE_ID) {
+            state.settings.melting_layer_hint_enabled = !state.settings.melting_layer_hint_enabled;
+            state.cache.save_settings(&state.settings);
+            // Not a raster QC pass — this just re-triggers the hint
+            // recompute that lives alongside the raster (see above).
             state.needs_reraster = true;
         }
         if ply.is_just_pressed(settings_widget::ANIMATION_CYCLE_ID) {
