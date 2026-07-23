@@ -1805,6 +1805,69 @@ mod tests {
     }
 
     #[test]
+    fn rasterize_output_changes_when_cc_gate_flag_flips() {
+        // End-to-end proof that a QC settings toggle actually alters the
+        // generated raster (not just clean_sweep in isolation): build a solid
+        // reflectivity block with a co-located all-low-CC sweep, then rasterize
+        // the SAME sweep with cc_gate off vs on. With the gate on, every
+        // low-CC gate is nulled, so the rendered block must shrink. If the two
+        // pixel buffers are identical, the toggle does nothing to the output —
+        // exactly the "no noticeable change" symptom this guards against.
+        let n_gates = 250;
+        let mut ref_gates = vec![None; n_gates];
+        let mut cc_gates = vec![None; n_gates];
+        for i in 120..200 {
+            ref_gates[i] = Some(40.0); // well above the baked near-range floor
+            cc_gates[i] = Some(0.50); // below the 0.80 non-met threshold
+        }
+        let build = |gates: &Vec<Option<f32>>| SweepData {
+            elevation_deg: 0.5,
+            radials: (0..120)
+                .map(|k| radial(k as f32 * 3.0, gates.clone()))
+                .collect(),
+            first_gate_km: 2.125,
+            gate_spacing_km: 0.25,
+            nyquist_ms: 0.0,
+        };
+        let ref_sweep = build(&ref_gates);
+        let cc_sweep = build(&cc_gates);
+
+        let count_opaque = |px: &[u8]| px.chunks_exact(4).filter(|c| c[3] > 0).count();
+        let render = |cc_gate_enabled| {
+            rasterize(
+                &ref_sweep,
+                Product::Reflectivity,
+                256,
+                MAX_RANGE_KM,
+                &QcConfig {
+                    tdbz_kernel_size: 3,
+                    cc_sweep: Some(&cc_sweep),
+                    cc_gate_enabled,
+                    cc_gate_threshold: 0.80,
+                    ..Default::default()
+                },
+            )
+        };
+        let off = render(false);
+        let on = render(true);
+
+        assert!(
+            count_opaque(&off) > 0,
+            "block must render with the gate off"
+        );
+        assert_ne!(
+            off, on,
+            "flipping cc_gate must change the rasterized output"
+        );
+        assert!(
+            count_opaque(&on) < count_opaque(&off),
+            "cc_gate on must null the low-CC block: off={} on={}",
+            count_opaque(&off),
+            count_opaque(&on),
+        );
+    }
+
+    #[test]
     fn rasterize_uses_per_sweep_gate_geometry_not_module_consts() {
         // Gate 5 carries the only real value. Geometry is 1.0/1.0 km
         // (legacy upper-tilt), not the super-res module consts (2.125/0.25)
