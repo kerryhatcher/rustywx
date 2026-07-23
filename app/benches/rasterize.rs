@@ -28,6 +28,7 @@ fn bench_rasterize(c: &mut Criterion) {
                         0.80,  // cc_gate_threshold
                         false, // refl_floor_enabled
                         7.0,   // refl_floor_dbz
+                        false, // vel_dealias_enabled
                         false, // vel_sd_censor_enabled
                         7.0,   // vel_sd_threshold
                     ))

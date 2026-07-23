@@ -982,6 +982,7 @@ async fn main() {
                 state.settings.cc_gate_threshold,
                 state.settings.refl_floor_enabled,
                 state.settings.refl_floor_dbz,
+                state.settings.vel_dealias_enabled,
                 state.settings.vel_sd_censor_enabled,
                 state.settings.vel_sd_threshold,
             );
@@ -2999,6 +3000,11 @@ fn handle_input(
         }
         if ply.is_just_pressed(settings_widget::REFL_FLOOR_TOGGLE_ID) {
             state.settings.refl_floor_enabled = !state.settings.refl_floor_enabled;
+            state.cache.save_settings(&state.settings);
+            state.needs_reraster = true;
+        }
+        if ply.is_just_pressed(settings_widget::VEL_DEALIAS_TOGGLE_ID) {
+            state.settings.vel_dealias_enabled = !state.settings.vel_dealias_enabled;
             state.cache.save_settings(&state.settings);
             state.needs_reraster = true;
         }

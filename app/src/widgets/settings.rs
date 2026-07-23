@@ -24,6 +24,7 @@ pub const SCOPE_RINGS_TOGGLE_ID: &str = "settings-toggle-scope-rings";
 pub const CC_GATE_TOGGLE_ID: &str = "settings-toggle-cc-gate";
 pub const REFL_FLOOR_TOGGLE_ID: &str = "settings-toggle-refl-floor";
 pub const VEL_SD_TOGGLE_ID: &str = "settings-toggle-vel-sd";
+pub const VEL_DEALIAS_TOGGLE_ID: &str = "settings-toggle-vel-dealias";
 pub const LOCATION_INPUT_ID: &str = "settings-location-input";
 pub const LOCATION_DETECT_ID: &str = "settings-location-detect";
 pub const CENTER_TOGGLE_ID: &str = "settings-toggle-center";
@@ -255,6 +256,14 @@ pub fn draw(
                             REFL_FLOOR_TOGGLE_ID,
                             "Noise-floor cut",
                             settings.refl_floor_enabled,
+                        );
+                    });
+                    row(ui, "Velocity dealias", |ui| {
+                        bool_toggle(
+                            ui,
+                            VEL_DEALIAS_TOGGLE_ID,
+                            "Velocity dealias",
+                            settings.vel_dealias_enabled,
                         );
                     });
                     row(ui, "Velocity SD censor", |ui| {

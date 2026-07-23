@@ -5,6 +5,7 @@
 use crate::alerts::Alert;
 use crate::borders::Ring;
 use crate::colors;
+use crate::dealias::dealias_radial;
 use crate::geo::{self, RadarSite};
 use crate::location::Coords;
 use crate::model::{Product, RadialData, SweepData};
@@ -39,6 +40,7 @@ fn clean_sweep(
     cc_gate_threshold: f32,
     refl_floor_enabled: bool,
     refl_floor_dbz: f32,
+    vel_dealias_enabled: bool,
     vel_sd_censor_enabled: bool,
     vel_sd_threshold: f32,
 ) -> SweepData {
@@ -88,6 +90,20 @@ fn clean_sweep(
                     *gate = None;
                 }
             }
+        }
+    }
+
+    // 1D gate-to-gate Nyquist unfold (FMH-11B §4.3.3): runs before SD-censoring
+    // so the censor's scatter test sees dealiased (continuous) values rather
+    // than the raw aliased sign-flips. No-op per radial when Nyquist is
+    // unknown (`nyquist_ms <= 0.0`) — see `dealias::dealias_radial`.
+    //
+    // ponytail: recomputed per render, per sweep. Velocity is one sweep at a
+    // time, so this is cheap; if profiling ever says otherwise, memoize on
+    // the sweep at ingestion instead (Stage C moves dealiasing there anyway).
+    if product == Product::Velocity && vel_dealias_enabled && cleaned.nyquist_ms > 0.0 {
+        for radial in &mut cleaned.radials {
+            radial.gates = dealias_radial(&radial.gates, cleaned.nyquist_ms);
         }
     }
 
@@ -243,6 +259,7 @@ pub fn rasterize(
     cc_gate_threshold: f32,
     refl_floor_enabled: bool,
     refl_floor_dbz: f32,
+    vel_dealias_enabled: bool,
     vel_sd_censor_enabled: bool,
     vel_sd_threshold: f32,
 ) -> Vec<u8> {
@@ -255,6 +272,7 @@ pub fn rasterize(
         cc_gate_threshold,
         refl_floor_enabled,
         refl_floor_dbz,
+        vel_dealias_enabled,
         vel_sd_censor_enabled,
         vel_sd_threshold,
     );
@@ -1350,6 +1368,7 @@ mod tests {
             0.0,
             false,
             7.0,
+            true,
             false,
             7.0,
         );
@@ -1371,6 +1390,7 @@ mod tests {
             0.0,
             false,
             7.0,
+            true,
             false,
             7.0,
         );
@@ -1411,6 +1431,7 @@ mod tests {
             0.0,
             false,
             7.0,
+            true,
             false,
             7.0,
         );
@@ -1438,6 +1459,94 @@ mod tests {
         assert!(
             min_r > 5.0 && max_r < 7.0,
             "expected gate-5 pixels clustered around 6.0km (1.0/1.0 geometry), got range [{min_r}, {max_r}]"
+        );
+    }
+
+    #[test]
+    fn rasterize_dealias_turns_sign_flip_into_same_sign_gradient() {
+        // One radial, gate-to-gate ramp that folds across Nyquist: raw gate 3
+        // reads -25.0 (aliased) even though it's really a continuation of the
+        // +20/+24/+28 outbound ramp (nyquist=26.4 -> interval 52.8; matches
+        // dealias::tests::unfolds_single_fold_to_monotone_ramp).
+        let gates = vec![Some(20.0), Some(24.0), Some(28.0), Some(-25.0)];
+        let sweep = SweepData {
+            elevation_deg: 0.5,
+            radials: vec![radial(0.0, gates)],
+            first_gate_km: 2.125,
+            gate_spacing_km: 0.25,
+            nyquist_ms: 26.4,
+        };
+
+        let size_px = 400;
+        let max_range_km = 20.0;
+        // Gate 3 -> range = 2.125 + 3*0.25 = 2.875 km.
+        let gate3_range_km = 2.875;
+        let color_at_gate3_range = |pixels: &[u8], target: [u8; 4]| -> bool {
+            let km_per_px = 2.0 * max_range_km / size_px as f32;
+            let center = size_px as f32 / 2.0;
+            for py in 0..size_px {
+                let dy = (py as f32 + 0.5 - center) * km_per_px;
+                for px in 0..size_px {
+                    let dx = (px as f32 + 0.5 - center) * km_per_px;
+                    let idx = (py * size_px + px) * 4;
+                    if pixels[idx..idx + 4] == target {
+                        let r = (dx * dx + dy * dy).sqrt();
+                        if (r - gate3_range_km).abs() < 1.0 {
+                            return true;
+                        }
+                    }
+                }
+            }
+            false
+        };
+
+        // Dealiasing on: gate 3 should render as the unfolded, same-sign
+        // value (~27.8, continuing the outbound ramp), not raw -25.0.
+        let dealiased_pixels = rasterize(
+            &sweep,
+            Product::Velocity,
+            size_px,
+            max_range_km,
+            3,
+            None,
+            false,
+            0.0,
+            false,
+            0.0,
+            true, // vel_dealias_enabled
+            false,
+            0.0,
+        );
+        let unfolded_target = colors::velocity_color(27.8);
+        let raw_target = colors::velocity_color(-25.0);
+        assert!(
+            color_at_gate3_range(&dealiased_pixels, unfolded_target),
+            "dealiased gate 3 should render as the unfolded ~27.8 m/s color"
+        );
+        assert!(
+            !color_at_gate3_range(&dealiased_pixels, raw_target),
+            "dealiased gate 3 should not still render as the raw sign-flipped color"
+        );
+
+        // Dealiasing off: gate 3 renders as the raw, sign-flipped value.
+        let raw_pixels = rasterize(
+            &sweep,
+            Product::Velocity,
+            size_px,
+            max_range_km,
+            3,
+            None,
+            false,
+            0.0,
+            false,
+            0.0,
+            false, // vel_dealias_enabled
+            false,
+            0.0,
+        );
+        assert!(
+            color_at_gate3_range(&raw_pixels, raw_target),
+            "with dealiasing off, gate 3 should render as the raw -25.0 color"
         );
     }
 
@@ -1538,6 +1647,7 @@ mod tests {
                 0.80,
                 false,
                 7.0,
+                true,
                 false,
                 7.0,
             )
@@ -1582,6 +1692,7 @@ mod tests {
             0.80,
             false,
             7.0,
+            true,
             false,
             7.0,
         );
@@ -1602,6 +1713,7 @@ mod tests {
             0.80,
             false,
             7.0,
+            true,
             false,
             7.0,
         );
@@ -1617,6 +1729,7 @@ mod tests {
             0.80,
             false,
             7.0,
+            true,
             false,
             7.0,
         );
@@ -1650,6 +1763,7 @@ mod tests {
             0.80,
             true, // refl_floor_enabled
             7.0,  // refl_floor_dbz
+            true,
             false,
             7.0,
         );
@@ -1668,6 +1782,7 @@ mod tests {
             0.80,
             false, // refl_floor_enabled
             7.0,
+            true,
             false,
             7.0,
         );
@@ -1722,6 +1837,7 @@ mod tests {
                 0.80,
                 false,
                 7.0,
+                true,
                 vel_sd_censor_enabled,
                 7.0,
             )
@@ -1752,6 +1868,7 @@ mod tests {
             false,
             7.0,
             true,
+            true,
             7.0,
         );
         assert_eq!(
@@ -1781,6 +1898,7 @@ mod tests {
             0.80,
             false,
             7.0,
+            true,
             true,
             7.0,
         );
