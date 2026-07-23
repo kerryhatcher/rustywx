@@ -1,60 +1,38 @@
-<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="rustywx app icon — cyclone">
   <defs>
-    <!-- Scope background: deep radar-green-tinted charcoal -->
-    <radialGradient id="scope" cx="50%" cy="45%" r="60%">
-      <stop offset="0%" stop-color="#0f2c26"/>
-      <stop offset="70%" stop-color="#0a1a1c"/>
-      <stop offset="100%" stop-color="#050d0f"/>
-    </radialGradient>
-    <!-- Rust-orange sweep wedge, trailing to transparent -->
-    <linearGradient id="sweep" x1="50%" y1="50%" x2="100%" y2="12%">
-      <stop offset="0%" stop-color="#f26a1b" stop-opacity="0.95"/>
-      <stop offset="55%" stop-color="#de5a2a" stop-opacity="0.35"/>
-      <stop offset="100%" stop-color="#de5a2a" stop-opacity="0"/>
-    </linearGradient>
     <linearGradient id="badge" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#12333b"/>
-      <stop offset="100%" stop-color="#081417"/>
+      <stop offset="0%" stop-color="#12233F"/>
+      <stop offset="100%" stop-color="#0F172A"/>
     </linearGradient>
-    <clipPath id="disc"><circle cx="512" cy="512" r="360"/></clipPath>
+    <linearGradient id="arm" x1="10%" y1="0%" x2="90%" y2="100%">
+      <stop offset="0%" stop-color="#22D3EE"/>
+      <stop offset="55%" stop-color="#3B82F6"/>
+      <stop offset="100%" stop-color="#1E3A5F"/>
+    </linearGradient>
+    <radialGradient id="eye" cx="45%" cy="40%" r="60%">
+      <stop offset="0%" stop-color="#FFB067"/>
+      <stop offset="60%" stop-color="#FF8C3A"/>
+      <stop offset="100%" stop-color="#F26A1B"/>
+    </radialGradient>
   </defs>
 
-  <!-- App badge (rounded square) -->
+  <!-- App badge -->
   <rect x="64" y="64" width="896" height="896" rx="200" fill="url(#badge)"/>
-  <rect x="64" y="64" width="896" height="896" rx="200" fill="none" stroke="#1c4a4f" stroke-width="4"/>
+  <rect x="64" y="64" width="896" height="896" rx="200" fill="none" stroke="#2563EB" stroke-opacity="0.35" stroke-width="4"/>
 
-  <!-- Scope disc -->
-  <circle cx="512" cy="512" r="360" fill="url(#scope)"/>
-
-  <g clip-path="url(#disc)">
-    <!-- Sweep wedge -->
-    <path d="M512 512 L512 152 A360 360 0 0 1 826 332 Z" fill="url(#sweep)"/>
-    <!-- Leading edge of sweep -->
-    <line x1="512" y1="512" x2="512" y2="152" stroke="#ff8c3a" stroke-width="6" stroke-linecap="round"/>
-
-    <!-- Range rings -->
-    <g fill="none" stroke="#2f7d6e" stroke-opacity="0.55" stroke-width="3">
-      <circle cx="512" cy="512" r="90"/>
-      <circle cx="512" cy="512" r="180"/>
-      <circle cx="512" cy="512" r="270"/>
-      <circle cx="512" cy="512" r="358"/>
-    </g>
-    <!-- Crosshairs -->
-    <g stroke="#2f7d6e" stroke-opacity="0.45" stroke-width="3">
-      <line x1="152" y1="512" x2="872" y2="512"/>
-      <line x1="512" y1="152" x2="512" y2="872"/>
-    </g>
-
-    <!-- Reflectivity echo blob (green->yellow->red) -->
-    <g opacity="0.95">
-      <ellipse cx="640" cy="600" rx="70" ry="52" fill="#2fbf4f"/>
-      <ellipse cx="655" cy="595" rx="42" ry="32" fill="#e8d43a"/>
-      <ellipse cx="668" cy="592" rx="20" ry="16" fill="#e23b2e"/>
-    </g>
-    <ellipse cx="410" cy="430" rx="40" ry="28" fill="#2fbf4f" opacity="0.75"/>
+  <!-- Faint range rings for radar identity -->
+  <g fill="none" stroke="#2563EB" stroke-opacity="0.12" stroke-width="5">
+    <circle cx="512" cy="512" r="300"/>
+    <circle cx="512" cy="512" r="390"/>
   </g>
 
-  <!-- Center hub -->
-  <circle cx="512" cy="512" r="16" fill="#ff8c3a"/>
-  <circle cx="512" cy="512" r="16" fill="none" stroke="#081417" stroke-width="4"/>
+  <!-- Cyclone mark, centered and scaled to fill the badge -->
+  <g transform="translate(102.4 102.4) scale(1.6)">
+    <g fill="url(#arm)">
+      <path d="M262 96 C356 104 430 178 424 276 C420 340 380 384 330 392 C368 350 372 292 340 258 C388 268 402 214 372 172 C338 124 292 108 262 96 Z"/>
+      <path transform="rotate(180 256 256)" d="M262 96 C356 104 430 178 424 276 C420 340 380 384 330 392 C368 350 372 292 340 258 C388 268 402 214 372 172 C338 124 292 108 262 96 Z"/>
+    </g>
+    <circle cx="256" cy="256" r="34" fill="url(#eye)"/>
+    <circle cx="256" cy="256" r="34" fill="none" stroke="#0F172A" stroke-width="5"/>
+  </g>
 </svg>

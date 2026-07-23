@@ -1,66 +1,225 @@
-# rustywx
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/header-dark.svg">
+    <img src="assets/header.svg" alt="rustywx — live NEXRAD Level II radarscope, in Rust" width="820">
+  </picture>
+</p>
 
-## License
+<p align="center">
+  <a href="https://github.com/kerryhatcher/rustywx/actions/workflows/ci.yml"><img src="https://github.com/kerryhatcher/rustywx/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://crates.io/crates/rustywx"><img src="https://img.shields.io/crates/v/rustywx.svg" alt="crates.io"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" alt="License: AGPL-3.0"></a>
+  <img src="https://img.shields.io/badge/rust-edition%202024-orange.svg" alt="Rust edition 2024">
+  <a href="https://github.com/kerryhatcher/rustywx/releases"><img src="https://img.shields.io/github/v/release/kerryhatcher/rustywx?label=release" alt="Latest release"></a>
+</p>
+
+**rustywx** is a desktop weather app that streams live NEXRAD Level II Doppler
+data straight from NOAA's public AWS archive and renders it on a pannable,
+zoomable map — reflectivity, velocity, and spectrum width — layered with live
+NWS warning polygons, National Hurricane Center tropical guidance, and a local
+forecast.
+
+<p align="center">
+  <img src="assets/screenshot-radar.png" alt="rustywx showing live radar over the Southeast US with the NHC tropical-cyclone panel open" width="820">
+</p>
+
+<p align="center">
+  <img src="assets/screenshot-forecast.png" alt="rustywx forecast view — current conditions, 7-day outlook, and hourly rain chance" width="640">
+</p>
+
+## ✨ Features
+
+- **📡 Live Level II data** — pulls the newest volume scans from the public
+  `unidata-nexrad-level2` S3 bucket. No AWS account, no API key.
+- **🗺️ Pannable radar map** — radar echoes rendered over a zoomable
+  geographic basemap with cities and state / county borders.
+- **🎨 Three products** — Reflectivity, Velocity, and Spectrum Width, on
+  NWS-style color tables.
+- **🎚️ Tilt selector** — step through elevation angles with live VCP and
+  Nyquist-velocity readout.
+- **⚠️ NWS alerts** — tornado / severe-thunderstorm warning and watch polygons
+  overlaid in real time, with live counts.
+- **🌀 Tropical guidance** — National Hurricane Center tracks, forecast cones,
+  wind probabilities, and graphics products (5-day cone, key messages, wind
+  field, peak surge) with the full public advisory text.
+- **🌤️ Local forecast** — city search, current conditions, a 7-day outlook,
+  and an hourly rain-chance chart.
+- **🧹 TDBZ clutter filter** — knock out wind-turbine and ground clutter, with
+  adjustable sensitivity.
+- **⏱️ Auto-refresh** — configurable poll interval (default 2 min) with smooth
+  animation between volumes.
+- **⌨️ Keyboard-driven** — full shortcut overlay (press <kbd>?</kbd>).
+
+## 🚀 Quick Start
+
+```bash
+cargo install rustywx
+rustywx
+```
+
+That's it — no credentials, no config. rustywx opens on **KJGX (Robins AFB,
+Macon GA)** and starts pulling live scans. You need a Rust toolchain
+([rustup](https://rustup.rs)) and network access.
+
+Prefer not to build? Grab a prebuilt binary from the
+[Releases](https://github.com/kerryhatcher/rustywx/releases) page.
+
+## 📑 Table of Contents
+
+- [Features](#-features)
+- [Quick Start](#-quick-start)
+- [Why rustywx](#-why-rustywx)
+- [Installation](#-installation)
+- [Usage](#-usage)
+- [Products & Controls](#-products--controls)
+- [Architecture](#-architecture)
+- [Contributing](#-contributing)
+- [License](#-license)
+- [Acknowledgements](#-acknowledgements)
+
+## 🤔 Why rustywx
+
+Weather-radar viewers tend to be either heavyweight desktop suites or
+browser tabs at the mercy of a vendor's tile server. rustywx is a small,
+fast, native alternative: it talks directly to the same public Level II
+archive the pros use, decodes the raw Doppler volumes locally, and renders
+them on the GPU with the [ply-engine](https://github.com/TheRedDeveloper/ply-engine)
+graphics framework. Point it at a NEXRAD site and you have a self-contained
+radarscope — no subscriptions, no telemetry, no middleman.
+
+## 📦 Installation
+
+### From crates.io (recommended)
+
+Requires a stable Rust toolchain (edition 2024, **Rust 1.85+**).
+
+```bash
+cargo install rustywx
+rustywx
+```
+
+<details>
+<summary>Prebuilt release binaries</summary>
+
+Prebuilt binaries for Linux (x86-64 / ARM64), macOS (Apple Silicon), and
+Windows (x86-64) are attached to each
+[GitHub Release](https://github.com/kerryhatcher/rustywx/releases). Download,
+unpack, and run.
+
+</details>
+
+<details>
+<summary>From source (for development)</summary>
+
+```bash
+git clone https://github.com/kerryhatcher/rustywx
+cd rustywx
+just run          # or: cd app && cargo run --release
+```
+
+`just run` launches from the `app/` directory so runtime assets resolve
+correctly during development. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+</details>
+
+<details>
+<summary>Platform notes</summary>
+
+| Platform | Notes |
+|----------|-------|
+| **macOS** | Apple Silicon builds are published; Intel builds from source. |
+| **Linux** | Needs a GPU/Vulkan-capable environment and standard build tooling (`build-essential`, `pkg-config`). |
+| **Windows** | x86-64 build published. |
+
+The app renders on the GPU via ply-engine, so a working graphics stack is
+required — headless servers won't display a window.
+
+</details>
+
+## 🛠️ Usage
+
+```bash
+rustywx                                     # launch the scope
+```
+
+Developing on rustywx? Run the tests from the repo:
+
+```bash
+cargo test                                  # unit tests, no network
+cargo test --test network -- --ignored      # live end-to-end fetch/decode
+```
+
+On launch, rustywx opens on your default site and begins polling. Switch
+products, change tilt, and toggle overlays from the toolbar or the keyboard.
+Open the ⚙️ settings panel to change the default site, poll interval, overlay
+defaults, animation level, and clutter-filter sensitivity — settings persist
+across restarts.
+
+See the **[User Guide](USER_GUIDE.md)** for a full walkthrough of the display,
+how to read each product, and every setting.
+
+## 🎛️ Products & Controls
+
+| Product | Shows | Reading it |
+|---------|-------|------------|
+| **Reflectivity** | Precipitation intensity | Red/magenta = heavy rain or hail; green/blue = light. |
+| **Velocity** | Radial motion | Green = toward radar (inbound); red = away (outbound). |
+| **Spectrum Width** | Velocity dispersion | High values flag turbulence, shear, and rotation. |
+
+Press <kbd>?</kbd> in-app for the full keyboard-shortcut overlay (product
+selection, tilt control, overlay toggles, settings, quit).
+
+## 🏗️ Architecture
+
+The app is the `rustywx` crate under [`app/`](app/), on the ply-engine backend:
+
+| Module | Responsibility |
+|--------|----------------|
+| `main.rs` | App entry, async game loop, frame drawing |
+| `state.rs` | App state — selected site, overlays, animation |
+| `data.rs` | Background worker: poll S3 → download → decode → channel |
+| `model.rs` | Thin scan model (product → sweeps → radials → gates) |
+| `scope.rs` | PPI rasterizer and overlay painting |
+| `colors.rs` | NWS-style color tables |
+| `geo.rs` | Range/bearing and polar → screen projection |
+| `cities.rs`, `borders.rs` | Scope overlays — city markers, state boundaries |
+| `alerts.rs`, `nhc.rs` | NWS alerts and NHC tropical overlays |
+| `cache.rs`, `rle.rs` | Ply-storage scan cache + RLE compression |
+| `widgets/` | Reusable glass-panel UI widgets |
+
+Design docs live in [`docs/`](docs/). For build/test/lint commands and how to
+extend the app, see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+## 🤝 Contributing
+
+Contributions are welcome. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for dev
+setup, the module map, and the build/test/lint workflow, and please read our
+[Code of Conduct](CODE_OF_CONDUCT.md). Security issues? See
+[SECURITY.md](SECURITY.md).
+
+## 💬 Support
+
+- **Bugs & feature requests:** [open an issue](https://github.com/kerryhatcher/rustywx/issues)
+- **Questions & ideas:** [GitHub Discussions](https://github.com/kerryhatcher/rustywx/discussions)
+- **Changelog:** see [CHANGELOG.md](CHANGELOG.md) or the
+  [Releases](https://github.com/kerryhatcher/rustywx/releases) page
+
+## 📄 License
 
 - **Code:** [AGPL-3.0-only](LICENSE)
-- **Custom graphics, artwork, and assets:** [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/legalcode.en)
+- **Custom graphics, artwork, and assets:**
+  [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/legalcode.en)
 
----
+## 🙏 Acknowledgements
 
-A Rust desktop radarscope for the Macon, GA area. Fetches live NEXRAD
-Level II data for KJGX (Robins AFB) from the public AWS archive bucket
-(`unidata-nexrad-level2`), decodes it, and renders a classic PPI scope
-with the ply-engine graphics framework.
-
-## Features
-
-- Reflectivity, Velocity, and Spectrum Width products
-- Elevation tilt selector with current VCP and Nyquist velocity display
-- Configurable auto-refresh (default 2 minutes)
-- Range rings, cardinal spokes, city markers, and state border lines
-- NWS warning/watch polygon overlay and state/county borders
-- National Hurricane Center (NHC) tropical storm overlay
-- Configurable settings panel: default site, poll interval, overlay defaults, animation level, TDBZ clutter filter sensitivity
-- Keyboard shortcuts overlay (press ?)
-
-## Run
-
-    just run
-
-Or manually:
-
-    cd app && cargo run --release
-
-**Note:** The current working directory matters — assets are loaded from the `app/` 
-directory, so the above paths are required.
-
-Requires network access. No AWS credentials needed — the bucket is public.
-
-See [`USER_GUIDE.md`](USER_GUIDE.md) for a full walkthrough of the
-controls, how to read the display, and configuring settings.
-
-## Test
-
-    cargo test                                  # unit tests, no network
-    cargo test --test network -- --ignored      # live end-to-end fetch/decode
-
-## Architecture
-
-The app is the `rustywx` crate under `app/` (ply-engine backend):
-
-- `app/src/main.rs` — app entry, async game loop, and frame drawing
-- `app/src/state.rs` — app state (selected site, overlays, animation)
-- `app/src/data.rs` — background worker: poll S3 → download → decode → channel
-- `app/src/model.rs` — thin scan model (product → sweeps → radials → gates)
-- `app/src/scope.rs` — PPI rasterizer and overlay painting
-- `app/src/colors.rs` — NWS-style color tables
-- `app/src/geo.rs` — range/bearing and polar→screen projection
-- `app/src/cities.rs` — city markers for the scope overlay
-- `app/src/borders.rs` — fetches/caches US state boundary lines for the overlay
-- `app/src/alerts.rs`, `nhc.rs` — NWS alerts and NHC tropical overlays
-- `app/src/cache.rs`, `rle.rs` — Ply-storage scan cache + RLE compression
-- `app/src/widgets/` — reusable glass-panel UI widgets
-
-Design docs live in `docs/superpowers/`. For build/test/lint commands, the
-module map, and how to extend the app, see
-[`CONTRIBUTING.md`](CONTRIBUTING.md).
+- **[NOAA](https://www.noaa.gov/) / Unidata** for the public
+  `unidata-nexrad-level2` Level II archive on AWS.
+- **[NWS](https://www.weather.gov/)** for the alerts feed and
+  **[NHC](https://www.nhc.noaa.gov/)** for tropical-cyclone products.
+- **[Open-Meteo](https://open-meteo.com)**
+  ([open-meteo/open-meteo](https://github.com/open-meteo/open-meteo)) for the
+  forecast and geocoding APIs behind the Forecast view.
+- The **[nexrad](https://github.com/danielway/nexrad)** crates
+  (`nexrad-data`, `nexrad-model`) that decode the raw Level II volumes.
+- Built with **[ply-engine](https://github.com/TheRedDeveloper/ply-engine)**,
+  the graphics framework powering the UI and rendering.
