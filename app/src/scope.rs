@@ -5,7 +5,7 @@
 use crate::alerts::Alert;
 use crate::borders::Ring;
 use crate::colors;
-use crate::dealias::dealias_radial;
+use crate::dealias::dealias_sweep;
 use crate::geo::{self, RadarSite};
 use crate::location::Coords;
 use crate::model::{Product, RadialData, SweepData};
@@ -93,17 +93,33 @@ fn clean_sweep(
         }
     }
 
-    // 1D gate-to-gate Nyquist unfold (FMH-11B §4.3.3): runs before SD-censoring
-    // so the censor's scatter test sees dealiased (continuous) values rather
-    // than the raw aliased sign-flips. No-op per radial when Nyquist is
-    // unknown (`nyquist_ms <= 0.0`) — see `dealias::dealias_radial`.
+    // 2D Nyquist unfold — gate-to-gate then azimuth-to-azimuth (FMH-11B
+    // §4.3.3 / FMH-11D §3.3.3): runs before SD-censoring so the censor's
+    // scatter test sees dealiased (continuous) values rather than the raw
+    // aliased sign-flips. No-op when Nyquist is unknown (`nyquist_ms <=
+    // 0.0`) — see `dealias::dealias_sweep`.
     //
     // ponytail: recomputed per render, per sweep. Velocity is one sweep at a
     // time, so this is cheap; if profiling ever says otherwise, memoize on
-    // the sweep at ingestion instead (Stage C moves dealiasing there anyway).
+    // the sweep at ingestion instead.
     if product == Product::Velocity && vel_dealias_enabled && cleaned.nyquist_ms > 0.0 {
-        for radial in &mut cleaned.radials {
-            radial.gates = dealias_radial(&radial.gates, cleaned.nyquist_ms);
+        let mut az_order: Vec<usize> = (0..cleaned.radials.len()).collect();
+        az_order.sort_by(|&a, &b| {
+            cleaned.radials[a]
+                .azimuth_deg
+                .total_cmp(&cleaned.radials[b].azimuth_deg)
+        });
+        let azimuths: Vec<f32> = az_order
+            .iter()
+            .map(|&i| cleaned.radials[i].azimuth_deg)
+            .collect();
+        let gates: Vec<Vec<Option<f32>>> = az_order
+            .iter()
+            .map(|&i| cleaned.radials[i].gates.clone())
+            .collect();
+        let mut dealiased = dealias_sweep(&azimuths, &gates, cleaned.nyquist_ms);
+        for (sorted_idx, &radial_idx) in az_order.iter().enumerate() {
+            cleaned.radials[radial_idx].gates = std::mem::take(&mut dealiased[sorted_idx]);
         }
     }
 
