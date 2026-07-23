@@ -191,15 +191,24 @@ pub fn dbz_color(dbz: f32) -> [u8; 4] {
 pub const DBZ_LUT_MIN: f32 = 0.0;
 pub const DBZ_LUT_MAX: f32 = 80.0;
 
+/// Width of one reflectivity color band in the GPU LUT — the classic NWS
+/// 5 dBZ step, matching `DBZ_LEGEND`'s anchor spacing.
+pub const DBZ_BAND_STEP: f32 = 5.0;
+
 /// Build a 256×1 RGBA lookup texture of the reflectivity palette, one entry per
-/// normalized dBZ step over [`DBZ_LUT_MIN`, `DBZ_LUT_MAX`]. Sampled with Nearest
-/// filtering on the GPU it reproduces the exact discrete `dbz_color` steps,
-/// while the value field it indexes is interpolated — crisp bands, smooth edges.
+/// normalized dBZ step over [`DBZ_LUT_MIN`, `DBZ_LUT_MAX`], quantized to
+/// [`DBZ_BAND_STEP`]-wide bands (each entry is `dbz_color` at its band floor,
+/// i.e. the NWS anchor color). Sampled with Nearest filtering on the GPU the
+/// steps stay razor-sharp at any zoom while the value field it indexes is
+/// interpolated — hard color-band edges, smooth flowing boundaries. A smooth
+/// spline ramp here would make color borders exactly as soft as the value
+/// gradient, defeating the crisp-band goal of the shader path.
 pub fn dbz_lut() -> [u8; 256 * 4] {
     let mut lut = [0u8; 256 * 4];
     for i in 0..256 {
         let dbz = DBZ_LUT_MIN + (i as f32 / 255.0) * (DBZ_LUT_MAX - DBZ_LUT_MIN);
-        lut[i * 4..i * 4 + 4].copy_from_slice(&dbz_color(dbz));
+        let band = (dbz / DBZ_BAND_STEP).floor() * DBZ_BAND_STEP;
+        lut[i * 4..i * 4 + 4].copy_from_slice(&dbz_color(band));
     }
     lut
 }
@@ -408,5 +417,35 @@ mod tests {
         // At t=0 returns p1, at t=1 returns p2.
         assert!((catmull_rom(0.0, 10.0, 20.0, 30.0, 0.0) - 10.0).abs() < 1e-4);
         assert!((catmull_rom(0.0, 10.0, 20.0, 30.0, 1.0) - 20.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn dbz_lut_is_banded_in_5_dbz_steps() {
+        // The GPU LUT is quantized to classic 5 dBZ bands so the Nearest-
+        // filtered palette lookup produces razor-sharp band edges; a smooth
+        // ramp here would make color borders exactly as soft as the value
+        // gradient. Entry i covers dbz = i/255 * 80.
+        let lut = super::dbz_lut();
+        let entry = |i: usize| [lut[i * 4], lut[i * 4 + 1], lut[i * 4 + 2], lut[i * 4 + 3]];
+
+        // Below 5 dBZ: transparent (entry 15 = 4.7 dBZ).
+        assert_eq!(entry(0), [0, 0, 0, 0]);
+        assert_eq!(entry(15), [0, 0, 0, 0]);
+
+        // 5-10 dBZ band (entries 16..=31): flat at the 5 dBZ anchor color.
+        assert_eq!(entry(16), [0x04, 0xe9, 0xe7, 0xff]);
+        assert_eq!(entry(31), [0x04, 0xe9, 0xe7, 0xff]);
+
+        // Hard step at the 10 dBZ boundary (entry 32 = 10.04 dBZ).
+        assert_eq!(entry(32), [0x01, 0x9f, 0xf4, 0xff]);
+        assert_ne!(entry(31), entry(32));
+
+        // 20-25 dBZ band is flat green from the 20 dBZ anchor.
+        // Entry 64 = 20.1 dBZ, entry 79 = 24.8 dBZ.
+        assert_eq!(entry(64), [0x02, 0xfd, 0x02, 0xff]);
+        assert_eq!(entry(64), entry(79));
+
+        // Top of range clamps to the last anchor (white cap).
+        assert_eq!(entry(255), [0xfd, 0xfd, 0xfd, 0xff]);
     }
 }
