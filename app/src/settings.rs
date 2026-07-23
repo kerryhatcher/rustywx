@@ -215,6 +215,12 @@ pub struct Settings {
     /// when the fuzzy classifier is on.
     #[serde(default = "default_nonmet_threshold")]
     pub nonmet_threshold: f32,
+    /// Whether a bounded azimuthal gap-fill pass cosmetically heals thin
+    /// radial "banding gap" slits in Reflectivity (short runs of adjacent
+    /// BelowThreshold radials from genuine Level II data gaps, not QC).
+    /// Default OFF — honest rendering by default (see `scope::clean_sweep`).
+    #[serde(default)]
+    pub refl_gap_fill_enabled: bool,
 }
 
 impl Default for Settings {
@@ -249,6 +255,7 @@ impl Default for Settings {
             vel_dealias_enabled: true,
             nonmet_fuzzy_enabled: false,
             nonmet_threshold: crate::nonmet::NONMET_THRESHOLD_DEFAULT,
+            refl_gap_fill_enabled: false,
         }
     }
 }
@@ -282,6 +289,7 @@ mod tests {
         assert!(settings.vel_dealias_enabled);
         assert!(!settings.nonmet_fuzzy_enabled);
         assert_eq!(settings.nonmet_threshold, 0.5);
+        assert!(!settings.refl_gap_fill_enabled);
     }
 
     #[test]
@@ -316,6 +324,7 @@ mod tests {
             vel_dealias_enabled: false,
             nonmet_fuzzy_enabled: true,
             nonmet_threshold: 0.6,
+            refl_gap_fill_enabled: true,
         };
         let json = serde_json::to_string(&settings).expect("serialize");
         let restored: Settings = serde_json::from_str(&json).expect("deserialize");
@@ -376,5 +385,7 @@ mod tests {
         // Missing fuzzy non-met fields default off/0.5 (ship opt-in).
         assert!(!s.nonmet_fuzzy_enabled);
         assert_eq!(s.nonmet_threshold, 0.5);
+        // Missing gap-fill field defaults off (honest rendering by default).
+        assert!(!s.refl_gap_fill_enabled);
     }
 }
