@@ -39,11 +39,11 @@ No UI changes for activation (a site-picker entry may follow later).
   two events.
 - `lookup(key) -> Option<&DemoEvent>` and `available() -> impl Iterator` for the
   error listing.
-- `maybe_gunzip(bytes: Vec<u8>) -> Result<Vec<u8>>` — sniffs the gzip magic
-  (`1f 8b`) and decompresses via `flate2` (new direct dependency; already in the
-  tree transitively through `zip`). 2013-era archive volumes are gzip-wrapped;
-  `nexrad_data::volume::File` cannot decode them raw (documented by an existing
-  test in `data.rs`).
+- ~~`maybe_gunzip` via a new `flate2` dependency~~ **Amended:**
+  `nexrad_data::volume::File::decompress()` already sniffs and unwraps the
+  gzip wrapping of pre-2016 archive volumes natively — no new dependency and
+  no helper needed. The demo decode path simply calls `.decompress()` (a
+  no-op for modern files).
 
 ### `data.rs`
 
@@ -52,8 +52,9 @@ No UI changes for activation (a site-picker entry may follow later).
   live path cannot drift.
 - `fetch_demo_scan(event) -> Result<ScanData>`:
   1. Raw volume bytes from Ply storage cache key `demo_volume_<volume_name>`,
-     else `nexrad_data::aws::archive` download (match the identifier by name in
-     `list_files(site, date)`), then cache the raw bytes.
+     else `nexrad_data::aws::archive` download. **Amended:** no `list_files`
+     matching needed — `download_file(Identifier::new(volume_name))` derives
+     the full S3 key from the canonical volume name alone. Cache the raw bytes.
   2. `maybe_gunzip` → `VolumeFile::new` → shared decode helper.
 - Local-path variant: read the file, same gunzip + decode, no caching.
 
