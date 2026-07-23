@@ -305,6 +305,7 @@ fn encode_sweeps(buf: &mut Vec<u8>, sweeps: &[SweepData]) {
         buf.extend_from_slice(&sweep.elevation_deg.to_le_bytes());
         buf.extend_from_slice(&sweep.first_gate_km.to_le_bytes());
         buf.extend_from_slice(&sweep.gate_spacing_km.to_le_bytes());
+        buf.extend_from_slice(&sweep.nyquist_ms.to_le_bytes());
         buf.extend_from_slice(&(sweep.radials.len() as u32).to_le_bytes());
         for radial in &sweep.radials {
             buf.extend_from_slice(&radial.azimuth_deg.to_le_bytes());
@@ -358,6 +359,7 @@ fn decode_sweeps(r: &mut Reader) -> Result<Vec<SweepData>, String> {
             let elevation_deg = r.read_f32()?;
             let first_gate_km = r.read_f32()?;
             let gate_spacing_km = r.read_f32()?;
+            let nyquist_ms = r.read_f32()?;
             let radial_count = r.read_u32()?;
             let radials = (0..radial_count)
                 .map(|_| {
@@ -394,6 +396,7 @@ fn decode_sweeps(r: &mut Reader) -> Result<Vec<SweepData>, String> {
                 radials,
                 first_gate_km,
                 gate_spacing_km,
+                nyquist_ms,
             })
         })
         .collect()
@@ -462,6 +465,7 @@ mod tests {
                 }],
                 first_gate_km: 2.125,
                 gate_spacing_km: 0.25,
+                nyquist_ms: 0.0,
             }],
             velocity: vec![],
             spectrum_width: vec![],
@@ -520,6 +524,15 @@ mod tests {
     }
 
     #[test]
+    fn nyquist_survives_round_trip() {
+        let mut scan = sample_scan();
+        scan.reflectivity[0].nyquist_ms = 26.4;
+        let bytes = scan_to_bytes(&scan);
+        let restored = bytes_to_scan(&bytes).unwrap();
+        assert_eq!(restored.reflectivity[0].nyquist_ms, 26.4);
+    }
+
+    #[test]
     fn bytes_to_scan_rejects_truncated_input() {
         let bytes = scan_to_bytes(&sample_scan());
         let truncated = &bytes[..bytes.len() - 3];
@@ -537,6 +550,7 @@ mod tests {
                 elevation_deg: s as f32 * 0.5,
                 first_gate_km: 2.125,
                 gate_spacing_km: 0.25,
+                nyquist_ms: 26.4,
                 radials: (0..360)
                     .map(|az| RadialData {
                         azimuth_deg: az as f32,

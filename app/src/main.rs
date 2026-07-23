@@ -216,6 +216,7 @@ fn synthetic_sweep() -> SweepData {
         radials,
         first_gate_km: scope::FIRST_GATE_KM,
         gate_spacing_km: scope::GATE_SPACING_KM,
+        nyquist_ms: 0.0,
     }
 }
 
@@ -3453,7 +3454,15 @@ fn update_scan_status(state: &mut AppState, suffix: &str) {
             .unwrap_or_default();
         let vcp_num_enum = nexrad_model::data::VCPNumber::from_number(scan.vcp_number);
         let vcp_mode = vcp_mode_label(vcp_num_enum);
-        let nyquist = format_nyquist_velocity();
+        // Nyquist is a velocity-product quantity; show it for the current
+        // tilt regardless of which product is on screen (matches the
+        // elevation/VCP context info alongside it).
+        let nyquist_ms = scan
+            .sweeps(Product::Velocity)
+            .get(state.tilt_index)
+            .map(|sweep| sweep.nyquist_ms)
+            .unwrap_or(0.0);
+        let nyquist = format_nyquist_velocity(nyquist_ms);
         state.status_text = format!(
             "{} — {} — {} tilt(s){} — VCP {} — {} — {}{}",
             scan.timestamp.format("%Y-%m-%d %H:%M UTC"),

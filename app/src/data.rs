@@ -6,6 +6,9 @@ use crate::model::ScanData;
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use nexrad_data::aws::archive::{Identifier, download_file, list_files};
+use nexrad_data::volume::File as VolumeFile;
+use nexrad_decode::messages::{Message, MessageContents};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
@@ -80,8 +83,65 @@ pub async fn fetch_latest_scan(
         .map_err(|e| anyhow!("downloading volume: {e}"))?;
 
     let scan = file.scan().map_err(|e| anyhow!("decoding volume: {e}"))?;
+    let nyquist_by_elev = nyquist_by_elevation(&file);
 
-    Ok(Some(ScanData::from_nexrad(&scan, timestamp)))
+    Ok(Some(ScanData::from_nexrad(
+        &scan,
+        timestamp,
+        &nyquist_by_elev,
+    )))
+}
+
+/// Nyquist velocity (m/s), by elevation number, recovered from Message 31
+/// Radial Data (Constant) Blocks in the volume.
+///
+/// `file.scan()` drops this converting to `nexrad_model::Radial` — see
+/// `docs/velocity-dealiasing-plan.md`. This is a second, cheap decode pass
+/// over the already-in-memory volume bytes; negligible next to the network
+/// fetch. Decode failures on individual records/messages are skipped — an
+/// absent map entry means "unknown" downstream (readout shows "—", dealias
+/// is a no-op), never a guess.
+fn nyquist_by_elevation(file: &VolumeFile) -> HashMap<u8, f32> {
+    let mut nyquist = HashMap::new();
+    let Ok(records) = file.records() else {
+        return nyquist;
+    };
+    for record in records {
+        let record = if record.compressed() {
+            match record.decompress() {
+                Ok(r) => r,
+                Err(_) => continue,
+            }
+        } else {
+            record
+        };
+        let Ok(messages) = record.messages() else {
+            continue;
+        };
+        collect_nyquist(&messages, &mut nyquist);
+    }
+    nyquist
+}
+
+/// Fold each Message 31's Radial Data Block Nyquist into `nyquist`, keyed by
+/// elevation number. Nyquist is constant within a Doppler cut, so the first
+/// value seen for an elevation number wins; a raw value of 0 means the block
+/// was absent/unset and is skipped, not recorded as a real zero.
+fn collect_nyquist(messages: &[Message<'_>], nyquist: &mut HashMap<u8, f32>) {
+    for message in messages {
+        let MessageContents::DigitalRadarData(m) = message.contents() else {
+            continue;
+        };
+        let Some(block) = m.radial_data_block() else {
+            continue;
+        };
+        let value = block.nyquist_velocity_raw() as f32 * 0.01;
+        if value > 0.0 {
+            nyquist
+                .entry(m.header().elevation_number())
+                .or_insert(value);
+        }
+    }
 }
 
 /// Spawn the background polling thread. It owns a current-thread tokio
@@ -187,5 +247,61 @@ mod tests {
         assert_eq!(retry_delay(2, custom), Duration::from_secs(60));
         // Capped at 600s even after many consecutive errors.
         assert_eq!(retry_delay(10, custom), Duration::from_secs(600));
+    }
+
+    /// A single real Message 31 (Digital Radar Data) frame, borrowed from
+    /// `nexrad-decode`'s own test fixtures (`tests/data/messages/`,
+    /// MIT-licensed) so this test exercises the real Radial Data Block
+    /// layout rather than hand-rolled bytes.
+    const DIGITAL_RADAR_DATA_FULL: &[u8] = include_bytes!("testdata/digital_radar_data_full.bin");
+
+    #[test]
+    fn collect_nyquist_reads_real_radial_data_block() {
+        let messages = nexrad_decode::messages::decode_messages(DIGITAL_RADAR_DATA_FULL).unwrap();
+        let mut nyquist = HashMap::new();
+        collect_nyquist(&messages, &mut nyquist);
+
+        assert_eq!(nyquist.len(), 1, "fixture carries exactly one radial");
+        let (&elevation_number, &value) = nyquist.iter().next().unwrap();
+        assert_eq!(elevation_number, 1);
+        assert!(
+            (value - 8.85).abs() < 0.01,
+            "expected ~8.85 m/s, got {value}"
+        );
+    }
+
+    #[test]
+    fn collect_nyquist_skips_messages_without_radial_data_block() {
+        // Empty input decodes to zero messages — nothing to fold, no panic.
+        let messages = nexrad_decode::messages::decode_messages(&[0u8; 0]).unwrap_or_default();
+        let mut nyquist = HashMap::new();
+        collect_nyquist(&messages, &mut nyquist);
+        assert!(nyquist.is_empty());
+    }
+
+    #[test]
+    fn collect_nyquist_first_value_wins_per_elevation() {
+        // Folding the same elevation number's radial into an existing map
+        // entry a second time (simulating a later radial in the same cut)
+        // must not disturb the value recorded by the first.
+        let messages = nexrad_decode::messages::decode_messages(DIGITAL_RADAR_DATA_FULL).unwrap();
+        let mut nyquist = HashMap::new();
+        collect_nyquist(&messages, &mut nyquist);
+        let first_value = *nyquist.values().next().unwrap();
+
+        collect_nyquist(&messages, &mut nyquist);
+        assert_eq!(nyquist.len(), 1);
+        assert_eq!(*nyquist.values().next().unwrap(), first_value);
+    }
+
+    #[test]
+    fn nyquist_by_elevation_returns_empty_map_on_bad_file() {
+        // A gzip-compressed file can't be decoded without a `decompress()`
+        // pass first (`fetch_latest_scan` doesn't do that here); `records()`
+        // fails and the function degrades to "unknown" rather than
+        // propagating an error or panicking.
+        let file = VolumeFile::new(vec![0x1f, 0x8b, 0, 0]);
+        assert!(file.compressed());
+        assert!(nyquist_by_elevation(&file).is_empty());
     }
 }

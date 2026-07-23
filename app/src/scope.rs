@@ -47,6 +47,7 @@ fn clean_sweep(
         radials: sweep.radials.clone(),
         first_gate_km: sweep.first_gate_km,
         gate_spacing_km: sweep.gate_spacing_km,
+        nyquist_ms: sweep.nyquist_ms,
     };
 
     // CC-gating: null Reflectivity gates whose co-located correlation
@@ -1335,6 +1336,7 @@ mod tests {
             }],
             first_gate_km: 2.125,
             gate_spacing_km: 0.25,
+            nyquist_ms: 0.0,
         };
 
         let velocity_pixels = rasterize(
@@ -1393,6 +1395,7 @@ mod tests {
             radials: vec![radial(0.0, gates)],
             first_gate_km: 1.0,
             gate_spacing_km: 1.0,
+            nyquist_ms: 0.0,
         };
 
         let size_px = 400;
@@ -1522,6 +1525,7 @@ mod tests {
             radials: vec![radial(0.0, gates)],
             first_gate_km: 2.125,
             gate_spacing_km: 0.25,
+            nyquist_ms: 0.0,
         };
 
         let removed_count = |kernel_size: usize| {
@@ -1560,12 +1564,14 @@ mod tests {
             radials: vec![radial(0.0, vec![Some(30.0), Some(40.0)])],
             first_gate_km: 2.125,
             gate_spacing_km: 0.25,
+            nyquist_ms: 0.0,
         };
         let cc_sweep = SweepData {
             elevation_deg: 0.5,
             radials: vec![radial(0.0, vec![Some(0.55), Some(0.98)])],
             first_gate_km: 2.125,
             gate_spacing_km: 0.25,
+            nyquist_ms: 0.0,
         };
         let cleaned = clean_sweep(
             &ref_sweep,
@@ -1631,6 +1637,7 @@ mod tests {
             radials: vec![radial(0.0, gates.clone())],
             first_gate_km: 2.125,
             gate_spacing_km: 0.25,
+            nyquist_ms: 0.0,
         };
 
         // With floor enabled (default), gate 312 should be nulled.
@@ -1702,6 +1709,7 @@ mod tests {
             radials,
             first_gate_km: 2.125,
             gate_spacing_km: 0.25,
+            nyquist_ms: 0.0,
         };
 
         let center_gate_after = |vel_sd_censor_enabled: bool| {
@@ -1762,6 +1770,7 @@ mod tests {
             radials: refl_radials,
             first_gate_km: 2.125,
             gate_spacing_km: 0.25,
+            nyquist_ms: 0.0,
         };
         let refl_cleaned = clean_sweep(
             &refl_sweep,
