@@ -83,7 +83,7 @@ Weather-radar viewers tend to be either heavyweight desktop suites or
 browser tabs at the mercy of a vendor's tile server. rustywx is a small,
 fast, native alternative: it talks directly to the same public Level II
 archive the pros use, decodes the raw Doppler volumes locally, and renders
-them on the GPU with the [ply-engine](https://crates.io/crates/ply-engine)
+them on the GPU with the [ply-engine](https://github.com/TheRedDeveloper/ply-engine)
 graphics framework. Point it at a NEXRAD site and you have a self-contained
 radarscope — no subscriptions, no telemetry, no middleman.
 
@@ -216,5 +216,10 @@ setup, the module map, and the build/test/lint workflow, and please read our
   `unidata-nexrad-level2` Level II archive on AWS.
 - **[NWS](https://www.weather.gov/)** for the alerts feed and
   **[NHC](https://www.nhc.noaa.gov/)** for tropical-cyclone products.
-- The Rust NEXRAD decoding crates that make the raw volumes readable.
-- Built with the **ply-engine** graphics framework.
+- **[Open-Meteo](https://open-meteo.com)**
+  ([open-meteo/open-meteo](https://github.com/open-meteo/open-meteo)) for the
+  forecast and geocoding APIs behind the Forecast view.
+- The **[nexrad](https://github.com/danielway/nexrad)** crates
+  (`nexrad-data`, `nexrad-model`) that decode the raw Level II volumes.
+- Built with **[ply-engine](https://github.com/TheRedDeveloper/ply-engine)**,
+  the graphics framework powering the UI and rendering.
