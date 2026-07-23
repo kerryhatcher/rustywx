@@ -518,7 +518,7 @@ mod tests {
     fn dealias_sweep_preserves_couplet_gate_against_azimuthal_majority() {
         // Radial 1 matches radial 0 (environmental 15 m/s) at every gate
         // except gate 4, where it reads -5.0 against radial 0's +25.0 — a
-        // localized couplet pair, not a mis-seeded radial. The 30 m/s
+        // localized couplet pair, not a offset-seeded radial. The 30 m/s
         // azimuthal jump at that one gate is well over Nyquist (a naive
         // per-gate check would "fix" it), but the other 7 gates vote for no
         // shift, and majority wins: gate 4 must survive untouched.
@@ -533,7 +533,7 @@ mod tests {
     }
 
     #[test]
-    fn dealias_sweep_preserves_couplet_in_mis_seeded_radial() {
+    fn dealias_sweep_preserves_couplet_in_offset_seeded_radial() {
         // Radial 1's true field matches radial 0 everywhere except a
         // couplet at gate 4 (25.0 -> -5.0) — but the whole radial was
         // seeded one interval high, so every gate (including the couplet)
@@ -549,10 +549,10 @@ mod tests {
         let interval = 2.0 * nyquist;
         let mut reference = vec![Some(15.0); 8];
         reference[4] = Some(25.0);
-        let mut mis_seeded = vec![Some(15.0 + interval); 8];
-        mis_seeded[4] = Some(-5.0 + interval);
+        let mut offset_seeded = vec![Some(15.0 + interval); 8];
+        offset_seeded[4] = Some(-5.0 + interval);
         let azimuths = vec![0.0, 1.0];
-        let out = dealias_sweep(&azimuths, &[reference, mis_seeded], nyquist);
+        let out = dealias_sweep(&azimuths, &[reference, offset_seeded], nyquist);
         assert!(
             (out[1][4].unwrap() - (-5.0)).abs() < 1e-3,
             "couplet gate must survive the whole-radial shift, not be nulled: got {:?}",
