@@ -147,14 +147,16 @@ pub async fn fetch_demo_scan(req: &DemoRequest, storage: Option<&Storage>) -> Re
 
     // Pre-2016 archive volumes are gzip-wrapped; decompress() is a no-op for
     // modern files.
-    let file = VolumeFile::new(bytes)
+    let decoded = VolumeFile::new(bytes)
         .decompress()
-        .map_err(|e| anyhow!("decompressing demo volume {volume_name}: {e}"))?;
+        .map_err(|e| anyhow!("decompressing demo volume {volume_name}: {e}"))
+        .and_then(|file| scan_from_volume(&file, timestamp));
 
-    match scan_from_volume(&file, timestamp) {
+    match decoded {
         Ok(scan) => Ok(scan),
         Err(e) => {
-            // Self-heal a corrupt cache entry so the next run re-downloads.
+            // Self-heal a corrupt cache entry — whether it failed gzip
+            // inflation or volume decode — so the next run re-downloads.
             if from_cache && let (Some(s), DemoRequest::Event(ev)) = (storage, req) {
                 let _ = s.remove(&demo_cache_key(ev.volume_name)).await;
             }
