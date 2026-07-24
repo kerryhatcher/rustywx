@@ -713,7 +713,10 @@ async fn main() {
     // found (see the settings-apply block below). Local to `main`, not
     // `AppState` — this isn't state the rest of the app needs to see.
     let mut had_explicit_site_pref = false;
-    let mut site_pref_resolved = false;
+    // Demo mode skips the persisted-site load entirely (the site is pinned to
+    // the demo scene), so there is no site preference to wait for — mark it
+    // resolved up front or the settings-applied gate below never opens.
+    let mut site_pref_resolved = demo_label.is_some();
     let mut settings_applied = false;
 
     loop {
