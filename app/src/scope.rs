@@ -8,11 +8,67 @@ use crate::colors;
 use crate::dealias::dealias_sweep;
 use crate::geo::{self, RadarSite};
 use crate::location::Coords;
+use crate::melting_layer::MeltingLayerHint;
 use crate::model::{Product, RadialData, SweepData};
 use crate::nhc::{ArrivalTimeContour, NhcBundle, WindProbContour};
 use crate::nonmet;
+use macroquad::material::{
+    Material, MaterialParams, gl_use_default_material, gl_use_material, load_material,
+};
 use macroquad::math::Vec2;
+use macroquad::miniquad::ShaderSource;
 use ply_engine::prelude::*;
+
+/// Vertex shader for the reflectivity palette material — standard macroquad
+/// pass-through (positions, texcoords, vertex color).
+const PALETTE_VERTEX: &str = r#"#version 100
+attribute vec3 position;
+attribute vec2 texcoord;
+attribute vec4 color0;
+varying lowp vec2 uv;
+varying lowp vec4 color;
+uniform mat4 Model;
+uniform mat4 Projection;
+void main() {
+    gl_Position = Projection * Model * vec4(position, 1);
+    // color0 arrives as unnormalized bytes (VertexFormat::Byte4, 0-255) —
+    // macroquad's own default shader divides by 255 and so must we, or the
+    // fragment multiply saturates every nonzero palette channel to 1.0.
+    color = color0 / 255.0;
+    uv = texcoord;
+}"#;
+
+/// Fragment shader: sample the interpolated value field, discard no-data, then
+/// look up the discrete palette with a Nearest-filtered LUT so color steps stay
+/// razor-sharp while the value (and thus band boundaries) interpolate smoothly.
+const PALETTE_FRAGMENT: &str = r#"#version 100
+precision mediump float;
+varying vec2 uv;
+varying vec4 color;
+uniform sampler2D Texture;
+uniform sampler2D Palette;
+void main() {
+    vec4 v = texture2D(Texture, uv);
+    if (v.a < 0.5) discard;
+    gl_FragColor = texture2D(Palette, vec2(v.r, 0.5)) * color;
+}"#;
+
+/// Build the reflectivity palette material. Call once, after the graphics
+/// context exists (i.e. inside the render loop, not at startup). The caller
+/// binds the LUT via `material.set_texture("Palette", lut)` before drawing.
+pub fn load_palette_material() -> Material {
+    load_material(
+        ShaderSource::Glsl {
+            vertex: PALETTE_VERTEX,
+            fragment: PALETTE_FRAGMENT,
+        },
+        MaterialParams {
+            textures: vec!["Palette".to_string()],
+            ..Default::default()
+        },
+    )
+    .expect("reflectivity palette shader failed to compile")
+}
 
 /// Level II super-res gate geometry. Legacy fallback/default only — real
 /// per-tilt/per-product geometry rides on `SweepData::first_gate_km` /
@@ -24,8 +80,35 @@ pub const FIRST_GATE_KM: f32 = 2.125;
 pub const GATE_SPACING_KM: f32 = 0.25;
 /// Display radius of the scope.
 pub const MAX_RANGE_KM: f32 = 230.0;
-/// Side length of the rasterized radar texture.
-pub const RASTER_SIZE_PX: usize = 1024;
+/// Side length of the rasterized radar texture. 2048 over 2×230 km gives
+/// ~0.22 km/px, matched to the 0.25 km super-res gate spacing — below this the
+/// raster undersamples the data and `Nearest` display shows hard texel squares
+/// when zoomed. ponytail: fixed-resolution raster; for arbitrarily deep zoom
+/// the real fix is re-rasterizing only the visible window at zoom, not a bigger
+/// fixed texture (cost is O(n²) fill; 2048² = 16 MB).
+pub const RASTER_SIZE_PX: usize = 2048;
+
+/// Reflectivity value-field smoothing radius, in raster pixels. Kept light
+/// (~0.66 km at 2048px/230km) because the GPU palette shader interpolates the
+/// value across screen pixels and does the bulk of the edge smoothing — this
+/// pass only knocks down gate-to-gate noise so it stays sharp. 0 disables it.
+/// ponytail: raise toward 6 for a softer look; lower/0 for maximum crispness.
+pub const SMOOTH_RADIUS_PX: usize = 3;
+
+/// Channel-sealing radius (raster pixels) for QC-hole filling: the coverage
+/// mask is morphologically closed (dilate + erode) by this much before the
+/// open-air flood, so a hole leaks to the background — and stays open — only
+/// if its opening is wider than ~2×this. At ~0.22 km/px, 8 seals openings up
+/// to ~3.6 km, enough to close the gate-cell notches QC punches while leaving
+/// real bays open. The one knob for how aggressively interior cutouts are
+/// filled.
+/// ponytail: seal is O(n·r²) across two passes; if re-raster feels slow at
+/// 2048, make the dilate/erode separable (O(n·r)) before growing r further.
+pub const SEAL_RADIUS_PX: usize = 8;
+
+/// Lowest dBZ emitted into the reflectivity value texture. Below this the gate
+/// is left transparent, matching `colors::dbz_color`'s own transparency cutoff.
+pub const DBZ_MIN_VISIBLE_DBZ: f32 = 5.0;
 
 // ---------------------------------------------------------------------------
 // Rasterization
@@ -58,6 +141,50 @@ pub struct QcConfig<'a> {
     pub nonmet_fuzzy_enabled: bool,
     pub nonmet_threshold: f32,
     pub refl_gap_fill_enabled: bool,
+    pub multi_scale_texture_enabled: bool,
+    pub sun_spike_removal_enabled: bool,
+}
+
+/// Compute TDBZ (texture of dBZ) and mean dBZ over a symmetric window half-size
+/// around each gate in a radial. TDBZ is the variance of successive gate-pair
+/// differences; mean is the local average. Both return `Vec` of length `n`.
+/// Gates outside the radial or with value `None` are skipped; a gate at index
+/// `i` with window `[start..end)` contributes to the sums only if present.
+fn tdbz_and_mean(gates: &[Option<f32>], half: usize) -> (Vec<f32>, Vec<f32>) {
+    let n = gates.len();
+    let mut tdbz = vec![0.0f32; n];
+    let mut mean = vec![f32::MAX; n]; // MAX = unknown → never counts as "low"
+
+    for i in 0..n {
+        let start = i.saturating_sub(half);
+        let end = (i + half + 1).min(n);
+        if end - start < 2 {
+            continue;
+        }
+        let mut sum_sq = 0.0f32;
+        let mut diff_count = 0u32;
+        let mut sum = 0.0f32;
+        let mut val_count = 0u32;
+        for j in start..end {
+            if let Some(v) = gates[j] {
+                sum += v;
+                val_count += 1;
+                if j + 1 < end
+                    && let Some(b) = gates[j + 1]
+                {
+                    sum_sq += (v - b).powi(2);
+                    diff_count += 1;
+                }
+            }
+        }
+        if diff_count > 0 {
+            tdbz[i] = sum_sq / diff_count as f32;
+        }
+        if val_count > 0 {
+            mean[i] = sum / val_count as f32;
+        }
+    }
+    (tdbz, mean)
 }
 
 fn clean_sweep(sweep: &SweepData, product: Product, qc: &QcConfig) -> SweepData {
@@ -230,6 +357,93 @@ fn clean_sweep(sweep: &SweepData, product: Product, qc: &QcConfig) -> SweepData 
         }
     }
 
+    // Sun-spike / RFI radial removal: null narrow high-value "spoke" radials
+    // (solar noise at dawn/dusk, co-channel interference) that are bright and
+    // long-in-range but isolated in azimuth — real precip is azimuthally
+    // continuous, a spoke lights up one radial while its az-neighbors stay
+    // empty. Reflectivity-only. Runs after the dBZ floor (weak fringe echo
+    // is already gone) and before gap-fill (so a spoke's far-range void is
+    // never used as a fill donor/target). Two-pass read-then-write: every
+    // radial's own/neighbor stats are read from the pre-pass gates, so
+    // nulling one spoke can't distort another radial's neighbor average.
+    if product == Product::Reflectivity && qc.sun_spike_removal_enabled {
+        // ponytail: fixed calibration knobs tuned on the sun-spike case in
+        // docs/research/ (gwc-lsr-2604.png); upgrade path is a per-volume
+        // adaptive threshold (e.g. derived from the sweep's own azimuth-wide
+        // coverage distribution) if these fixed values misfire across VCPs.
+        const FAR_RANGE_FRACTION: f32 = 0.5; // gates in the far half (by index) of the radial
+        const NEIGHBOR_HALF: i64 = 3; // K nearest azimuth neighbors on each side
+        const MIN_OWN_COVERAGE: f32 = 0.5; // candidate's own far-range coverage floor ("long")
+        const NEIGHBOR_MAX_COVERAGE: f32 = 0.15; // neighbor avg far-range coverage ceiling ("isolated")
+        const SPIKE_RATIO: f32 = 4.0; // own coverage*intensity score must beat neighbor avg by this multiple
+
+        let (az_order, _) = sorted_azimuths(&cleaned.radials);
+        let n_az = az_order.len();
+
+        if n_az > (NEIGHBOR_HALF * 2) as usize {
+            // (coverage fraction, mean dBZ) over far-range gates per radial,
+            // read from the pre-pass gates, in sorted-azimuth order.
+            let far_stats: Vec<(f32, f32)> = az_order
+                .iter()
+                .map(|&idx| {
+                    let gates = &cleaned.radials[idx].gates;
+                    let mid = (gates.len() as f32 * FAR_RANGE_FRACTION) as usize;
+                    let far = &gates[mid.min(gates.len())..];
+                    let mut valid = 0u32;
+                    let mut sum = 0.0f32;
+                    for v in far.iter().flatten() {
+                        valid += 1;
+                        sum += v;
+                    }
+                    let coverage = if far.is_empty() {
+                        0.0
+                    } else {
+                        valid as f32 / far.len() as f32
+                    };
+                    let mean = if valid > 0 { sum / valid as f32 } else { 0.0 };
+                    (coverage, mean)
+                })
+                .collect();
+
+            let mut spoke_radials: Vec<usize> = Vec::new();
+            for (sorted_idx, &radial_idx) in az_order.iter().enumerate() {
+                let (own_coverage, own_mean) = far_stats[sorted_idx];
+                if own_coverage < MIN_OWN_COVERAGE {
+                    continue;
+                }
+                let mut nbr_coverage_sum = 0.0f32;
+                let mut nbr_mean_sum = 0.0f32;
+                for d in -NEIGHBOR_HALF..=NEIGHBOR_HALF {
+                    if d == 0 {
+                        continue;
+                    }
+                    let nbr = (sorted_idx as i64 + d).rem_euclid(n_az as i64) as usize;
+                    nbr_coverage_sum += far_stats[nbr].0;
+                    nbr_mean_sum += far_stats[nbr].1;
+                }
+                let nbr_count = (NEIGHBOR_HALF * 2) as f32;
+                let nbr_avg_coverage = nbr_coverage_sum / nbr_count;
+                let nbr_avg_mean = nbr_mean_sum / nbr_count;
+
+                let own_score = own_coverage * own_mean;
+                let nbr_score = nbr_avg_coverage * nbr_avg_mean;
+
+                if nbr_avg_coverage < NEIGHBOR_MAX_COVERAGE && own_score > nbr_score * SPIKE_RATIO {
+                    spoke_radials.push(radial_idx);
+                }
+            }
+
+            for radial_idx in spoke_radials {
+                let gates = &mut cleaned.radials[radial_idx].gates;
+                let n = gates.len();
+                let mid = (n as f32 * FAR_RANGE_FRACTION) as usize;
+                for gate in &mut gates[mid.min(n)..] {
+                    *gate = None;
+                }
+            }
+        }
+    }
+
     // TDBZ texture filter is a Reflectivity-only QC pass (D5): ZDR/CC/PhiDP are
     // not intensity fields, so running an intensity-oriented texture filter on
     // them would punch holes in valid dual-pol data.
@@ -244,41 +458,33 @@ fn clean_sweep(sweep: &SweepData, product: Product, qc: &QcConfig) -> SweepData 
         const LOW_DBZ_GATE: f32 = 35.0;
         for radial in &mut cleaned.radials {
             let n = radial.gates.len();
-            let half = qc.tdbz_kernel_size / 2;
-            let mut tdbz = vec![0.0f32; n];
-            let mut mean = vec![f32::MAX; n]; // MAX = unknown → never counts as "low"
-            for i in 0..n {
-                let start = i.saturating_sub(half);
-                let end = (i + half + 1).min(n);
-                if end - start < 2 {
-                    continue;
-                }
-                let mut sum_sq = 0.0f32;
-                let mut diff_count = 0u32;
-                let mut sum = 0.0f32;
-                let mut val_count = 0u32;
-                for j in start..end {
-                    if let Some(v) = radial.gates[j] {
-                        sum += v;
-                        val_count += 1;
-                        if j + 1 < end
-                            && let Some(b) = radial.gates[j + 1]
-                        {
-                            sum_sq += (v - b).powi(2);
-                            diff_count += 1;
-                        }
+
+            if qc.multi_scale_texture_enabled {
+                // Multi-scale TDBZ: run at two window sizes and null if ANY scale
+                // exceeds threshold while mean is low. Union of masks — a gate
+                // flagged at any scale is clutter.
+                let half_a = qc.tdbz_kernel_size / 2;
+                let half_b = half_a + 3;
+
+                let (tdbz_a, mean_a) = tdbz_and_mean(&radial.gates, half_a);
+                let (tdbz_b, mean_b) = tdbz_and_mean(&radial.gates, half_b);
+
+                for i in 0..n {
+                    let exceeds_a = tdbz_a[i] > TDBZ_THRESHOLD && mean_a[i] < LOW_DBZ_GATE;
+                    let exceeds_b = tdbz_b[i] > TDBZ_THRESHOLD && mean_b[i] < LOW_DBZ_GATE;
+                    if exceeds_a || exceeds_b {
+                        radial.gates[i] = None;
                     }
                 }
-                if diff_count > 0 {
-                    tdbz[i] = sum_sq / diff_count as f32;
-                }
-                if val_count > 0 {
-                    mean[i] = sum / val_count as f32;
-                }
-            }
-            for i in 0..n {
-                if tdbz[i] > TDBZ_THRESHOLD && mean[i] < LOW_DBZ_GATE {
-                    radial.gates[i] = None;
+            } else {
+                // Single-scale TDBZ (original behavior — byte-identical when disabled).
+                let half = qc.tdbz_kernel_size / 2;
+                let (tdbz, mean) = tdbz_and_mean(&radial.gates, half);
+
+                for i in 0..n {
+                    if tdbz[i] > TDBZ_THRESHOLD && mean[i] < LOW_DBZ_GATE {
+                        radial.gates[i] = None;
+                    }
                 }
             }
         }
@@ -514,6 +720,32 @@ fn fuzzy_nonmet_gate(cleaned: &mut SweepData, qc: &QcConfig) {
 }
 
 /// Rasterize one sweep to raw RGBA bytes.
+/// Live QC feedback: how many gates the QC passes removed from the
+/// currently-rendered product, out of how many carried a value before QC.
+/// Surfaced in the settings panel so toggling a pass visibly confirms it did
+/// something even on a scene with little to remove.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct QcReport {
+    pub gates_before: usize,
+    pub gates_after: usize,
+}
+
+impl QcReport {
+    /// Net gates suppressed by QC (saturating; a fill-only pass never
+    /// reports negative).
+    pub fn removed(&self) -> usize {
+        self.gates_before.saturating_sub(self.gates_after)
+    }
+}
+
+fn count_valid(sweep: &SweepData) -> usize {
+    sweep
+        .radials
+        .iter()
+        .map(|r| r.gates.iter().filter(|g| g.is_some()).count())
+        .sum()
+}
+
 pub fn rasterize(
     sweep: &SweepData,
     product: Product,
@@ -521,7 +753,36 @@ pub fn rasterize(
     max_range_km: f32,
     qc: &QcConfig,
 ) -> Vec<u8> {
+    rasterize_with_report(sweep, product, size_px, max_range_km, qc).0
+}
+
+/// Like [`rasterize`] but also reports how many gates the QC passes removed
+/// (see [`QcReport`]) for the on-screen QC feedback readout.
+pub fn rasterize_with_report(
+    sweep: &SweepData,
+    product: Product,
+    size_px: usize,
+    max_range_km: f32,
+    qc: &QcConfig,
+) -> (Vec<u8>, QcReport) {
+    let before = count_valid(sweep);
     let sweep = clean_sweep(sweep, product, qc);
+    let report = QcReport {
+        gates_before: before,
+        gates_after: count_valid(&sweep),
+    };
+    (
+        rasterize_cleaned(&sweep, product, size_px, max_range_km),
+        report,
+    )
+}
+
+fn rasterize_cleaned(
+    sweep: &SweepData,
+    product: Product,
+    size_px: usize,
+    max_range_km: f32,
+) -> Vec<u8> {
     let mut pixels = vec![0u8; size_px * size_px * 4];
 
     if sweep.radials.is_empty() {
@@ -546,11 +807,20 @@ pub fn rasterize(
         Product::DifferentialReflectivity => colors::zdr_color as fn(f32) -> [u8; 4],
         Product::CorrelationCoefficient => colors::cc_color as fn(f32) -> [u8; 4],
         Product::DifferentialPhase => colors::phidp_color as fn(f32) -> [u8; 4],
+        Product::SpecificDifferentialPhase => colors::kdp_color as fn(f32) -> [u8; 4],
     };
 
     let center = size_px as f32 / 2.0;
     let km_per_px = 2.0 * max_range_km / size_px as f32;
 
+    // Sample the polar field into a scalar value grid (NaN = no echo) instead
+    // of colorizing inline. Colorizing is deferred so the value field can be
+    // smoothed first (Reflectivity only, below) — smoothing the *value* then
+    // applying the discrete palette gives soft, flowing band boundaries
+    // (GRLevelX-style) instead of the hard gate-cell edges bilinear alone
+    // leaves in sparse regions.
+    let mut values = vec![f32::NAN; size_px * size_px];
+    let mut folded = vec![false; size_px * size_px];
     for py in 0..size_px {
         let dy = (py as f32 + 0.5 - center) * km_per_px;
         for px in 0..size_px {
@@ -572,37 +842,77 @@ pub fn rasterize(
             let gate = gate_frac.floor() as usize;
             let eta = gate_frac.fract().clamp(0.0, 1.0);
 
-            let value = bilinear_sample(radial1, radial2, w1, w2, gate, eta);
-            if let Some(value) = value {
-                let c = color_of(value);
-                let idx = (py * size_px + px) * 4;
-                pixels[idx] = c[0];
-                pixels[idx + 1] = c[1];
-                pixels[idx + 2] = c[2];
-                pixels[idx + 3] = c[3];
-            } else if matches!(product, Product::Velocity | Product::SpectrumWidth)
-                && radial1.range_folded.get(gate).copied().unwrap_or(false)
-            {
-                let c = colors::RANGE_FOLDED_COLOR;
-                let idx = (py * size_px + px) * 4;
-                pixels[idx..idx + 4].copy_from_slice(&c);
+            let idx = py * size_px + px;
+            match bilinear_sample(radial1, radial2, w1, w2, gate, eta) {
+                Some(value) => values[idx] = value,
+                None => {
+                    folded[idx] = matches!(product, Product::Velocity | Product::SpectrumWidth)
+                        && radial1.range_folded.get(gate).copied().unwrap_or(false);
+                }
             }
         }
+    }
+
+    // Value-field smoothing (Reflectivity only): dual-pol/velocity fields are
+    // not blurred — smoothing velocity across the zero-isodop or CC across the
+    // birds/precip boundary would fabricate values, exactly what the QC passes
+    // below exist to avoid. SMOOTH_RADIUS_PX is the one calibration knob for how
+    // aggressive the look is; 0 disables (raw bilinear bins).
+    if product == Product::Reflectivity {
+        // Fill QC cutouts first so the blur feathers a closed field, not the
+        // hard edges of the holes.
+        fill_enclosed_holes(&mut values, size_px, SEAL_RADIUS_PX);
+        if SMOOTH_RADIUS_PX > 0 {
+            smooth_values(&mut values, size_px, SMOOTH_RADIUS_PX);
+        }
+    }
+
+    // Encode the field for upload. Reflectivity is emitted as a *value texture*
+    // (R = normalized dBZ, A = coverage) that a GPU palette shader colorizes at
+    // screen resolution — crisp discrete band steps with boundaries that stay
+    // smooth at any zoom. Every other product is colorized here on the CPU as
+    // before (drawn with Nearest, no shader).
+    let encode_value = product == Product::Reflectivity;
+    for idx in 0..size_px * size_px {
+        if encode_value {
+            let v = values[idx];
+            // Coverage mirrors dbz_color's transparency: no data, or below the
+            // lowest visible dBZ, stays empty — so the QC speckle passes below
+            // behave exactly as they did on the old colorized texture.
+            if v.is_finite() && v >= DBZ_MIN_VISIBLE_DBZ {
+                let norm = ((v - colors::DBZ_LUT_MIN)
+                    / (colors::DBZ_LUT_MAX - colors::DBZ_LUT_MIN))
+                    .clamp(0.0, 1.0);
+                pixels[idx * 4] = (norm * 255.0).round() as u8;
+                pixels[idx * 4 + 3] = 255;
+            }
+            continue;
+        }
+        let c = if values[idx].is_nan() {
+            if folded[idx] {
+                colors::RANGE_FOLDED_COLOR
+            } else {
+                continue;
+            }
+        } else {
+            color_of(values[idx])
+        };
+        pixels[idx * 4..idx * 4 + 4].copy_from_slice(&c);
     }
 
     // Speckle/close QC passes are Reflectivity-only (D5): ZDR/CC/PhiDP are not
     // intensity fields, so morphological close/despeckle/region-area filtering
     // (tuned for dBZ clutter) would punch holes in valid dual-pol data.
     if product == Product::Reflectivity {
-        morphological_close(&mut pixels, size_px, 2);
+        morphological_close(&mut pixels, size_px, 4);
         despeckle(&mut pixels, size_px, 2);
         // Region-area speckle filter: a fixed 3×3 density check passes small
         // *clumps* (a 2×2 clutter blob has 3 live neighbours per pixel). Flood-fill
         // 8-connected blobs and drop any below a minimum pixel area — the standard
         // shape-independent "isolated echo removal" (JMA QC; see docs/research).
-        // ponytail: constant area threshold at the current 1024px/230km raster;
-        // make it scale with size_px/max_range_km if the raster geometry changes.
-        remove_small_regions(&mut pixels, size_px, 8);
+        // ponytail: threshold is a physical area, so it scales with the square of
+        // the pixel density; 32 at 2048px/230km ≈ the old 8 at 1024px.
+        remove_small_regions(&mut pixels, size_px, 32);
     }
 
     pixels
@@ -782,6 +1092,189 @@ fn despeckle(pixels: &mut [u8], size_px: usize, min_neighbors: usize) {
     }
 }
 
+/// Fill echo-enclosed NaN holes in a value grid, in place. QC passes (CC-gate,
+/// TDBZ, sun-spike, etc.) null gate cells that can land in the middle of legit
+/// precip; rasterized, those become hard rectangular cutouts. This fills them
+/// while leaving genuine boundary edges untouched.
+///
+/// Topology: morphologically *close* the coverage mask (dilate by
+/// `seal_radius`, then erode by the same) to pinch shut thin NaN channels that
+/// leak a hole out to the background, then flood-fill "open air" from the
+/// image border through the still-empty space. A hole stays open only if its
+/// opening to the background is wider than ~2·seal_radius; anything the flood
+/// can't reach is filled by repeated finite-neighbor averaging, propagating
+/// inward until closed (any hole size). Genuine wide bays and the storm's
+/// outer boundary are untouched — the erode step returns the boundary to its
+/// original footprint, so the seal is topology-only and never committed to
+/// output.
+fn fill_enclosed_holes(values: &mut [f32], size_px: usize, seal_radius: usize) {
+    let s = size_px as i32;
+    let n = size_px * size_px;
+    let r = seal_radius as i32;
+
+    // Sealed coverage: a cell counts as echo if any finite value lies within
+    // Chebyshev distance seal_radius. Narrow gaps between a hole and the
+    // background close here without altering the real coverage.
+    let finite: Vec<bool> = values.iter().map(|v| v.is_finite()).collect();
+    let mut sealed = vec![false; n];
+    for y in 0..s {
+        for x in 0..s {
+            let mut hit = false;
+            'w: for dy in -r..=r {
+                for dx in -r..=r {
+                    let (nx, ny) = (x + dx, y + dy);
+                    if nx >= 0 && nx < s && ny >= 0 && ny < s && finite[(ny * s + nx) as usize] {
+                        hit = true;
+                        break 'w;
+                    }
+                }
+            }
+            sealed[(y * s + x) as usize] = hit;
+        }
+    }
+
+    // Erode back by the same radius — a proper morphological *closing*. The
+    // dilation exists only to bridge sub-2r channel necks; eroding restores
+    // the outer echo boundary so the halo around echo is never treated as
+    // enclosed. (Flooding against the bare dilated mask committed the halo:
+    // an r-px blocky rind grew along every storm edge and each isolated gate
+    // ballooned into a (2r+1)² square.) Out-of-bounds counts as unsealed so
+    // nothing phantom-seals at the grid edge.
+    let mut closed = vec![false; n];
+    for y in 0..s {
+        for x in 0..s {
+            let idx = (y * s + x) as usize;
+            if !sealed[idx] {
+                continue;
+            }
+            let mut all = true;
+            'e: for dy in -r..=r {
+                for dx in -r..=r {
+                    let (nx, ny) = (x + dx, y + dy);
+                    if nx < 0 || nx >= s || ny < 0 || ny >= s || !sealed[(ny * s + nx) as usize] {
+                        all = false;
+                        break 'e;
+                    }
+                }
+            }
+            closed[idx] = all;
+        }
+    }
+    let sealed = closed;
+
+    // Flood-fill "open air": empty cells reachable from the border through
+    // still-empty-after-sealing space.
+    let mut open = vec![false; n];
+    let mut stack: Vec<i32> = Vec::new();
+    let seed = |idx: i32, open: &mut [bool], stack: &mut Vec<i32>| {
+        let i = idx as usize;
+        if !sealed[i] && !open[i] {
+            open[i] = true;
+            stack.push(idx);
+        }
+    };
+    for x in 0..s {
+        seed(x, &mut open, &mut stack); // top row
+        seed((s - 1) * s + x, &mut open, &mut stack); // bottom row
+    }
+    for y in 0..s {
+        seed(y * s, &mut open, &mut stack); // left col
+        seed(y * s + (s - 1), &mut open, &mut stack); // right col
+    }
+    while let Some(idx) = stack.pop() {
+        let (x, y) = (idx % s, idx / s);
+        for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+            let (nx, ny) = (x + dx, y + dy);
+            if nx < 0 || nx >= s || ny < 0 || ny >= s {
+                continue;
+            }
+            let nidx = ny * s + nx;
+            let ni = nidx as usize;
+            if !sealed[ni] && !open[ni] {
+                open[ni] = true;
+                stack.push(nidx);
+            }
+        }
+    }
+
+    // Hole = originally NaN && not reachable as open air. Fill inward by finite
+    // 8-neighbor averaging until no hole cell remains empty.
+    loop {
+        let snapshot = values.to_vec();
+        let mut changed = false;
+        for y in 0..s {
+            for x in 0..s {
+                let idx = (y * s + x) as usize;
+                if !values[idx].is_nan() || open[idx] {
+                    continue;
+                }
+                let mut sum = 0.0f32;
+                let mut count = 0u32;
+                for dy in -1..=1 {
+                    for dx in -1..=1 {
+                        let (nx, ny) = (x + dx, y + dy);
+                        if nx < 0 || nx >= s || ny < 0 || ny >= s {
+                            continue;
+                        }
+                        let v = snapshot[(ny * s + nx) as usize];
+                        if v.is_finite() {
+                            sum += v;
+                            count += 1;
+                        }
+                    }
+                }
+                if count > 0 {
+                    values[idx] = sum / count as f32;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+/// NaN-aware box blur of a scalar value grid, in place. Each *covered* cell
+/// becomes the mean of the finite (non-NaN) cells in its `(2r+1)²`
+/// neighborhood; empty (NaN) cells are never written, so the coverage mask is
+/// preserved exactly. Writing into NaN cells would dilate every echo boundary
+/// by a square (Chebyshev) footprint at full value — which rendered as blocky
+/// axis-aligned bumps along storm edges. Edge softening is the GPU's job
+/// (Linear interpolation of the value/coverage texture); interior holes are
+/// `fill_enclosed_holes`'s. Runs once per re-raster, not per frame.
+fn smooth_values(values: &mut [f32], size_px: usize, radius: usize) {
+    let src = values.to_vec();
+    let s = size_px as i32;
+    let r = radius as i32;
+    for y in 0..s {
+        for x in 0..s {
+            if !src[(y * s + x) as usize].is_finite() {
+                continue;
+            }
+            let mut sum = 0.0f32;
+            let mut count = 0u32;
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    let nx = x + dx;
+                    let ny = y + dy;
+                    if nx < 0 || nx >= s || ny < 0 || ny >= s {
+                        continue;
+                    }
+                    let v = src[(ny * s + nx) as usize];
+                    if v.is_finite() {
+                        sum += v;
+                        count += 1;
+                    }
+                }
+            }
+            if count > 0 {
+                values[(y * s + x) as usize] = sum / count as f32;
+            }
+        }
+    }
+}
+
 /// Bilinear interpolation across azimuth (ξ) and range (η).
 ///
 /// Blends the four surrounding gates (2 radials × 2 range gates) using
@@ -895,6 +1388,9 @@ pub fn project_site(
 ///
 /// Stage 4 adds optional border and alert overlay drawing.
 /// Stage 5 adds optional NHC tropical cyclone overlay drawing.
+/// `melting_layer` adds the optional melting-layer hint ring (see
+/// `melting_layer.rs`); `Some` only when the feature is on and a ring was
+/// detected in the current scan.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_scope_to_texture(
     radar_texture: Option<&Texture2D>,
@@ -907,6 +1403,8 @@ pub fn draw_scope_to_texture(
     user: Option<Coords>,
     show_sites: bool,
     show_rings: bool,
+    melting_layer: Option<&MeltingLayerHint>,
+    palette: Option<&Material>,
 ) {
     let side = screen_width().min(screen_height());
     let px_per_km = (side / 2.0) / MAX_RANGE_KM * zoom;
@@ -916,9 +1414,15 @@ pub fn draw_scope_to_texture(
     // Background is cleared by the main loop (dark observatory gradient);
     // the scope draws the radar texture and overlays on top of it.
 
-    // Radar texture
+    // Radar texture. When `palette` is set the texture is a value field (R =
+    // normalized dBZ, A = coverage) and the palette material colorizes it in the
+    // GPU — the value is interpolated across screen pixels, the palette applied
+    // per-pixel after, so band edges stay crisp *and* smooth at any zoom.
     if let Some(tex) = radar_texture {
         let tex_size = side * zoom;
+        if let Some(mat) = palette {
+            gl_use_material(mat);
+        }
         draw_texture_ex(
             tex,
             center_x - tex_size / 2.0,
@@ -929,6 +1433,9 @@ pub fn draw_scope_to_texture(
                 ..Default::default()
             },
         );
+        if palette.is_some() {
+            gl_use_default_material();
+        }
     }
 
     let grid_color = MacroquadColor::from_rgba(0x2a, 0x3a, 0x2f, 255);
@@ -1069,6 +1576,11 @@ pub fn draw_scope_to_texture(
         draw_borders(rings, site, center_x, center_y, px_per_km);
     }
 
+    // ── Melting-layer hint overlay ────────────────────────────────
+    if let Some(hint) = melting_layer {
+        draw_melting_layer_ring(hint, center_x, center_y, px_per_km);
+    }
+
     // ── Alert overlays (Stage 4) ─────────────────────────────────
     if let Some((alerts, show_watches, show_warnings)) = alerts
         && (show_watches || show_warnings)
@@ -1129,6 +1641,24 @@ fn draw_borders(rings: &[Ring], site: &RadarSite, center_x: f32, center_y: f32, 
             draw_line(ax, ay, bx, by, 1.0, border_color);
         }
     }
+}
+
+/// Draw a faint ring at the melting-layer hint's estimated slant range
+/// (see `melting_layer.rs`), labeled with the estimated height. A single
+/// ring, not a top/bottom band — the detector estimates one CC-minimum
+/// range per volume. ponytail: single ring only; upgrade path is drawing
+/// a top/bottom band if `melting_layer::detect` ever returns a range pair.
+fn draw_melting_layer_ring(hint: &MeltingLayerHint, center_x: f32, center_y: f32, px_per_km: f32) {
+    let ring_color = MacroquadColor::from_rgba(0xa0, 0xd8, 0xff, 140);
+    let radius_px = hint.range_km * px_per_km;
+    draw_circle_lines(center_x, center_y, radius_px, 1.5, ring_color);
+    draw_text(
+        format!("Melting layer ~{:.1} km", hint.height_km),
+        center_x + 4.0,
+        center_y - radius_px,
+        14.0,
+        ring_color,
+    );
 }
 
 /// Draw active NWS warning/watch polygons across the full screen.
@@ -1653,6 +2183,122 @@ mod tests {
     }
 
     #[test]
+    fn rasterize_output_changes_when_cc_gate_flag_flips() {
+        // End-to-end proof that a QC settings toggle actually alters the
+        // generated raster (not just clean_sweep in isolation): build a solid
+        // reflectivity block with a co-located all-low-CC sweep, then rasterize
+        // the SAME sweep with cc_gate off vs on. With the gate on, every
+        // low-CC gate is nulled, so the rendered block must shrink. If the two
+        // pixel buffers are identical, the toggle does nothing to the output —
+        // exactly the "no noticeable change" symptom this guards against.
+        let n_gates = 250;
+        let mut ref_gates = vec![None; n_gates];
+        let mut cc_gates = vec![None; n_gates];
+        for i in 120..200 {
+            ref_gates[i] = Some(40.0); // well above the baked near-range floor
+            cc_gates[i] = Some(0.50); // below the 0.80 non-met threshold
+        }
+        let build = |gates: &Vec<Option<f32>>| SweepData {
+            elevation_deg: 0.5,
+            radials: (0..120)
+                .map(|k| radial(k as f32 * 3.0, gates.clone()))
+                .collect(),
+            first_gate_km: 2.125,
+            gate_spacing_km: 0.25,
+            nyquist_ms: 0.0,
+        };
+        let ref_sweep = build(&ref_gates);
+        let cc_sweep = build(&cc_gates);
+
+        let count_opaque = |px: &[u8]| px.chunks_exact(4).filter(|c| c[3] > 0).count();
+        let render = |cc_gate_enabled| {
+            rasterize(
+                &ref_sweep,
+                Product::Reflectivity,
+                256,
+                MAX_RANGE_KM,
+                &QcConfig {
+                    tdbz_kernel_size: 3,
+                    cc_sweep: Some(&cc_sweep),
+                    cc_gate_enabled,
+                    cc_gate_threshold: 0.80,
+                    ..Default::default()
+                },
+            )
+        };
+        let off = render(false);
+        let on = render(true);
+
+        assert!(
+            count_opaque(&off) > 0,
+            "block must render with the gate off"
+        );
+        assert_ne!(
+            off, on,
+            "flipping cc_gate must change the rasterized output"
+        );
+        assert!(
+            count_opaque(&on) < count_opaque(&off),
+            "cc_gate on must null the low-CC block: off={} on={}",
+            count_opaque(&off),
+            count_opaque(&on),
+        );
+    }
+
+    #[test]
+    fn qc_report_counts_gates_removed_by_cc_gate() {
+        // The settings-panel feedback line reads QcReport.removed(). Prove it
+        // reflects reality: with cc_gate off nothing is removed; with it on,
+        // the 80-gate x 120-radial low-CC block (9600 gates) is nulled.
+        let n_gates = 250;
+        let mut ref_gates = vec![None; n_gates];
+        let mut cc_gates = vec![None; n_gates];
+        for i in 120..200 {
+            ref_gates[i] = Some(40.0);
+            cc_gates[i] = Some(0.50);
+        }
+        let build = |gates: &Vec<Option<f32>>| SweepData {
+            elevation_deg: 0.5,
+            radials: (0..120)
+                .map(|k| radial(k as f32 * 3.0, gates.clone()))
+                .collect(),
+            first_gate_km: 2.125,
+            gate_spacing_km: 0.25,
+            nyquist_ms: 0.0,
+        };
+        let ref_sweep = build(&ref_gates);
+        let cc_sweep = build(&cc_gates);
+        let report = |cc_gate_enabled| {
+            rasterize_with_report(
+                &ref_sweep,
+                Product::Reflectivity,
+                64,
+                MAX_RANGE_KM,
+                &QcConfig {
+                    tdbz_kernel_size: 3,
+                    cc_sweep: Some(&cc_sweep),
+                    cc_gate_enabled,
+                    cc_gate_threshold: 0.80,
+                    ..Default::default()
+                },
+            )
+            .1
+        };
+        let off = report(false);
+        let on = report(true);
+        assert_eq!(off.gates_before, 80 * 120);
+        // Off: the baked near-range floor still removes some weak gates, but
+        // the low-CC block itself is intact, so far fewer than the CC gate.
+        assert_eq!(on.gates_before, 80 * 120);
+        assert!(
+            on.removed() > off.removed(),
+            "cc_gate on must report more removed gates: off={} on={}",
+            off.removed(),
+            on.removed(),
+        );
+    }
+
+    #[test]
     fn rasterize_uses_per_sweep_gate_geometry_not_module_consts() {
         // Gate 5 carries the only real value. Geometry is 1.0/1.0 km
         // (legacy upper-tilt), not the super-res module consts (2.125/0.25)
@@ -1924,6 +2570,118 @@ mod tests {
 
         assert_eq!(removed_count(5), 5);
         assert_eq!(removed_count(13), 13);
+    }
+
+    #[test]
+    fn multi_scale_texture_union_pass_nulls_when_single_scale_keeps() {
+        // The headline claim: the larger window nulls a coherent-clutter gate
+        // that the single (small) window keeps. Hand-built for kernel_size=5:
+        // single half=2, multi adds half=5. Center gate 10 is flat (20 dBZ)
+        // across the small window (indices 8..12 -> tdbz 0, kept) but sits in a
+        // high-texture neighborhood at range 3-5 gates out: the half=5 window
+        // (indices 5..15) has six ±10 dBZ steps -> tdbz=60 > 25, and its window
+        // mean 23.6 < 35 -> nulled. Every gate stays >= 20 so the built-in
+        // near-range dBZ floor (20 at <20 km) never touches the pattern.
+        let mut gates = vec![Some(20.0); 21];
+        for i in [5usize, 7, 13, 15] {
+            gates[i] = Some(30.0);
+        }
+
+        let sweep = SweepData {
+            elevation_deg: 0.0,
+            radials: vec![radial(0.0, gates)],
+            first_gate_km: 2.125,
+            gate_spacing_km: 0.25,
+            nyquist_ms: 0.0,
+        };
+
+        let run = |multi_scale_texture_enabled| {
+            clean_sweep(
+                &sweep,
+                Product::Reflectivity,
+                &QcConfig {
+                    tdbz_kernel_size: 5,
+                    multi_scale_texture_enabled,
+                    ..Default::default()
+                },
+            )
+        };
+        let single_scale = run(false);
+        let multi_scale = run(true);
+
+        // The decisive divergence: single-scale keeps gate 10, multi-scale nulls it.
+        assert!(
+            single_scale.radials[0].gates[10].is_some(),
+            "single-scale (half=2) must keep the flat-neighborhood center gate"
+        );
+        assert!(
+            multi_scale.radials[0].gates[10].is_none(),
+            "multi-scale (half=5 union) must null the coherent-clutter center gate \
+             that single-scale keeps"
+        );
+    }
+
+    #[test]
+    fn sun_spike_removal_nulls_isolated_bright_radial_but_keeps_precip_block() {
+        // Group A: one bright, fully-covered "spoke" radial (az 3) flanked
+        // by 3 empty radials on each side (az 0-2, 4-6) -- the classic
+        // sun-spike signature: bright-and-long-in-range, isolated in azimuth.
+        // Group B: 9 azimuths (100-108) of continuous, fully-covered precip
+        // -- azimuthally continuous, so neighbor coverage stays high there
+        // and the pass must leave it alone.
+        let n_gates = 20;
+        let spike_gates = vec![Some(60.0); n_gates];
+        let empty_gates = vec![None; n_gates];
+        let precip_gates = vec![Some(40.0); n_gates];
+
+        let mut radials: Vec<RadialData> = Vec::new();
+        for az in 0..7u32 {
+            let gates = if az == 3 {
+                spike_gates.clone()
+            } else {
+                empty_gates.clone()
+            };
+            radials.push(radial(az as f32, gates));
+        }
+        for az in 100..109u32 {
+            radials.push(radial(az as f32, precip_gates.clone()));
+        }
+
+        let sweep = SweepData {
+            elevation_deg: 0.5,
+            radials,
+            first_gate_km: 2.125,
+            gate_spacing_km: 0.25,
+            nyquist_ms: 0.0,
+        };
+
+        let cleaned = clean_sweep(
+            &sweep,
+            Product::Reflectivity,
+            &QcConfig {
+                tdbz_kernel_size: 9,
+                cc_gate_threshold: 0.80,
+                vel_dealias_enabled: true,
+                vel_sd_threshold: 7.0,
+                sun_spike_removal_enabled: true,
+                ..Default::default()
+            },
+        );
+
+        // Spoke radial (az 3, index 3): far-range gates nulled.
+        let spike_far = &cleaned.radials[3].gates[n_gates / 2..];
+        assert!(
+            spike_far.iter().all(|g| g.is_none()),
+            "spoke radial's far-range gates should be nulled, got {spike_far:?}"
+        );
+
+        // Precip block (az 100-108, indices 7..16): untouched end to end.
+        for i in 7..16 {
+            assert_eq!(
+                cleaned.radials[i].gates, precip_gates,
+                "continuous precip block must not be touched by sun-spike removal"
+            );
+        }
     }
 
     #[test]
@@ -2618,5 +3376,130 @@ mod tests {
             matches!(v, Some(x) if (x - 20.0).abs() < 0.01),
             "0° gate straddling the wraparound should interpolate to ~20.0, got {v:?}"
         );
+    }
+
+    #[test]
+    fn smooth_values_smooths_in_place_without_dilating_coverage() {
+        // 5x5 grid, radius 1. Echo pair at (2,1)=20 and (2,2)=40 dBZ.
+        let n = f32::NAN;
+        let mut g = vec![
+            n, n, n, n, n, //
+            n, n, n, n, n, //
+            n, 20.0, 40.0, n, n, //
+            n, n, n, n, n, //
+            n, n, n, n, n,
+        ];
+        smooth_values(&mut g, 5, 1);
+
+        // Covered cells are averaged with their finite neighbors: both become
+        // the mean of {20, 40}.
+        assert!(
+            (g[11] - 30.0).abs() < 1e-6 && (g[12] - 30.0).abs() < 1e-6,
+            "covered cells should blend, got {} / {}",
+            g[11],
+            g[12]
+        );
+        // Adjacent empty cell (2,3 -> idx 13) must NOT gain echo: writing into
+        // NaN cells dilates the coverage mask by a square (Chebyshev) footprint
+        // with no falloff, which rendered as blocky axis-aligned bumps along
+        // every echo boundary. Coverage shape is owned by the rasterized gates
+        // (plus fill_enclosed_holes for interior holes); smoothing only blends
+        // values inside it.
+        assert!(
+            g[13].is_nan(),
+            "empty neighbor must stay empty (no coverage dilation), got {}",
+            g[13]
+        );
+        // Far empty corner stays empty too.
+        assert!(g[0].is_nan(), "empty space must stay NaN");
+    }
+
+    #[test]
+    fn fill_enclosed_holes_fills_interior_but_not_open_air() {
+        // 5x5 solid 30-dBZ block with a 1-cell hole at center (2,2), plus a
+        // border-connected empty corner (0,0) that must stay empty.
+        let n = f32::NAN;
+        let mut g = vec![
+            n, 30.0, 30.0, 30.0, 30.0, //
+            30.0, 30.0, 30.0, 30.0, 30.0, //
+            30.0, 30.0, n, 30.0, 30.0, //
+            30.0, 30.0, 30.0, 30.0, 30.0, //
+            30.0, 30.0, 30.0, 30.0, 30.0,
+        ];
+        fill_enclosed_holes(&mut g, 5, 0);
+
+        // Enclosed hole filled from its finite neighbors (seal_radius 0 => pure
+        // enclosure, no channel sealing).
+        assert!(
+            (g[12] - 30.0).abs() < 1e-6,
+            "enclosed hole should fill, got {}",
+            g[12]
+        );
+        // Border-connected empty corner is open air -> untouched.
+        assert!(
+            g[0].is_nan(),
+            "open-air corner must stay empty, got {}",
+            g[0]
+        );
+    }
+
+    #[test]
+    fn seal_radius_fills_holes_that_leak_through_a_thin_channel() {
+        // 5x5 solid 30 dBZ with a 1-cell-wide NaN channel down col 2 (rows 0-2):
+        // a hole (2,2) connected to the top border by a thin neck. Center idx 12.
+        let n = f32::NAN;
+        let base = || {
+            let mut g = vec![30.0f32; 25];
+            g[2] = n; // (0,2) opening on border
+            g[7] = n; // (1,2) neck
+            g[12] = n; // (2,2) hole body
+            g
+        };
+
+        // seal_radius 0: pure enclosure. The channel keeps the hole connected to
+        // open air, so it is NOT filled.
+        let mut g0 = base();
+        fill_enclosed_holes(&mut g0, 5, 0);
+        assert!(
+            g0[12].is_nan(),
+            "unsealed thin-channel hole must stay open, got {}",
+            g0[12]
+        );
+
+        // seal_radius 1: the 1-wide neck pinches shut, the hole becomes enclosed
+        // and fills.
+        let mut g1 = base();
+        fill_enclosed_holes(&mut g1, 5, 1);
+        assert!(
+            g1[12].is_finite(),
+            "sealed thin-channel hole should fill, got {}",
+            g1[12]
+        );
+    }
+
+    #[test]
+    fn seal_halo_around_echo_is_not_filled() {
+        // 7x7 grid, single echo gate at center (3,3), seal_radius 2. The seal
+        // dilation must be topology-only: committing it fills the (2r+1)²
+        // halo square around every isolated gate and grows a blocky r-px rind
+        // along every echo boundary — the "blocky radar edges" regression.
+        let n = f32::NAN;
+        let mut g = vec![n; 49];
+        g[24] = 30.0;
+        fill_enclosed_holes(&mut g, 7, 2);
+
+        assert!(
+            (g[24] - 30.0).abs() < 1e-6,
+            "echo gate must survive, got {}",
+            g[24]
+        );
+        for (i, v) in g.iter().enumerate() {
+            if i != 24 {
+                assert!(
+                    v.is_nan(),
+                    "open air at {i} must stay empty (seal halo committed), got {v}"
+                );
+            }
+        }
     }
 }

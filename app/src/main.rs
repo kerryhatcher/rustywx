@@ -13,6 +13,7 @@ use rustywx::colors;
 use rustywx::data::{self, WorkerMessage};
 use rustywx::forecast;
 use rustywx::geo;
+use rustywx::melting_layer;
 use rustywx::model::{Product, RadialData, SweepData, format_nyquist_velocity, vcp_mode_label};
 use rustywx::nhc;
 use rustywx::scope;
@@ -53,8 +54,8 @@ const TILT_DROPDOWN: DropdownConfig = DropdownConfig {
 
 // Product buttons stack vertically in the radar side panel (TopToBottom
 // layout, panel scrolls if needed) rather than sitting in a horizontal row,
-// so six buttons just add three more rows — no width-clipping concern.
-const PRODUCT_OPTIONS: [ToggleOption<Product>; 6] = [
+// so seven buttons just add rows — no width-clipping concern.
+const PRODUCT_OPTIONS: [ToggleOption<Product>; 7] = [
     ToggleOption {
         id: "btn-refl",
         label: "Reflectivity",
@@ -84,6 +85,11 @@ const PRODUCT_OPTIONS: [ToggleOption<Product>; 6] = [
         id: "btn-phidp",
         label: "PhiDP",
         value: Product::DifferentialPhase,
+    },
+    ToggleOption {
+        id: "btn-kdp",
+        label: "KDP",
+        value: Product::SpecificDifferentialPhase,
     },
 ];
 
@@ -477,6 +483,15 @@ fn window_conf() -> macroquad::conf::Conf {
 
 #[macroquad::main(window_conf)]
 async fn main() {
+    // ── Demo mode (--demo <event|path>) ────────────────────────
+    let demo_request = match rustywx::demo::parse_args(std::env::args().skip(1)) {
+        Ok(req) => req,
+        Err(msg) => {
+            eprintln!("{msg}");
+            std::process::exit(2);
+        }
+    };
+
     // Tokio runtime for cache I/O and other async background work.
     // The game loop is driven by macroquad's async executor; this
     // runtime lives alongside it so `tokio::spawn` works everywhere.
@@ -518,14 +533,45 @@ async fn main() {
 
     // Default to KFFC (Atlanta, GA) on first launch. The persisted
     // site preference (loaded below) may override this once it arrives.
-    let default_site_index = geo::RADAR_SITES
+    let mut default_site_index = geo::RADAR_SITES
         .iter()
         .position(|s| s.id == "KFFC")
         .unwrap_or(0);
+    if let Some(req) = &demo_request {
+        let site_id = req.site_id().unwrap_or_else(|msg| {
+            eprintln!("{msg}");
+            std::process::exit(2);
+        });
+        default_site_index = geo::RADAR_SITES
+            .iter()
+            .position(|s| s.id == site_id)
+            .unwrap_or_else(|| {
+                eprintln!("demo site {site_id} not in the radar site table");
+                std::process::exit(2);
+            });
+    }
     let initial_site = geo::RADAR_SITES[default_site_index].id.to_string();
 
     // ── Open disk cache ────────────────────────────────────────
     let cache = Cache::new().await.expect("Ply storage initialisation");
+
+    // ── Kick off the demo volume load, if requested ─────────────
+    // `DemoRequest` is moved into the task rather than shared, so the
+    // startup-load block below can check `demo_label` without touching a
+    // borrowed/consumed `demo_request`.
+    let mut pending_demo = None;
+    let demo_label = demo_request.as_ref().map(|r| r.label());
+    if let Some(req) = demo_request {
+        let storage = cache.storage();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let result = data::fetch_demo_scan(&req, Some(&storage))
+                .await
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(result);
+        });
+        pending_demo = Some(rx);
+    }
 
     // Healthy poll interval (seconds), shared with the worker thread so the
     // persisted setting — and any live change from the settings panel — takes
@@ -543,11 +589,21 @@ async fn main() {
 
     // Kick off a non-blocking load of the last-cached scan for the
     // initial site so we have something to show before the first
-    // network fetch completes.
-    let pending_load = Some(cache.load_scan(&initial_site));
+    // network fetch completes. Skipped in demo mode: it would show a
+    // stale live scan for the pinned site before the demo volume arrives.
+    let pending_load = if demo_label.is_some() {
+        None
+    } else {
+        Some(cache.load_scan(&initial_site))
+    };
 
     // Load the persisted site preference (None on very first launch).
-    let pending_site_load = Some(cache.load_site());
+    // Skipped in demo mode: it would yank the site away from the demo scene.
+    let pending_site_load = if demo_label.is_some() {
+        None
+    } else {
+        Some(cache.load_site())
+    };
 
     // Load persisted settings (None on very first launch — defaults apply).
     let pending_settings_load = Some(cache.load_settings());
@@ -569,15 +625,25 @@ async fn main() {
         pan_km: (0.0, 0.0),
         zoom: 1.0,
         radar_texture: None,
+        radar_texture_is_value: false,
+        palette_material: None,
+        dbz_lut_tex: None,
         needs_reraster: true,
+        melting_layer_hint: None,
+        qc_report: scope::QcReport::default(),
         scan: None,
         tilt_index: 0,
-        status_text: "Loading cached data…".to_string(),
+        status_text: match &demo_label {
+            Some(label) => format!("DEMO — loading {label}…"),
+            None => "Loading cached data…".to_string(),
+        },
         worker_rx,
         site_tx,
         cache,
         pending_load,
         pending_site_load,
+        demo: demo_label.clone(),
+        pending_demo,
         site_dropdown: DropdownState::default(),
         tilt_dropdown: DropdownState::default(),
         borders: Vec::new(),
@@ -647,7 +713,10 @@ async fn main() {
     // found (see the settings-apply block below). Local to `main`, not
     // `AppState` — this isn't state the rest of the app needs to see.
     let mut had_explicit_site_pref = false;
-    let mut site_pref_resolved = false;
+    // Demo mode skips the persisted-site load entirely (the site is pinned to
+    // the demo scene), so there is no site preference to wait for — mark it
+    // resolved up front or the settings-applied gate below never opens.
+    let mut site_pref_resolved = demo_label.is_some();
     let mut settings_applied = false;
 
     loop {
@@ -741,7 +810,12 @@ async fn main() {
         // two is not guaranteed — both are independent oneshot loads).
         if !settings_applied && site_pref_resolved && state.pending_settings_load.is_none() {
             settings_applied = true;
+            // Demo mode pins the site to the scene — restoring the settings'
+            // default site here would call select_site, which (by design)
+            // exits demo and resumes live polling, replacing the historical
+            // scene with current data seconds after launch.
             if !had_explicit_site_pref
+                && state.demo.is_none()
                 && let Some(index) = geo::RADAR_SITES
                     .iter()
                     .position(|s| s.id == state.settings.default_site)
@@ -773,6 +847,11 @@ async fn main() {
 
         // ── Poll worker messages ──────────────────────────────────
         while let Ok(msg) = state.worker_rx.try_recv() {
+            // Demo mode: the worker still polls the pinned site's *live* data —
+            // drop everything it says so it can't overwrite the demo scene.
+            if state.demo.is_some() {
+                continue;
+            }
             match msg {
                 WorkerMessage::NewScan { site, scan } => {
                     let current_site = geo::RADAR_SITES[state.site_index].id.to_string();
@@ -803,6 +882,27 @@ async fn main() {
                     // countdown for the status bar; the toast stays short
                     // and friendly (see widgets::toast).
                     state.status_text = format!("Error: {e}");
+                    show_toast(&mut state, now, toast_widget::ErrorKind::RadarData);
+                }
+            }
+        }
+
+        // ── Poll pending demo volume load ─────────────────────────
+        if let Some(rx) = &mut state.pending_demo
+            && let Ok(result) = rx.try_recv()
+        {
+            state.pending_demo = None;
+            match result {
+                Ok(scan) => {
+                    state.scan = Some(scan);
+                    state.tilt_index = 0;
+                    state.needs_reraster = true;
+                    state.pulse_time = now;
+                    update_scan_status(&mut state, "");
+                }
+                Err(e) => {
+                    let label = state.demo.clone().unwrap_or_default();
+                    state.status_text = format!("DEMO — {label} — load failed: {e}");
                     show_toast(&mut state, now, toast_widget::ErrorKind::RadarData);
                 }
             }
@@ -1025,7 +1125,20 @@ async fn main() {
         // Rasterize when needed
         if state.needs_reraster {
             state.needs_reraster = false;
-            let rgba = scope::rasterize(
+
+            // Melting-layer hint (annotation overlay, not part of the QC
+            // pipeline above) — recomputed alongside the raster so it
+            // stays in step with new scans and the settings toggle without
+            // its own dirty-flag plumbing.
+            state.melting_layer_hint = if state.settings.melting_layer_hint_enabled {
+                state
+                    .scan
+                    .as_ref()
+                    .and_then(|scan| melting_layer::detect(&scan.correlation_coefficient))
+            } else {
+                None
+            };
+            let (rgba, qc_report) = scope::rasterize_with_report(
                 &sweep,
                 state.product,
                 scope::RASTER_SIZE_PX,
@@ -1045,6 +1158,8 @@ async fn main() {
                     nonmet_fuzzy_enabled: state.settings.nonmet_fuzzy_enabled,
                     nonmet_threshold: state.settings.nonmet_threshold,
                     refl_gap_fill_enabled: state.settings.refl_gap_fill_enabled,
+                    multi_scale_texture_enabled: state.settings.multi_scale_texture_enabled,
+                    sun_spike_removal_enabled: state.settings.sun_spike_removal_enabled,
                 },
             );
             let tex = Texture2D::from_rgba8(
@@ -1052,7 +1167,29 @@ async fn main() {
                 scope::RASTER_SIZE_PX as u16,
                 &rgba,
             );
+            // Reflectivity is a value field colorized by the GPU palette shader:
+            // Linear so the GPU interpolates the dBZ value across screen pixels,
+            // then the Nearest-filtered LUT snaps to discrete colors — crisp
+            // bands, smooth edges at any zoom. Other products are CPU-colorized
+            // RGBA; Nearest keeps their band steps crisp.
+            let is_value = state.product == Product::Reflectivity;
+            tex.set_filter(if is_value {
+                macroquad::texture::FilterMode::Linear
+            } else {
+                macroquad::texture::FilterMode::Nearest
+            });
+            state.radar_texture_is_value = is_value;
             state.radar_texture = Some(tex);
+
+            // Build the palette material + LUT once, now that the GL context is
+            // live (can't be done at State construction).
+            if state.palette_material.is_none() {
+                let lut = Texture2D::from_rgba8(256, 1, &colors::dbz_lut());
+                lut.set_filter(macroquad::texture::FilterMode::Nearest);
+                state.dbz_lut_tex = Some(lut);
+                state.palette_material = Some(scope::load_palette_material());
+            }
+            state.qc_report = qc_report;
         }
 
         // Draw scope + overlays directly to screen (avoids render_to_texture
@@ -1060,6 +1197,20 @@ async fn main() {
         // causes a 180° rotation of the content).
         draw_observatory_background();
         if state.view_mode == ViewMode::Radar {
+            // Bind the LUT and hand the palette material to the draw when the
+            // radar texture is a reflectivity value field; None => CPU-colorized
+            // product drawn plainly.
+            let palette = if state.radar_texture_is_value {
+                match (state.palette_material.as_ref(), state.dbz_lut_tex.as_ref()) {
+                    (Some(mat), Some(lut)) => {
+                        mat.set_texture("Palette", lut.clone());
+                        Some(mat)
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
             scope::draw_scope_to_texture(
                 if state.show_radar_data {
                     state.radar_texture.as_ref()
@@ -1083,6 +1234,8 @@ async fn main() {
                 },
                 state.radar_panel_open, // show_sites arg — markers shown only while the Radar panel is open
                 state.settings.show_scope_rings,
+                state.melting_layer_hint.as_ref(),
+                palette,
             );
 
             // Radar sweep line (optional observatory visual flourish) — gated on
@@ -2426,6 +2579,8 @@ async fn main() {
                         &state.settings.location_input,
                         state.location_input_focused,
                         &loc_status,
+                        state.qc_report,
+                        state.product.label(),
                     );
                 }
 
@@ -2494,6 +2649,7 @@ async fn main() {
                             Product::DifferentialReflectivity => colors::ZDR_LEGEND,
                             Product::CorrelationCoefficient => colors::CC_LEGEND,
                             Product::DifferentialPhase => colors::PHIDP_LEGEND,
+                            Product::SpecificDifferentialPhase => colors::KDP_LEGEND,
                         };
 
                         // Left: two stacked rows (color key + radar readout).
@@ -2605,6 +2761,19 @@ async fn main() {
                                                         .color(0x9E9590)
                                                 },
                                             );
+                                            if let Some(hint) = &state.melting_layer_hint {
+                                                ui.text(
+                                                    &format!(
+                                                        "Melting layer: ~{:.1} km ({:.1}° tilt)",
+                                                        hint.height_km, hint.elevation_deg
+                                                    ),
+                                                    |text| {
+                                                        text.font_size(11)
+                                                            .font(&MONO_FONT)
+                                                            .color(0x9E9590)
+                                                    },
+                                                );
+                                            }
                                         });
                                 });
                         }
@@ -2876,6 +3045,9 @@ fn handle_input(
             if is_key_pressed(KeyCode::P) {
                 select_product(state, Product::DifferentialPhase);
             }
+            if is_key_pressed(KeyCode::K) {
+                select_product(state, Product::SpecificDifferentialPhase);
+            }
             if is_key_pressed(KeyCode::T) {
                 let tilt_count = state
                     .scan
@@ -3083,6 +3255,66 @@ fn handle_input(
             state.settings.refl_gap_fill_enabled = !state.settings.refl_gap_fill_enabled;
             state.cache.save_settings(&state.settings);
             state.needs_reraster = true;
+        }
+        if ply.is_just_pressed(settings_widget::MULTI_SCALE_TEXTURE_TOGGLE_ID) {
+            state.settings.multi_scale_texture_enabled =
+                !state.settings.multi_scale_texture_enabled;
+            state.cache.save_settings(&state.settings);
+            state.needs_reraster = true;
+        }
+        if ply.is_just_pressed(settings_widget::SUN_SPIKE_TOGGLE_ID) {
+            state.settings.sun_spike_removal_enabled = !state.settings.sun_spike_removal_enabled;
+            state.cache.save_settings(&state.settings);
+            state.needs_reraster = true;
+        }
+        if ply.is_just_pressed(settings_widget::MELTING_LAYER_TOGGLE_ID) {
+            state.settings.melting_layer_hint_enabled = !state.settings.melting_layer_hint_enabled;
+            state.cache.save_settings(&state.settings);
+            // Not a raster QC pass — this just re-triggers the hint
+            // recompute that lives alongside the raster (see above).
+            state.needs_reraster = true;
+        }
+        // Threshold steppers: nudge each QC knob, clamp to a sane range,
+        // persist, and re-raster so the effect is visible immediately.
+        {
+            let s = &mut state.settings;
+            let mut qc_changed = false;
+            if ply.is_just_pressed(settings_widget::CC_GATE_DEC_ID) {
+                s.cc_gate_threshold = (s.cc_gate_threshold - 0.05).clamp(0.0, 1.0);
+                qc_changed = true;
+            }
+            if ply.is_just_pressed(settings_widget::CC_GATE_INC_ID) {
+                s.cc_gate_threshold = (s.cc_gate_threshold + 0.05).clamp(0.0, 1.0);
+                qc_changed = true;
+            }
+            if ply.is_just_pressed(settings_widget::NONMET_DEC_ID) {
+                s.nonmet_threshold = (s.nonmet_threshold - 0.05).clamp(0.0, 1.0);
+                qc_changed = true;
+            }
+            if ply.is_just_pressed(settings_widget::NONMET_INC_ID) {
+                s.nonmet_threshold = (s.nonmet_threshold + 0.05).clamp(0.0, 1.0);
+                qc_changed = true;
+            }
+            if ply.is_just_pressed(settings_widget::REFL_FLOOR_DEC_ID) {
+                s.refl_floor_dbz = (s.refl_floor_dbz - 1.0).clamp(0.0, 40.0);
+                qc_changed = true;
+            }
+            if ply.is_just_pressed(settings_widget::REFL_FLOOR_INC_ID) {
+                s.refl_floor_dbz = (s.refl_floor_dbz + 1.0).clamp(0.0, 40.0);
+                qc_changed = true;
+            }
+            if ply.is_just_pressed(settings_widget::VEL_SD_DEC_ID) {
+                s.vel_sd_threshold = (s.vel_sd_threshold - 1.0).clamp(0.0, 20.0);
+                qc_changed = true;
+            }
+            if ply.is_just_pressed(settings_widget::VEL_SD_INC_ID) {
+                s.vel_sd_threshold = (s.vel_sd_threshold + 1.0).clamp(0.0, 20.0);
+                qc_changed = true;
+            }
+            if qc_changed {
+                state.cache.save_settings(&state.settings);
+                state.needs_reraster = true;
+            }
         }
         if ply.is_just_pressed(settings_widget::ANIMATION_CYCLE_ID) {
             state.settings.animation_level = state.settings.animation_level.next();
@@ -3508,8 +3740,10 @@ fn select_site(state: &mut AppState, index: usize) {
     if index >= geo::RADAR_SITES.len() || index == state.site_index {
         return;
     }
-
     state.site_index = index;
+    // Switching sites exits demo mode — the worker resumes live polling.
+    state.demo = None;
+    state.pending_demo = None;
     state.tilt_index = 0;
     state.tilt_dropdown.close();
     let site_id = geo::RADAR_SITES[index].id.to_string();
@@ -3562,5 +3796,10 @@ fn update_scan_status(state: &mut AppState, suffix: &str) {
             nyquist,
             suffix,
         );
+    }
+    if let Some(label) = &state.demo
+        && !state.status_text.starts_with("DEMO — ")
+    {
+        state.status_text = format!("DEMO — {label} — {}", state.status_text);
     }
 }

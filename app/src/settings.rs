@@ -94,8 +94,12 @@ fn default_cc_threshold() -> f32 {
 }
 
 /// Serde default for [`Settings::refl_floor_dbz`] (missing in older configs).
+/// 20 dBZ, deliberately *above* the always-on baked range floor (20/10/5 by
+/// range in `scope::clean_sweep`) so enabling the toggle actually cuts weak
+/// echo — a lower value (the old 7.0) sits under the baked floor and is a
+/// visible no-op. Adjustable per-user via the settings stepper.
 fn default_refl_floor() -> f32 {
-    7.0
+    20.0
 }
 
 /// Serde default for [`Settings::vel_sd_threshold`] (missing in older configs).
@@ -221,6 +225,23 @@ pub struct Settings {
     /// Default OFF — honest rendering by default (see `scope::clean_sweep`).
     #[serde(default)]
     pub refl_gap_fill_enabled: bool,
+    /// Whether multi-scale TDBZ texture filtering runs on Reflectivity
+    /// (two window sizes: single-scale kernel and size+6). Default OFF — it's
+    /// more aggressive than the single-scale pass (see `scope::clean_sweep`).
+    #[serde(default)]
+    pub multi_scale_texture_enabled: bool,
+    /// Whether sun-spike / RFI radial removal nulls narrow high-value
+    /// "spoke" radials (solar noise, co-channel interference) that are
+    /// bright-and-long-in-range but isolated in azimuth. Default OFF —
+    /// honest rendering by default (see `scope::clean_sweep`).
+    #[serde(default)]
+    pub sun_spike_removal_enabled: bool,
+    /// Whether the melting-layer hint overlay (an annotation, not a QC
+    /// null — see `melting_layer.rs`) draws its faint ring on the scope
+    /// and shows its estimated height in the status bar. Default OFF —
+    /// honest rendering by default.
+    #[serde(default)]
+    pub melting_layer_hint_enabled: bool,
 }
 
 impl Default for Settings {
@@ -249,13 +270,16 @@ impl Default for Settings {
             cc_gate_enabled: true,
             cc_gate_threshold: 0.80,
             refl_floor_enabled: true,
-            refl_floor_dbz: 7.0,
+            refl_floor_dbz: 20.0,
             vel_sd_censor_enabled: true,
             vel_sd_threshold: 7.0,
             vel_dealias_enabled: true,
             nonmet_fuzzy_enabled: false,
             nonmet_threshold: crate::nonmet::NONMET_THRESHOLD_DEFAULT,
             refl_gap_fill_enabled: false,
+            multi_scale_texture_enabled: false,
+            sun_spike_removal_enabled: false,
+            melting_layer_hint_enabled: false,
         }
     }
 }
@@ -283,13 +307,16 @@ mod tests {
         assert!(settings.cc_gate_enabled);
         assert_eq!(settings.cc_gate_threshold, 0.80);
         assert!(settings.refl_floor_enabled);
-        assert_eq!(settings.refl_floor_dbz, 7.0);
+        assert_eq!(settings.refl_floor_dbz, 20.0);
         assert!(settings.vel_sd_censor_enabled);
         assert_eq!(settings.vel_sd_threshold, 7.0);
         assert!(settings.vel_dealias_enabled);
         assert!(!settings.nonmet_fuzzy_enabled);
         assert_eq!(settings.nonmet_threshold, 0.5);
         assert!(!settings.refl_gap_fill_enabled);
+        assert!(!settings.multi_scale_texture_enabled);
+        assert!(!settings.sun_spike_removal_enabled);
+        assert!(!settings.melting_layer_hint_enabled);
     }
 
     #[test]
@@ -325,6 +352,9 @@ mod tests {
             nonmet_fuzzy_enabled: true,
             nonmet_threshold: 0.6,
             refl_gap_fill_enabled: true,
+            multi_scale_texture_enabled: true,
+            sun_spike_removal_enabled: true,
+            melting_layer_hint_enabled: true,
         };
         let json = serde_json::to_string(&settings).expect("serialize");
         let restored: Settings = serde_json::from_str(&json).expect("deserialize");
@@ -374,9 +404,9 @@ mod tests {
         // Missing CC-gate fields default to on/0.80.
         assert!(s.cc_gate_enabled);
         assert_eq!(s.cc_gate_threshold, 0.80);
-        // Missing noise-floor fields default to on/7.0.
+        // Missing noise-floor fields default to on/20.0.
         assert!(s.refl_floor_enabled);
-        assert_eq!(s.refl_floor_dbz, 7.0);
+        assert_eq!(s.refl_floor_dbz, 20.0);
         // Missing velocity-SD fields default to on/7.0.
         assert!(s.vel_sd_censor_enabled);
         assert_eq!(s.vel_sd_threshold, 7.0);
@@ -387,5 +417,9 @@ mod tests {
         assert_eq!(s.nonmet_threshold, 0.5);
         // Missing gap-fill field defaults off (honest rendering by default).
         assert!(!s.refl_gap_fill_enabled);
+        // Missing sun-spike field defaults off (honest rendering by default).
+        assert!(!s.sun_spike_removal_enabled);
+        // Missing melting-layer field defaults off (honest rendering by default).
+        assert!(!s.melting_layer_hint_enabled);
     }
 }

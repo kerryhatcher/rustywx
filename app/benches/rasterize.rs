@@ -37,6 +37,8 @@ fn bench_rasterize(c: &mut Criterion) {
                             nonmet_fuzzy_enabled: false,
                             nonmet_threshold: 0.5,
                             refl_gap_fill_enabled: false,
+                            multi_scale_texture_enabled: false,
+                            sun_spike_removal_enabled: false,
                         },
                     ))
                 });

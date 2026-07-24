@@ -13,7 +13,7 @@ use crate::nhc::{NhcBundle, NhcFetchState};
 use crate::settings::Settings;
 use crate::widgets::dropdown::DropdownState;
 use crate::widgets::toast::Toast;
-use ply_engine::prelude::Texture2D;
+use ply_engine::prelude::{Material, Texture2D};
 use std::collections::HashMap;
 use std::sync::mpsc;
 use tokio::sync::oneshot;
@@ -59,9 +59,24 @@ pub struct AppState {
     /// Zoom factor (1.0 = default).
     pub zoom: f32,
     /// Cached rasterised radar texture; rebuilt when `needs_reraster` is set.
+    /// For Reflectivity this holds a value field (R = dBZ, A = coverage) drawn
+    /// through `palette_material`; for other products it is a colorized RGBA.
     pub radar_texture: Option<Texture2D>,
+    /// True when `radar_texture` is a value field needing the GPU palette shader.
+    pub radar_texture_is_value: bool,
+    /// GPU palette material + LUT for reflectivity, built lazily once the
+    /// graphics context exists.
+    pub palette_material: Option<Material>,
+    pub dbz_lut_tex: Option<Texture2D>,
     /// Dirty flag — re-rasterise the sweep on the next frame.
     pub needs_reraster: bool,
+    /// Melting-layer hint estimated from the latest scan's CC sweeps (see
+    /// `melting_layer.rs`); recomputed alongside the raster when
+    /// `Settings::melting_layer_hint_enabled` is on, `None` otherwise.
+    pub melting_layer_hint: Option<crate::melting_layer::MeltingLayerHint>,
+    /// Gates removed by the QC passes on the last raster (current product),
+    /// surfaced as live feedback in the settings panel.
+    pub qc_report: crate::scope::QcReport,
 
     // ── Persistence ────────────────────────────────────────────
     /// Ply storage cache handle (Clone — cheap to share).
@@ -70,6 +85,11 @@ pub struct AppState {
     pub pending_load: Option<oneshot::Receiver<Option<ScanData>>>,
     /// Pending site-preference load (first launch restores last site).
     pub pending_site_load: Option<oneshot::Receiver<Option<String>>>,
+    /// Active demo scene label (`--demo` flag) — `Some` pins the site and
+    /// suppresses live worker messages so polling can't overwrite the scene.
+    pub demo: Option<String>,
+    /// In-flight demo volume load (tokio task + oneshot, polled per frame).
+    pub pending_demo: Option<oneshot::Receiver<Result<ScanData, String>>>,
 
     // ── Real data (Stage 2 formalises caching/error states) ──────
     /// Latest decoded volume scan, if one has arrived.

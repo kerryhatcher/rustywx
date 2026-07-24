@@ -98,6 +98,21 @@ pub const PHIDP_LEGEND: &[(f32, [u8; 4])] = &[
     (360.0, [0x80, 0x00, 0x80, 0xff]), // purple (wraps toward navy)
 ];
 
+/// Specific differential phase (KDP) in deg/km — derived (see `kdp.rs`), not
+/// decoded. Rain-rate proxy: near-zero/slightly-negative is noise (light
+/// rain or non-precip, no differential phase gradient); rising through
+/// green→yellow→orange→red for increasingly heavy rain and large/mixed-phase
+/// drops. Range ~ -1..8 deg/km, mirroring `ZDR_LEGEND`'s diverging shape.
+pub const KDP_LEGEND: &[(f32, [u8; 4])] = &[
+    (-1.0, [0x40, 0x00, 0x80, 0xff]), // deep purple (spurious negative)
+    (0.0, [0x80, 0x80, 0x80, 0xff]),  // neutral gray (near-zero KDP)
+    (0.5, [0x00, 0x80, 0x00, 0xff]),  // green
+    (1.5, [0x00, 0xe0, 0x00, 0xff]),  // bright green
+    (3.0, [0xfd, 0xf8, 0x02, 0xff]),  // yellow
+    (5.0, [0xfd, 0x95, 0x00, 0xff]),  // orange
+    (8.0, [0xfd, 0x00, 0x00, 0xff]),  // red
+];
+
 /// Range-folded ("RF") gates — NWS convention draws these a distinct purple.
 pub const RANGE_FOLDED_COLOR: [u8; 4] = [0x77, 0x00, 0x77, 0xff];
 
@@ -170,6 +185,34 @@ pub fn dbz_color(dbz: f32) -> [u8; 4] {
     spline_color(DBZ_LEGEND, dbz)
 }
 
+/// dBZ palette range baked into the GPU lookup texture. Values are normalized
+/// to [0,1] over this span before indexing the LUT, so it must cover the whole
+/// visible reflectivity range (below ~5 dBZ `dbz_color` is transparent).
+pub const DBZ_LUT_MIN: f32 = 0.0;
+pub const DBZ_LUT_MAX: f32 = 80.0;
+
+/// Width of one reflectivity color band in the GPU LUT — the classic NWS
+/// 5 dBZ step, matching `DBZ_LEGEND`'s anchor spacing.
+pub const DBZ_BAND_STEP: f32 = 5.0;
+
+/// Build a 256×1 RGBA lookup texture of the reflectivity palette, one entry per
+/// normalized dBZ step over [`DBZ_LUT_MIN`, `DBZ_LUT_MAX`], quantized to
+/// [`DBZ_BAND_STEP`]-wide bands (each entry is `dbz_color` at its band floor,
+/// i.e. the NWS anchor color). Sampled with Nearest filtering on the GPU the
+/// steps stay razor-sharp at any zoom while the value field it indexes is
+/// interpolated — hard color-band edges, smooth flowing boundaries. A smooth
+/// spline ramp here would make color borders exactly as soft as the value
+/// gradient, defeating the crisp-band goal of the shader path.
+pub fn dbz_lut() -> [u8; 256 * 4] {
+    let mut lut = [0u8; 256 * 4];
+    for i in 0..256 {
+        let dbz = DBZ_LUT_MIN + (i as f32 / 255.0) * (DBZ_LUT_MAX - DBZ_LUT_MIN);
+        let band = (dbz / DBZ_BAND_STEP).floor() * DBZ_BAND_STEP;
+        lut[i * 4..i * 4 + 4].copy_from_slice(&dbz_color(band));
+    }
+    lut
+}
+
 pub fn velocity_color(ms: f32) -> [u8; 4] {
     spline_color(VELOCITY_LEGEND, ms.max(-64.0))
 }
@@ -190,12 +233,16 @@ pub fn phidp_color(deg: f32) -> [u8; 4] {
     spline_color(PHIDP_LEGEND, deg)
 }
 
+pub fn kdp_color(deg_per_km: f32) -> [u8; 4] {
+    spline_color(KDP_LEGEND, deg_per_km)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        CC_LEGEND, DBZ_LEGEND, PHIDP_LEGEND, SPECTRUM_WIDTH_LEGEND, VELOCITY_LEGEND, ZDR_LEGEND,
-        catmull_rom, cc_color, dbz_color, phidp_color, spectrum_width_color, velocity_color,
-        zdr_color,
+        CC_LEGEND, DBZ_LEGEND, KDP_LEGEND, PHIDP_LEGEND, SPECTRUM_WIDTH_LEGEND, VELOCITY_LEGEND,
+        ZDR_LEGEND, catmull_rom, cc_color, dbz_color, kdp_color, phidp_color, spectrum_width_color,
+        velocity_color, zdr_color,
     };
 
     #[test]
@@ -302,6 +349,7 @@ mod tests {
         assert!(ZDR_LEGEND.windows(2).all(|w| w[0].0 < w[1].0));
         assert!(CC_LEGEND.windows(2).all(|w| w[0].0 < w[1].0));
         assert!(PHIDP_LEGEND.windows(2).all(|w| w[0].0 < w[1].0));
+        assert!(KDP_LEGEND.windows(2).all(|w| w[0].0 < w[1].0));
     }
 
     #[test]
@@ -344,6 +392,9 @@ mod tests {
         for &(threshold, color) in PHIDP_LEGEND {
             assert_eq!(phidp_color(threshold), color);
         }
+        for &(threshold, color) in KDP_LEGEND {
+            assert_eq!(kdp_color(threshold), color);
+        }
     }
 
     #[test]
@@ -357,9 +408,44 @@ mod tests {
     }
 
     #[test]
+    fn kdp_below_minimum_is_transparent() {
+        assert_eq!(kdp_color(-5.0), [0, 0, 0, 0]);
+    }
+
+    #[test]
     fn catmull_rom_endpoints_exact() {
         // At t=0 returns p1, at t=1 returns p2.
         assert!((catmull_rom(0.0, 10.0, 20.0, 30.0, 0.0) - 10.0).abs() < 1e-4);
         assert!((catmull_rom(0.0, 10.0, 20.0, 30.0, 1.0) - 20.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn dbz_lut_is_banded_in_5_dbz_steps() {
+        // The GPU LUT is quantized to classic 5 dBZ bands so the Nearest-
+        // filtered palette lookup produces razor-sharp band edges; a smooth
+        // ramp here would make color borders exactly as soft as the value
+        // gradient. Entry i covers dbz = i/255 * 80.
+        let lut = super::dbz_lut();
+        let entry = |i: usize| [lut[i * 4], lut[i * 4 + 1], lut[i * 4 + 2], lut[i * 4 + 3]];
+
+        // Below 5 dBZ: transparent (entry 15 = 4.7 dBZ).
+        assert_eq!(entry(0), [0, 0, 0, 0]);
+        assert_eq!(entry(15), [0, 0, 0, 0]);
+
+        // 5-10 dBZ band (entries 16..=31): flat at the 5 dBZ anchor color.
+        assert_eq!(entry(16), [0x04, 0xe9, 0xe7, 0xff]);
+        assert_eq!(entry(31), [0x04, 0xe9, 0xe7, 0xff]);
+
+        // Hard step at the 10 dBZ boundary (entry 32 = 10.04 dBZ).
+        assert_eq!(entry(32), [0x01, 0x9f, 0xf4, 0xff]);
+        assert_ne!(entry(31), entry(32));
+
+        // 20-25 dBZ band is flat green from the 20 dBZ anchor.
+        // Entry 64 = 20.1 dBZ, entry 79 = 24.8 dBZ.
+        assert_eq!(entry(64), [0x02, 0xfd, 0x02, 0xff]);
+        assert_eq!(entry(64), entry(79));
+
+        // Top of range clamps to the last anchor (white cap).
+        assert_eq!(entry(255), [0xfd, 0xfd, 0xfd, 0xff]);
     }
 }

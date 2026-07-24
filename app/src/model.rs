@@ -19,6 +19,7 @@ pub enum Product {
     DifferentialReflectivity,
     CorrelationCoefficient,
     DifferentialPhase,
+    SpecificDifferentialPhase,
 }
 
 impl Product {
@@ -30,6 +31,7 @@ impl Product {
             Product::DifferentialReflectivity => "Differential Reflectivity",
             Product::CorrelationCoefficient => "Correlation Coefficient",
             Product::DifferentialPhase => "Differential Phase",
+            Product::SpecificDifferentialPhase => "Specific Differential Phase",
         }
     }
 
@@ -41,6 +43,7 @@ impl Product {
             Product::DifferentialReflectivity => "dB",
             Product::CorrelationCoefficient => "",
             Product::DifferentialPhase => "°",
+            Product::SpecificDifferentialPhase => "°/km",
         }
     }
 }
@@ -158,6 +161,13 @@ pub struct ScanData {
     pub correlation_coefficient: Vec<SweepData>,
     #[serde(default)]
     pub differential_phase: Vec<SweepData>,
+    /// KDP — derived from `differential_phase`, not decoded from a radar
+    /// moment. Populated by `data::fetch_latest_scan` via `kdp::derive_kdp_sweeps`
+    /// after ΦDP decode; empty here (and on any `ScanData` built by
+    /// `from_sweeps`/`from_nexrad` directly, e.g. in tests) until that
+    /// derivation step runs. See `docs/qc-and-derived-products-plan.md`.
+    #[serde(default)]
+    pub specific_differential_phase: Vec<SweepData>,
     pub vcp_number: u16,
 }
 
@@ -170,6 +180,7 @@ impl ScanData {
             Product::DifferentialReflectivity => &self.differential_reflectivity,
             Product::CorrelationCoefficient => &self.correlation_coefficient,
             Product::DifferentialPhase => &self.differential_phase,
+            Product::SpecificDifferentialPhase => &self.specific_differential_phase,
         }
     }
 
@@ -231,6 +242,11 @@ impl ScanData {
                             Product::DifferentialReflectivity => radial.differential_reflectivity(),
                             Product::CorrelationCoefficient => radial.correlation_coefficient(),
                             Product::DifferentialPhase => radial.differential_phase(),
+                            // KDP is derived, never decoded from a moment —
+                            // never reached (this product isn't in the
+                            // `[(Product, &mut Vec<SweepData>); 6]` array
+                            // above), but the match must stay exhaustive.
+                            Product::SpecificDifferentialPhase => None,
                         }?;
                         if geometry.is_none() {
                             geometry = Some((
@@ -303,6 +319,9 @@ impl ScanData {
             differential_reflectivity,
             correlation_coefficient,
             differential_phase,
+            // Derived downstream from `differential_phase` by
+            // `data::fetch_latest_scan`, not here — see the field doc.
+            specific_differential_phase: Vec::new(),
             vcp_number,
         }
     }
