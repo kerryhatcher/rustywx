@@ -893,7 +893,8 @@ async fn main() {
                     update_scan_status(&mut state, "");
                 }
                 Err(e) => {
-                    state.status_text = format!("Demo load failed: {e}");
+                    let label = state.demo.clone().unwrap_or_default();
+                    state.status_text = format!("DEMO — {label} — load failed: {e}");
                     show_toast(&mut state, now, toast_widget::ErrorKind::RadarData);
                 }
             }
@@ -3789,7 +3790,9 @@ fn update_scan_status(state: &mut AppState, suffix: &str) {
             suffix,
         );
     }
-    if let Some(label) = &state.demo {
+    if let Some(label) = &state.demo
+        && !state.status_text.starts_with("DEMO — ")
+    {
         state.status_text = format!("DEMO — {label} — {}", state.status_text);
     }
 }
