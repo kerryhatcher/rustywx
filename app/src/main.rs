@@ -483,6 +483,15 @@ fn window_conf() -> macroquad::conf::Conf {
 
 #[macroquad::main(window_conf)]
 async fn main() {
+    // ── Demo mode (--demo <event|path>) ────────────────────────
+    let demo_request = match rustywx::demo::parse_args(std::env::args().skip(1)) {
+        Ok(req) => req,
+        Err(msg) => {
+            eprintln!("{msg}");
+            std::process::exit(2);
+        }
+    };
+
     // Tokio runtime for cache I/O and other async background work.
     // The game loop is driven by macroquad's async executor; this
     // runtime lives alongside it so `tokio::spawn` works everywhere.
@@ -524,14 +533,45 @@ async fn main() {
 
     // Default to KFFC (Atlanta, GA) on first launch. The persisted
     // site preference (loaded below) may override this once it arrives.
-    let default_site_index = geo::RADAR_SITES
+    let mut default_site_index = geo::RADAR_SITES
         .iter()
         .position(|s| s.id == "KFFC")
         .unwrap_or(0);
+    if let Some(req) = &demo_request {
+        let site_id = req.site_id().unwrap_or_else(|msg| {
+            eprintln!("{msg}");
+            std::process::exit(2);
+        });
+        default_site_index = geo::RADAR_SITES
+            .iter()
+            .position(|s| s.id == site_id)
+            .unwrap_or_else(|| {
+                eprintln!("demo site {site_id} not in the radar site table");
+                std::process::exit(2);
+            });
+    }
     let initial_site = geo::RADAR_SITES[default_site_index].id.to_string();
 
     // ── Open disk cache ────────────────────────────────────────
     let cache = Cache::new().await.expect("Ply storage initialisation");
+
+    // ── Kick off the demo volume load, if requested ─────────────
+    // `DemoRequest` is moved into the task rather than shared, so the
+    // startup-load block below can check `demo_label` without touching a
+    // borrowed/consumed `demo_request`.
+    let mut pending_demo = None;
+    let demo_label = demo_request.as_ref().map(|r| r.label());
+    if let Some(req) = demo_request {
+        let storage = cache.storage();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let result = data::fetch_demo_scan(&req, Some(&storage))
+                .await
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(result);
+        });
+        pending_demo = Some(rx);
+    }
 
     // Healthy poll interval (seconds), shared with the worker thread so the
     // persisted setting — and any live change from the settings panel — takes
@@ -549,11 +589,21 @@ async fn main() {
 
     // Kick off a non-blocking load of the last-cached scan for the
     // initial site so we have something to show before the first
-    // network fetch completes.
-    let pending_load = Some(cache.load_scan(&initial_site));
+    // network fetch completes. Skipped in demo mode: it would show a
+    // stale live scan for the pinned site before the demo volume arrives.
+    let pending_load = if demo_label.is_some() {
+        None
+    } else {
+        Some(cache.load_scan(&initial_site))
+    };
 
     // Load the persisted site preference (None on very first launch).
-    let pending_site_load = Some(cache.load_site());
+    // Skipped in demo mode: it would yank the site away from the demo scene.
+    let pending_site_load = if demo_label.is_some() {
+        None
+    } else {
+        Some(cache.load_site())
+    };
 
     // Load persisted settings (None on very first launch — defaults apply).
     let pending_settings_load = Some(cache.load_settings());
@@ -583,12 +633,17 @@ async fn main() {
         qc_report: scope::QcReport::default(),
         scan: None,
         tilt_index: 0,
-        status_text: "Loading cached data…".to_string(),
+        status_text: match &demo_label {
+            Some(label) => format!("DEMO — loading {label}…"),
+            None => "Loading cached data…".to_string(),
+        },
         worker_rx,
         site_tx,
         cache,
         pending_load,
         pending_site_load,
+        demo: demo_label.clone(),
+        pending_demo,
         site_dropdown: DropdownState::default(),
         tilt_dropdown: DropdownState::default(),
         borders: Vec::new(),
@@ -784,6 +839,11 @@ async fn main() {
 
         // ── Poll worker messages ──────────────────────────────────
         while let Ok(msg) = state.worker_rx.try_recv() {
+            // Demo mode: the worker still polls the pinned site's *live* data —
+            // drop everything it says so it can't overwrite the demo scene.
+            if state.demo.is_some() {
+                continue;
+            }
             match msg {
                 WorkerMessage::NewScan { site, scan } => {
                     let current_site = geo::RADAR_SITES[state.site_index].id.to_string();
@@ -814,6 +874,26 @@ async fn main() {
                     // countdown for the status bar; the toast stays short
                     // and friendly (see widgets::toast).
                     state.status_text = format!("Error: {e}");
+                    show_toast(&mut state, now, toast_widget::ErrorKind::RadarData);
+                }
+            }
+        }
+
+        // ── Poll pending demo volume load ─────────────────────────
+        if let Some(rx) = &mut state.pending_demo
+            && let Ok(result) = rx.try_recv()
+        {
+            state.pending_demo = None;
+            match result {
+                Ok(scan) => {
+                    state.scan = Some(scan);
+                    state.tilt_index = 0;
+                    state.needs_reraster = true;
+                    state.pulse_time = now;
+                    update_scan_status(&mut state, "");
+                }
+                Err(e) => {
+                    state.status_text = format!("Demo load failed: {e}");
                     show_toast(&mut state, now, toast_widget::ErrorKind::RadarData);
                 }
             }
@@ -3653,6 +3733,9 @@ fn select_site(state: &mut AppState, index: usize) {
     }
 
     state.site_index = index;
+    // Switching sites exits demo mode — the worker resumes live polling.
+    state.demo = None;
+    state.pending_demo = None;
     state.tilt_index = 0;
     state.tilt_dropdown.close();
     let site_id = geo::RADAR_SITES[index].id.to_string();
@@ -3705,5 +3788,8 @@ fn update_scan_status(state: &mut AppState, suffix: &str) {
             nyquist,
             suffix,
         );
+    }
+    if let Some(label) = &state.demo {
+        state.status_text = format!("DEMO — {label} — {}", state.status_text);
     }
 }

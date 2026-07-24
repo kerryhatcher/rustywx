@@ -85,6 +85,11 @@ pub struct AppState {
     pub pending_load: Option<oneshot::Receiver<Option<ScanData>>>,
     /// Pending site-preference load (first launch restores last site).
     pub pending_site_load: Option<oneshot::Receiver<Option<String>>>,
+    /// Active demo scene label (`--demo` flag) — `Some` pins the site and
+    /// suppresses live worker messages so polling can't overwrite the scene.
+    pub demo: Option<String>,
+    /// In-flight demo volume load (tokio task + oneshot, polled per frame).
+    pub pending_demo: Option<oneshot::Receiver<Result<ScanData, String>>>,
 
     // ── Real data (Stage 2 formalises caching/error states) ──────
     /// Latest decoded volume scan, if one has arrived.
