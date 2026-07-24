@@ -810,7 +810,12 @@ async fn main() {
         // two is not guaranteed — both are independent oneshot loads).
         if !settings_applied && site_pref_resolved && state.pending_settings_load.is_none() {
             settings_applied = true;
+            // Demo mode pins the site to the scene — restoring the settings'
+            // default site here would call select_site, which (by design)
+            // exits demo and resumes live polling, replacing the historical
+            // scene with current data seconds after launch.
             if !had_explicit_site_pref
+                && state.demo.is_none()
                 && let Some(index) = geo::RADAR_SITES
                     .iter()
                     .position(|s| s.id == state.settings.default_site)
@@ -3735,7 +3740,6 @@ fn select_site(state: &mut AppState, index: usize) {
     if index >= geo::RADAR_SITES.len() || index == state.site_index {
         return;
     }
-
     state.site_index = index;
     // Switching sites exits demo mode — the worker resumes live polling.
     state.demo = None;
