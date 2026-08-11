@@ -45,6 +45,7 @@ nexrad = "nexrad"
 dBZ = "dBZ"
 dbz = "dbz"
 # Crate names
+flate = "flate"
 ureq = "ureq"
 rusqlite = "rusqlite"
 # GIS terms
