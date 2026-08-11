@@ -2,12 +2,14 @@
 //! decodes it off the UI thread, and reports over an mpsc channel.
 //! Adapted from rustywx/src/data.rs for Ply — no egui dependency.
 
+use crate::demo::DemoRequest;
 use crate::model::ScanData;
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use nexrad_data::aws::archive::{Identifier, download_file, list_files};
 use nexrad_data::volume::File as VolumeFile;
 use nexrad_decode::messages::{Message, MessageContents};
+use ply_engine::prelude::Storage;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -82,14 +84,85 @@ pub async fn fetch_latest_scan(
         .await
         .map_err(|e| anyhow!("downloading volume: {e}"))?;
 
-    let scan = file.scan().map_err(|e| anyhow!("decoding volume: {e}"))?;
-    let nyquist_by_elev = nyquist_by_elevation(&file);
+    Ok(Some(scan_from_volume(&file, timestamp)?))
+}
 
-    Ok(Some(ScanData::from_nexrad(
-        &scan,
-        timestamp,
-        &nyquist_by_elev,
-    )))
+/// Decode a volume file into `ScanData` — the shared tail of the live and
+/// demo fetch paths, so the two cannot drift.
+fn scan_from_volume(file: &VolumeFile, timestamp: DateTime<Utc>) -> Result<ScanData> {
+    let scan = file.scan().map_err(|e| anyhow!("decoding volume: {e}"))?;
+    let nyquist_by_elev = nyquist_by_elevation(file);
+
+    let mut scan_data = ScanData::from_nexrad(&scan, timestamp, &nyquist_by_elev);
+    // KDP isn't a decoded moment — derive it from the ΦDP sweeps just
+    // decoded above. Empty ΦDP (legacy scan) derives to an empty KDP, same
+    // convention as the other dual-pol products.
+    scan_data.specific_differential_phase =
+        crate::kdp::derive_kdp_sweeps(&scan_data.differential_phase);
+
+    Ok(scan_data)
+}
+
+/// Ply storage key for a cached raw demo volume (bytes exactly as downloaded,
+/// which may be gzip-wrapped for pre-2016 archives).
+fn demo_cache_key(volume_name: &str) -> String {
+    format!("demo_volume_{volume_name}")
+}
+
+/// Fetch and decode a demo volume: a curated archive event (downloaded once,
+/// then served from the raw-bytes cache) or a local Level II file. Decodes
+/// through the same `scan_from_volume` as the live path.
+pub async fn fetch_demo_scan(req: &DemoRequest, storage: Option<&Storage>) -> Result<ScanData> {
+    let volume_name = req.volume_name();
+    let timestamp = Identifier::new(volume_name.clone())
+        .date_time()
+        .ok_or_else(|| anyhow!("no timestamp in demo volume name {volume_name:?}"))?;
+
+    let (bytes, from_cache) = match req {
+        DemoRequest::File(path) => (
+            std::fs::read(path).map_err(|e| anyhow!("reading demo volume {path:?}: {e}"))?,
+            false,
+        ),
+        DemoRequest::Event(ev) => {
+            let key = demo_cache_key(ev.volume_name);
+            let cached = match storage {
+                Some(s) => s.load_bytes(&key).await.ok().flatten(),
+                None => None,
+            };
+            match cached {
+                Some(bytes) => (bytes, true),
+                None => {
+                    let file = download_file(Identifier::new(ev.volume_name.to_string()))
+                        .await
+                        .map_err(|e| anyhow!("downloading demo volume {}: {e}", ev.volume_name))?;
+                    let bytes = file.data().to_vec();
+                    if let Some(s) = storage {
+                        let _ = s.save_bytes(&key, &bytes).await;
+                    }
+                    (bytes, false)
+                }
+            }
+        }
+    };
+
+    // Pre-2016 archive volumes are gzip-wrapped; decompress() is a no-op for
+    // modern files.
+    let decoded = VolumeFile::new(bytes)
+        .decompress()
+        .map_err(|e| anyhow!("decompressing demo volume {volume_name}: {e}"))
+        .and_then(|file| scan_from_volume(&file, timestamp));
+
+    match decoded {
+        Ok(scan) => Ok(scan),
+        Err(e) => {
+            // Self-heal a corrupt cache entry — whether it failed gzip
+            // inflation or volume decode — so the next run re-downloads.
+            if from_cache && let (Some(s), DemoRequest::Event(ev)) = (storage, req) {
+                let _ = s.remove(&demo_cache_key(ev.volume_name)).await;
+            }
+            Err(e)
+        }
+    }
 }
 
 /// Nyquist velocity (m/s), by elevation number, recovered from Message 31
@@ -232,6 +305,42 @@ pub fn spawn_worker(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fetch_demo_scan_missing_file_errors() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let req = crate::demo::DemoRequest::File("/nonexistent/KTLX20130520_201643_V06".into());
+        // `ScanData` isn't `Debug`, so `unwrap_err()` (which requires `T:
+        // Debug`) doesn't compile here — match instead.
+        let err = match rt.block_on(fetch_demo_scan(&req, None)) {
+            Err(e) => e,
+            Ok(_) => panic!("expected an error for a missing demo file"),
+        };
+        assert!(
+            err.to_string().contains("reading demo volume"),
+            "got: {err:#}"
+        );
+    }
+
+    #[test]
+    fn fetch_demo_scan_bad_filename_has_no_timestamp() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let path = std::env::temp_dir().join("not-a-volume.bin");
+        std::fs::write(&path, b"junk").unwrap();
+        let req = crate::demo::DemoRequest::File(path.clone());
+        let err = match rt.block_on(fetch_demo_scan(&req, None)) {
+            Err(e) => e,
+            Ok(_) => panic!("expected an error for an unparseable volume name"),
+        };
+        assert!(err.to_string().contains("timestamp"), "got: {err:#}");
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn retry_delay_uses_healthy_interval_when_no_errors() {

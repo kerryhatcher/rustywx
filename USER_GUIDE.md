@@ -16,6 +16,20 @@ cd app && cargo run --release
 
 The app will start on the default site (KJGX by default, or your last selected site if you've saved settings).
 
+## Demo mode
+
+Launch with a curated historical scene instead of live data — useful for
+exploring the display without active weather:
+
+    rustywx --demo moore2013     # Moore, OK EF5 tornado (KTLX, 2013-05-20 20:16 UTC)
+    rustywx --demo harvey2017    # Hurricane Harvey landfall (KCRP, 2017-08-26 03:04 UTC)
+    rustywx --demo <file>        # any local NEXRAD Level II archive volume
+
+The volume is downloaded from the NOAA archive once and cached. While the
+demo scene is shown, live polling is paused; picking any site in the Radar
+panel returns to live data. The status line is prefixed with `DEMO —` so
+screenshots are unambiguous.
+
 ## Main Display
 
 The main radar scope shows a Plan Position Indicator (PPI) view of the current weather radar volume.
