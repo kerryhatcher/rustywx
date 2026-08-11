@@ -67,6 +67,17 @@ jobs:
           echo "releases_created=true" >> "$GITHUB_OUTPUT"
           echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
 
+      # release-please normally creates this before the matrix starts. Do the
+      # same for recovery runs so parallel asset uploads have a release target.
+      - name: Create GitHub release if needed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ inputs.tag_name }}
+        run: |
+          if ! gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release create "$TAG_NAME" --generate-notes
+          fi
+
   # Build release binaries for each target and attach them to the release.
   # Chained here (rather than on: release) because a release created with the
   # default GITHUB_TOKEN does not trigger a separate `release` workflow.
@@ -94,7 +105,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
-          ref: ${{ needs.release-please.outputs.tag_name || needs.recovery.outputs.tag_name }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || needs.release-please.outputs.tag_name }}
 
       - name: Install Linux GUI/audio build deps
         if: runner.os == 'Linux'
@@ -134,7 +145,7 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         env:
-          TAG_NAME: ${{ needs.release-please.outputs.tag_name || needs.recovery.outputs.tag_name }}
+          TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || needs.release-please.outputs.tag_name }}
         run: |
           set -euo pipefail
           VERSION="${TAG_NAME#v}"
@@ -150,7 +161,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         env:
-          TAG_NAME: ${{ needs.release-please.outputs.tag_name || needs.recovery.outputs.tag_name }}
+          TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || needs.release-please.outputs.tag_name }}
         run: |
           $VERSION = "${env:TAG_NAME}".TrimStart("v")
           $STAGE = "rustywx-$VERSION-${{ matrix.target }}"
@@ -176,7 +187,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
-          ref: ${{ needs.release-please.outputs.tag_name || needs.recovery.outputs.tag_name }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || needs.release-please.outputs.tag_name }}
 
       - name: Install Linux GUI/audio build deps
         run: |
