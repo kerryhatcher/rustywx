@@ -3,6 +3,12 @@ name: release-please
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Existing vX.Y.Z tag to build and publish exactly once
+        required: true
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -16,6 +22,7 @@ jobs:
   # Maintains the release PR; on merge, cuts the tag + GitHub release.
   release-please:
     name: release-please
+    if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
     outputs:
       # Manifest mode prefixes per-package outputs by path ("app--…"); the
@@ -30,13 +37,43 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
+  # One-time recovery path for a pre-existing release tag that was not
+  # published by release-please. The checks below prevent dispatching an
+  # arbitrary ref or publishing a package whose version differs from the tag.
+  recovery:
+    name: validate recovery release
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    outputs:
+      releases_created: ${{ steps.release.outputs.releases_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          ref: ${{ inputs.tag_name }}
+
+      - id: release
+        name: Verify release tag and package version
+        env:
+          TAG_NAME: ${{ inputs.tag_name }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          VERSION="${TAG_NAME#v}"
+          PACKAGE_VERSION="$(awk -F '"' '/^version = / { print $2; exit }' app/Cargo.toml)"
+          MANIFEST_VERSION="$(awk -F '"' '/"app"/ { print $4; exit }' .release-please-manifest.json)"
+          test "$PACKAGE_VERSION" = "$VERSION"
+          test "$MANIFEST_VERSION" = "$VERSION"
+          echo "releases_created=true" >> "$GITHUB_OUTPUT"
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+
   # Build release binaries for each target and attach them to the release.
   # Chained here (rather than on: release) because a release created with the
   # default GITHUB_TOKEN does not trigger a separate `release` workflow.
   build:
     name: build (${{ matrix.target }})
-    needs: release-please
-    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
+    needs: [release-please, recovery]
+    if: ${{ always() && (needs.release-please.outputs.releases_created == 'true' || needs.recovery.outputs.releases_created == 'true') }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -56,6 +93,8 @@ jobs:
             archive_ext: zip
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name || needs.recovery.outputs.tag_name }}
 
       - name: Install Linux GUI/audio build deps
         if: runner.os == 'Linux'
@@ -95,7 +134,7 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         env:
-          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name || needs.recovery.outputs.tag_name }}
         run: |
           set -euo pipefail
           VERSION="${TAG_NAME#v}"
@@ -111,7 +150,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         env:
-          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name || needs.recovery.outputs.tag_name }}
         run: |
           $VERSION = "${env:TAG_NAME}".TrimStart("v")
           $STAGE = "rustywx-$VERSION-${{ matrix.target }}"
@@ -131,11 +170,13 @@ jobs:
   # Publish to crates.io once, after all target builds succeed.
   publish-crate:
     name: cargo publish
-    needs: [release-please, build]
-    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
+    needs: [release-please, recovery, build]
+    if: ${{ always() && needs.build.result == 'success' && (needs.release-please.outputs.releases_created == 'true' || needs.recovery.outputs.releases_created == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name || needs.recovery.outputs.tag_name }}
 
       - name: Install Linux GUI/audio build deps
         run: |
