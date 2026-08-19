@@ -108,6 +108,24 @@ unpack, and run.
 
 </details>
 
+### Linux AppImage (no archive extraction)
+
+Linux releases include signed, self-contained AppImages for **x86-64** and
+**ARM64 (aarch64)**. Download the AppImage for your architecture plus its
+matching `.sha256` file from [GitHub Releases](https://github.com/kerryhatcher/rustywx/releases), then verify and run it directly:
+
+```bash
+sha256sum --check rustywx-<version>-x86_64.AppImage.sha256
+chmod +x rustywx-<version>-x86_64.AppImage
+./rustywx-<version>-x86_64.AppImage
+```
+
+The AppImage bundles RustyWX and its ordinary runtime libraries; your system's
+graphics drivers remain in use. It also includes zsync update metadata, so an
+AppImage updater can download only changed portions when a newer GitHub Release
+is available. The `.tar.gz` Linux archives remain available for users who
+prefer a conventional extracted distribution.
+
 <details>
 <summary>From source (for development)</summary>
 
@@ -128,7 +146,7 @@ correctly during development. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 | Platform | Notes |
 |----------|-------|
 | **macOS** | Apple Silicon builds are published; Intel builds from source. |
-| **Linux** | Needs a GPU/Vulkan-capable environment and standard build tooling (`build-essential`, `pkg-config`). |
+| **Linux** | Native Wayland is preferred, with automatic X11 fallback. Needs a GPU/Vulkan-capable environment and standard build tooling (`build-essential`, `pkg-config`). Set `RUSTYWX_LINUX_BACKEND=wayland` or `x11` to require one backend for diagnostics. |
 | **Windows** | x86-64 build published. |
 
 The app renders on the GPU via ply-engine, so a working graphics stack is

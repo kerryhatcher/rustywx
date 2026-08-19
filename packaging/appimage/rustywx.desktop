@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=RustyWX
+Comment=Live NEXRAD Level II Doppler radar viewer
+Exec=rustywx
+Icon=rustywx
+Categories=Science;
+Keywords=weather;radar;NEXRAD;meteorology;
+StartupNotify=true
+Terminal=false

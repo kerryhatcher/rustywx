@@ -93,6 +93,10 @@ build:
 run:
     cd app && cargo run --release
 
+# ── Native Wayland smoke test ──────────────────────────────────
+wayland-smoke: build
+    scripts/wayland-smoke.sh target/release/rustywx
+
 # ── Clean ───────────────────────────────────────────────────────
 clean:
     cargo clean

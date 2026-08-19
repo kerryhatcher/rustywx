@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.github.kerryhatcher.rustywx</id>
+  <name>RustyWX</name>
+  <summary>View live NEXRAD Level II Doppler radar data</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-only</project_license>
+  <developer>
+    <name>Kerry Hatcher</name>
+  </developer>
+  <description>
+    <p>
+      RustyWX is a desktop weather app that streams live NEXRAD Level II Doppler
+      data from NOAA's public archive and displays it on a pannable, zoomable map.
+    </p>
+    <p>
+      It includes reflectivity, velocity, and spectrum-width products, live NWS
+      warning polygons, National Hurricane Center tropical guidance, and a local
+      forecast.
+    </p>
+  </description>
+  <url type="homepage">https://github.com/kerryhatcher/rustywx</url>
+  <url type="bugtracker">https://github.com/kerryhatcher/rustywx/issues</url>
+  <url type="vcs-browser">https://github.com/kerryhatcher/rustywx</url>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/kerryhatcher/rustywx/main/assets/screenshot-radar.png</image>
+      <caption>Live radar and tropical-cyclone guidance</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/kerryhatcher/rustywx/main/assets/screenshot-forecast.png</image>
+      <caption>Current conditions and seven-day forecast</caption>
+    </screenshot>
+  </screenshots>
+  <launchable type="desktop-id">rustywx.desktop</launchable>
+  <provides>
+    <binary>rustywx</binary>
+  </provides>
+  <content_rating type="oars-1.1"/>
+</component>
