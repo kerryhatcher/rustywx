@@ -172,17 +172,17 @@ jobs:
   wayland-smoke:
     name: native Wayland smoke test
     runs-on: ubuntu-24.04
+    container: fedora:44
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - name: Install Wayland runtime
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          dnf install -y \
             weston \
-            libegl1 \
-            libgl1-mesa-dri \
-            libwayland-egl1 \
-            libxkbcommon0
+            mesa-dri-drivers \
+            libwayland-client \
+            libxkbcommon
+          dnf clean all
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1
         with:
           toolchain: stable
