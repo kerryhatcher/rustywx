@@ -178,6 +178,7 @@ jobs:
       - name: Install Wayland runtime
         run: |
           dnf install -y \
+            gcc \
             weston \
             mesa-dri-drivers \
             libwayland-client \
