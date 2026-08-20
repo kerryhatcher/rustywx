@@ -92,9 +92,11 @@ jobs:
         include:
           - runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            appimage_arch: x86_64
             archive_ext: tar.gz
           - runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
+            appimage_arch: aarch64
             archive_ext: tar.gz
           - runner: macos-14
             target: aarch64-apple-darwin
@@ -120,7 +122,12 @@ jobs:
             libxinerama-dev \
             libgl1-mesa-dev \
             libasound2-dev \
-            libudev-dev
+            libudev-dev \
+            appstream \
+            desktop-file-utils \
+            squashfs-tools \
+            xvfb \
+            zsync
 
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1
         with:
@@ -141,6 +148,97 @@ jobs:
       - name: Build
         run: cargo build --release --locked -p rustywx --target ${{ matrix.target }}
 
+      - name: Download verified AppImage tooling
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .tools
+          case '${{ matrix.appimage_arch }}' in
+            x86_64)
+              LINUXDEPLOY_SHA256=c86d6540f1df31061f02f539a2d3445f8d7f85cc3994eee1e74cd1ac97b76df0
+              APPIMAGETOOL_SHA256=ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+              ;;
+            aarch64)
+              LINUXDEPLOY_SHA256=77d4d5918b5c9c7620dd74465c717ea59e8655eb83410cd86ebd24cec38c4679
+              APPIMAGETOOL_SHA256=f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158
+              ;;
+          esac
+          curl --fail --location --retry 3 --output .tools/linuxdeploy \
+            "https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20240109-1/linuxdeploy-${{ matrix.appimage_arch }}.AppImage"
+          curl --fail --location --retry 3 --output .tools/appimagetool \
+            "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-${{ matrix.appimage_arch }}.AppImage"
+          echo "$LINUXDEPLOY_SHA256  .tools/linuxdeploy" | sha256sum --check --strict
+          echo "$APPIMAGETOOL_SHA256  .tools/appimagetool" | sha256sum --check --strict
+          chmod +x .tools/linuxdeploy .tools/appimagetool
+
+      - name: Import AppImage signing key
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          APPIMAGE_GPG_PRIVATE_KEY: ${{ secrets.APPIMAGE_GPG_PRIVATE_KEY }}
+          APPIMAGE_GPG_PASSPHRASE: ${{ secrets.APPIMAGE_GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          export GNUPGHOME="$(mktemp -d)"
+          chmod 700 "$GNUPGHOME"
+          printf '%s' "$APPIMAGE_GPG_PRIVATE_KEY" | gpg --batch --import
+          GPG_KEY_ID="$(gpg --batch --with-colons --list-secret-keys | awk -F: '/^fpr:/ { print $10; exit }')"
+          test -n "$GPG_KEY_ID"
+          {
+            echo "GNUPGHOME=$GNUPGHOME"
+            echo "APPIMAGE_GPG_KEY_ID=$GPG_KEY_ID"
+            echo "APPIMAGETOOL_SIGN_PASSPHRASE=$APPIMAGE_GPG_PASSPHRASE"
+          } >> "$GITHUB_ENV"
+
+      - name: Package signed AppImage
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || needs.release-please.outputs.tag_name }}
+          LINUXDEPLOY: ${{ github.workspace }}/.tools/linuxdeploy
+          APPIMAGETOOL: ${{ github.workspace }}/.tools/appimagetool
+        run: |
+          set -euo pipefail
+          VERSION="${TAG_NAME#v}"
+          packaging/appimage/build-appimage.sh \
+            --binary "target/${{ matrix.target }}/release/rustywx" \
+            --version "$VERSION" \
+            --arch "${{ matrix.appimage_arch }}"
+          desktop-file-validate build/appimage/AppDir/rustywx.desktop
+          appstreamcli validate build/appimage/AppDir/usr/share/metainfo/com.github.kerryhatcher.rustywx.metainfo.xml
+          APPIMAGE="dist/appimage/rustywx-${VERSION}-${{ matrix.appimage_arch }}.AppImage"
+          (cd dist/appimage && sha256sum --check "$(basename "$APPIMAGE").sha256")
+          "$APPIMAGE" --appimage-updateinformation | grep -Fx \
+            "gh-releases-zsync|kerryhatcher|rustywx|latest|$(basename "$APPIMAGE")"
+          "$APPIMAGE" --appimage-signature | grep -F -- 'BEGIN PGP SIGNATURE'
+          EXTRACT_DIR="$(mktemp -d)"
+          (
+            cd "$EXTRACT_DIR"
+            "$GITHUB_WORKSPACE/$APPIMAGE" --appimage-extract >/dev/null
+            test -x squashfs-root/AppRun
+            test -x squashfs-root/usr/bin/rustywx
+            test -f squashfs-root/rustywx.desktop
+            test -f squashfs-root/rustywx.svg
+            test -f squashfs-root/usr/share/metainfo/com.github.kerryhatcher.rustywx.metainfo.xml
+            find squashfs-root/usr/lib -type f -name '*.so*' -print -quit | grep -q .
+          )
+          # A timeout means the GUI stayed alive; an immediate exit is a failed
+          # AppImage launch. APPIMAGE_EXTRACT_AND_RUN avoids FUSE dependence in CI.
+          set +e
+          APPIMAGE_EXTRACT_AND_RUN=1 timeout 10s xvfb-run -a "$APPIMAGE"
+          APPIMAGE_STATUS=$?
+          set -e
+          test "$APPIMAGE_STATUS" -eq 124
+          {
+            echo 'ASSET_PATH<<EOF'
+            echo "rustywx-${VERSION}-${{ matrix.target }}.tar.gz"
+            echo "dist/appimage/rustywx-${VERSION}-${{ matrix.appimage_arch }}.AppImage"
+            echo "dist/appimage/rustywx-${VERSION}-${{ matrix.appimage_arch }}.AppImage.zsync"
+            echo "dist/appimage/rustywx-${VERSION}-${{ matrix.appimage_arch }}.AppImage.sha256"
+            echo EOF
+          } >> "$GITHUB_ENV"
+
       - name: Package (unix)
         if: runner.os != 'Windows'
         shell: bash
@@ -155,7 +253,9 @@ jobs:
           cp README.md LICENSE "$STAGE/"
           cp -R app/assets "$STAGE/assets"
           tar -czf "${STAGE}.tar.gz" "$STAGE"
-          echo "ASSET_PATH=${STAGE}.tar.gz" >> "$GITHUB_ENV"
+          if [[ "${{ runner.os }}" != Linux ]]; then
+            echo "ASSET_PATH=${STAGE}.tar.gz" >> "$GITHUB_ENV"
+          fi
 
       - name: Package (windows)
         if: runner.os == 'Windows'

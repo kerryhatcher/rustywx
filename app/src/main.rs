@@ -448,6 +448,44 @@ fn app_icon() -> miniquad::conf::Icon {
     }
 }
 
+/// Select the Linux window backend. Wayland is the production default; the
+/// fallback keeps the app usable on X11-only desktops. Set
+/// `RUSTYWX_LINUX_BACKEND` to `wayland` or `x11` to require one backend, which
+/// is useful for support diagnostics and CI coverage.
+fn linux_window_backend_from_override(
+    override_value: Option<&str>,
+) -> miniquad::conf::LinuxBackend {
+    match override_value {
+        Some("wayland") => miniquad::conf::LinuxBackend::WaylandOnly,
+        Some("x11") => miniquad::conf::LinuxBackend::X11Only,
+        Some("auto") | None => miniquad::conf::LinuxBackend::WaylandWithX11Fallback,
+        Some(_) => miniquad::conf::LinuxBackend::WaylandWithX11Fallback,
+    }
+}
+
+fn linux_window_backend() -> miniquad::conf::LinuxBackend {
+    let override_value = std::env::var("RUSTYWX_LINUX_BACKEND").ok();
+    if let Some(value) = override_value.as_deref()
+        && !matches!(value, "wayland" | "x11" | "auto")
+    {
+        eprintln!(
+            "rustywx: ignoring invalid RUSTYWX_LINUX_BACKEND={value:?}; \
+             expected wayland, x11, or auto"
+        );
+    }
+    let backend = linux_window_backend_from_override(override_value.as_deref());
+
+    #[cfg(target_os = "linux")]
+    eprintln!(
+        "rustywx: Linux window backend: {backend:?} \
+         (WAYLAND_DISPLAY={}, DISPLAY={})",
+        std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "unset".to_owned()),
+        std::env::var("DISPLAY").unwrap_or_else(|_| "unset".to_owned()),
+    );
+
+    backend
+}
+
 fn window_conf() -> macroquad::conf::Conf {
     // Optional startup size override for window-size / HiDPI testing:
     // RUSTYWX_WIN_W / RUSTYWX_WIN_H.
@@ -466,6 +504,10 @@ fn window_conf() -> macroquad::conf::Conf {
             sample_count: 4,
             icon: Some(app_icon()),
             platform: miniquad::conf::Platform {
+                // Prefer the native Wayland backend, retaining X11 support for
+                // traditional Linux desktops and X11-only test environments.
+                linux_backend: linux_window_backend(),
+                linux_wm_class: "rustywx",
                 webgl_version: miniquad::conf::WebGLVersion::WebGL2,
                 ..Default::default()
             },
@@ -474,6 +516,31 @@ fn window_conf() -> macroquad::conf::Conf {
         draw_call_vertex_capacity: 100_000,
         draw_call_index_capacity: 100_000,
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod window_backend_tests {
+    use super::*;
+
+    #[test]
+    fn selects_the_requested_linux_backend() {
+        assert_eq!(
+            linux_window_backend_from_override(None),
+            miniquad::conf::LinuxBackend::WaylandWithX11Fallback
+        );
+        assert_eq!(
+            linux_window_backend_from_override(Some("wayland")),
+            miniquad::conf::LinuxBackend::WaylandOnly
+        );
+        assert_eq!(
+            linux_window_backend_from_override(Some("x11")),
+            miniquad::conf::LinuxBackend::X11Only
+        );
+        assert_eq!(
+            linux_window_backend_from_override(Some("invalid")),
+            miniquad::conf::LinuxBackend::WaylandWithX11Fallback
+        );
     }
 }
 
