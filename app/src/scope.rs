@@ -2152,8 +2152,9 @@ mod tests {
             },
         );
         let has_purple = velocity_pixels
-            .chunks_exact(4)
-            .any(|px| px == colors::RANGE_FOLDED_COLOR);
+            .as_chunks::<4>()
+            .0
+            .contains(&colors::RANGE_FOLDED_COLOR);
         assert!(has_purple, "expected at least one RF-purple pixel");
 
         // Product gating: Reflectivity never range-folds, so no purple pixels
@@ -2177,8 +2178,9 @@ mod tests {
             },
         );
         let has_purple_refl = refl_pixels
-            .chunks_exact(4)
-            .any(|px| px == colors::RANGE_FOLDED_COLOR);
+            .as_chunks::<4>()
+            .0
+            .contains(&colors::RANGE_FOLDED_COLOR);
         assert!(!has_purple_refl, "Reflectivity must not render RF purple");
     }
 
@@ -2210,7 +2212,7 @@ mod tests {
         let ref_sweep = build(&ref_gates);
         let cc_sweep = build(&cc_gates);
 
-        let count_opaque = |px: &[u8]| px.chunks_exact(4).filter(|c| c[3] > 0).count();
+        let count_opaque = |px: &[u8]| px.as_chunks::<4>().0.iter().filter(|c| c[3] > 0).count();
         let render = |cc_gate_enabled| {
             rasterize(
                 &ref_sweep,
