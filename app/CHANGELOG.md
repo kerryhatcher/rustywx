@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.10.0](https://github.com/kerryhatcher/rustywx/compare/v0.9.0...v0.10.0) (2026-08-20)
+
+
+### Features
+
+* add AppImage releases and native Wayland support ([0f1a5cd](https://github.com/kerryhatcher/rustywx/commit/0f1a5cd88137999d48dd43cd6beb945fb9e6220d))
+
+
+### Bug Fixes
+
+* satisfy current Clippy pixel checks ([ff6799f](https://github.com/kerryhatcher/rustywx/commit/ff6799f5c074b36c8cbbedcca4b67dd9ba23c603))
+
 ## [0.8.0](https://github.com/kerryhatcher/rustywx/compare/v0.7.3...v0.8.0) (2026-07-23)
 
 
