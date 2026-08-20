@@ -24,6 +24,12 @@ This takes 3 seconds and catches:
 
 No exceptions. "It compiled" is not the same as "it works."
 
+## Commit messages
+
+Always use [Conventional Commits](https://www.conventionalcommits.org/)
+messages (for example, `feat:`, `fix:`, `docs:`, or `chore:`). Release-please
+uses these prefixes to determine the next release version and generate notes.
+
 ## Icons
 
 UI icons render from a Nerd Fonts symbol font. The file is
