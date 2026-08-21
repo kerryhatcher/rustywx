@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1](https://github.com/kerryhatcher/rustywx/compare/v0.10.0...v0.10.1) (2026-08-21)
+
+
+### Bug Fixes
+
+* retain generated AppImage zsync metadata ([3254938](https://github.com/kerryhatcher/rustywx/commit/325493824fd1057510dbddf53af4067175a7dc89))
+
 ## [0.10.0](https://github.com/kerryhatcher/rustywx/compare/v0.9.0...v0.10.0) (2026-08-20)
 
 
