@@ -82,6 +82,12 @@ APPIMAGE_EXTRACT_AND_RUN=1 "$linuxdeploy" \
 
 mkdir -p "$output_dir"
 artifact="$output_dir/rustywx-${version}-${arch}.AppImage"
+zsync_file="${artifact}.zsync"
+# zsyncmake writes next to its current working directory, using only the
+# AppImage basename, even when appimagetool receives a destination with a
+# directory component. Remove both possible stale paths before packaging.
+generated_zsync="$(basename "$artifact").zsync"
+rm -f "$artifact" "$zsync_file" "$generated_zsync"
 update_information="gh-releases-zsync|kerryhatcher|rustywx|latest|$(basename "$artifact")"
 appimagetool_args=(--updateinformation "$update_information")
 if "$sign"; then
@@ -92,9 +98,11 @@ fi
 
 ARCH="$arch" APPIMAGE_EXTRACT_AND_RUN=1 "$appimagetool" \
   "${appimagetool_args[@]}" "$appdir" "$artifact"
-(cd "$output_dir" && sha256sum "$(basename "$artifact")" > "$(basename "$artifact").sha256")
 
-zsync_file="${artifact}.zsync"
+if [[ -s "$generated_zsync" && "$generated_zsync" != "$zsync_file" ]]; then
+  mv "$generated_zsync" "$zsync_file"
+fi
 [[ -s "$zsync_file" ]] || { echo "appimagetool did not produce $zsync_file" >&2; exit 1; }
 [[ -s "$artifact" ]] || { echo "appimagetool did not produce $artifact" >&2; exit 1; }
+(cd "$output_dir" && sha256sum "$(basename "$artifact")" > "$(basename "$artifact").sha256")
 printf 'Created %s, %s, and %s.sha256\n' "$artifact" "$zsync_file" "$artifact"
