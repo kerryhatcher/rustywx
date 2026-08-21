@@ -5,9 +5,7 @@
   <summary>View live NEXRAD Level II Doppler radar data</summary>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>AGPL-3.0-only</project_license>
-  <developer>
-    <name>Kerry Hatcher</name>
-  </developer>
+  <developer_name>Kerry Hatcher</developer_name>
   <description>
     <p>
       RustyWX is a desktop weather app that streams live NEXRAD Level II Doppler
@@ -21,7 +19,6 @@
   </description>
   <url type="homepage">https://github.com/kerryhatcher/rustywx</url>
   <url type="bugtracker">https://github.com/kerryhatcher/rustywx/issues</url>
-  <url type="vcs-browser">https://github.com/kerryhatcher/rustywx</url>
   <screenshots>
     <screenshot type="default">
       <image>https://raw.githubusercontent.com/kerryhatcher/rustywx/main/assets/screenshot-radar.png</image>
