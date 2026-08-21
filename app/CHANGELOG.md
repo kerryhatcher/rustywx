@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.2](https://github.com/kerryhatcher/rustywx/compare/v0.10.1...v0.10.2) (2026-08-21)
+
+
+### Bug Fixes
+
+* validate AppImage metadata on Ubuntu 22.04 ([6772b89](https://github.com/kerryhatcher/rustywx/commit/6772b895e60d03d0fa16c0555c2f9555b82ef9e3))
+
 ## [0.10.1](https://github.com/kerryhatcher/rustywx/compare/v0.10.0...v0.10.1) (2026-08-21)
 
 
