@@ -61,6 +61,16 @@ pub fn poll_response() -> Option<Result<Vec<Alert>>> {
     Some(parse_alerts(resp.text()))
 }
 
+/// Poll the response and copy its body without parsing it on the UI thread.
+pub fn poll_raw() -> Option<Result<String>> {
+    use ply_engine::prelude::net;
+    let response = net::request(NET_ID)?.response()?;
+    Some(match response {
+        Ok(response) => Ok(response.text().to_owned()),
+        Err(e) => Err(anyhow!("fetching NWS alerts: {e}")),
+    })
+}
+
 /// Parse a GeoJSON FeatureCollection of NWS alerts, filtering to warnings and
 /// watches that overlap the 230 km scope around the given radar site.
 pub fn parse_alerts(json: &str) -> Result<Vec<Alert>> {

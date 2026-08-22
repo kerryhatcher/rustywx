@@ -7,6 +7,10 @@
 use ply_engine::prelude::*;
 use ply_engine::render_commands::{RenderCommand, RenderCommandConfig};
 use rustywx::alerts;
+use rustywx::background_work::{
+    BackgroundWorkers, ImageDecodeRequest, ImageSubmitError, OrderedImageResults, OwnedQcConfig,
+    ParsePayload, ParseRequest, ParsedData, RasterRequest, raster_result_is_current,
+};
 use rustywx::borders;
 use rustywx::cache::Cache;
 use rustywx::colors;
@@ -27,7 +31,7 @@ use rustywx::widgets::shortcuts as shortcuts_widget;
 use rustywx::widgets::toast as toast_widget;
 use rustywx::widgets::toggle::{self, ToggleOption};
 use rustywx::widgets::{ChartWidget, SYMBOL_FONT, nf};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -564,6 +568,8 @@ async fn main() {
     // runtime lives alongside it so `tokio::spawn` works everywhere.
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let _rt_guard = rt.enter();
+    let mut background = BackgroundWorkers::new(rt.handle());
+    let startup_started = std::time::Instant::now();
 
     static DEFAULT_FONT: FontAsset = FontAsset::Bytes {
         file_name: "Inter-Regular.ttf",
@@ -621,6 +627,10 @@ async fn main() {
 
     // ── Open disk cache ────────────────────────────────────────
     let cache = Cache::new().await.expect("Ply storage initialisation");
+    eprintln!(
+        "startup phase=storage_ready elapsed_ms={}",
+        startup_started.elapsed().as_millis()
+    );
 
     // ── Kick off the demo volume load, if requested ─────────────
     // `DemoRequest` is moved into the task rather than shared, so the
@@ -775,6 +785,19 @@ async fn main() {
         fc_geo_fired: false,
     };
 
+    // CPU pipeline bookkeeping stays outside AppState because it contains no
+    // drawable/UI state. Generations are never reused during this process.
+    let mut next_generation = 1_u64;
+    let mut borders_parse_generation = None;
+    let mut alerts_parse_generation = None;
+    let mut nhc_parse_generation = None;
+    let mut raster_generation = 0_u64;
+    let mut raster_in_flight = false;
+    let mut nhc_image_generation = 0_u64;
+    let mut nhc_image_submit = VecDeque::new();
+    let mut nhc_image_results = OrderedImageResults::new(nhc_image_generation);
+    let mut logged_initial_radar_response = false;
+
     // Boot-time bookkeeping for applying loaded settings exactly once, and
     // only overriding the default site if no explicit site preference was
     // found (see the settings-apply block below). Local to `main`, not
@@ -821,6 +844,10 @@ async fn main() {
         {
             state.pending_load = None;
             if let Some(scan) = cached {
+                eprintln!(
+                    "startup phase=radar_cache_ready elapsed_ms={}",
+                    startup_started.elapsed().as_millis()
+                );
                 state.scan = Some(scan);
                 state.needs_reraster = true;
                 update_scan_status(&mut state, " [cached]");
@@ -877,6 +904,10 @@ async fn main() {
         // two is not guaranteed — both are independent oneshot loads).
         if !settings_applied && site_pref_resolved && state.pending_settings_load.is_none() {
             settings_applied = true;
+            eprintln!(
+                "startup phase=settings_ready elapsed_ms={}",
+                startup_started.elapsed().as_millis()
+            );
             // Demo mode pins the site to the scene — restoring the settings'
             // default site here would call select_site, which (by design)
             // exits demo and resumes live polling, replacing the historical
@@ -926,6 +957,19 @@ async fn main() {
                     // Discard scans that arrived after the user switched sites.
                     if site != current_site {
                         continue;
+                    }
+                    if !logged_initial_radar_response {
+                        logged_initial_radar_response = true;
+                        let gate_count: usize = scan
+                            .reflectivity
+                            .iter()
+                            .flat_map(|s| &s.radials)
+                            .map(|r| r.gates.len())
+                            .sum();
+                        eprintln!(
+                            "startup phase=initial_radar_response site={site} decoded_gates={gate_count} elapsed_ms={}",
+                            startup_started.elapsed().as_millis()
+                        );
                     }
 
                     // Persist to disk cache (fire-and-forget).
@@ -979,6 +1023,11 @@ async fn main() {
         if let Ok(result) = pending_borders.try_recv() {
             match result {
                 Ok(Some(rings)) => {
+                    eprintln!(
+                        "startup phase=borders_cache_ready rings={} elapsed_ms={}",
+                        rings.len(),
+                        startup_started.elapsed().as_millis()
+                    );
                     state.borders = rings;
                     state.borders_loaded = true;
                 }
@@ -991,28 +1040,137 @@ async fn main() {
             }
         }
 
+        // ── Apply completed background parses ────────────────────
+        while let Some(parsed) = background.poll_parse() {
+            let age_ms = parsed.submitted_at.elapsed().as_millis();
+            eprintln!(
+                "startup phase=parse_result generation={} elapsed_ms={} result_age_ms={age_ms}",
+                parsed.generation,
+                parsed.elapsed.as_millis()
+            );
+            match parsed.result {
+                Ok(ParsedData::Borders(rings))
+                    if borders_parse_generation == Some(parsed.generation) =>
+                {
+                    borders_parse_generation = None;
+                    borders::save_cached(&state.cache.storage(), &rings);
+                    eprintln!(
+                        "startup phase=borders_cache_save generation={} rings={} elapsed_ms={}",
+                        parsed.generation,
+                        rings.len(),
+                        startup_started.elapsed().as_millis()
+                    );
+                    state.borders = rings;
+                    state.borders_loaded = true;
+                }
+                Ok(ParsedData::Alerts(alerts_list))
+                    if alerts_parse_generation == Some(parsed.generation) =>
+                {
+                    alerts_parse_generation = None;
+                    eprintln!(
+                        "startup phase=alerts_parse_applied generation={} alerts={} elapsed_ms={}",
+                        parsed.generation,
+                        alerts_list.len(),
+                        parsed.elapsed.as_millis()
+                    );
+                    state.alerts = alerts_list;
+                    state.alerts_loaded = true;
+                }
+                Ok(ParsedData::NhcMetadata(metadata))
+                    if nhc_parse_generation == Some(parsed.generation) =>
+                {
+                    nhc_parse_generation = None;
+                    eprintln!(
+                        "startup phase=nhc_metadata_parse generation={} storms={} elapsed_ms={}",
+                        parsed.generation,
+                        metadata.metas.len(),
+                        parsed.elapsed.as_millis()
+                    );
+                    state.nhc_fetch.accept_metadata(
+                        metadata.metas,
+                        metadata.gis_cone,
+                        metadata.gis_track,
+                        metadata.gis_points,
+                        metadata.gis_ww,
+                    );
+                }
+                Ok(_) => eprintln!(
+                    "startup phase=parse_drop generation={} stale=true result_age_ms={age_ms}",
+                    parsed.generation
+                ),
+                Err(error) => {
+                    let current = borders_parse_generation == Some(parsed.generation)
+                        || alerts_parse_generation == Some(parsed.generation)
+                        || nhc_parse_generation == Some(parsed.generation);
+                    if borders_parse_generation == Some(parsed.generation) {
+                        borders_parse_generation = None;
+                    }
+                    if alerts_parse_generation == Some(parsed.generation) {
+                        alerts_parse_generation = None;
+                    }
+                    if nhc_parse_generation == Some(parsed.generation) {
+                        nhc_parse_generation = None;
+                        state.nhc_fetch.reject_metadata(error.clone());
+                    }
+                    if current {
+                        eprintln!(
+                            "Warning: background parse failed generation={}: {error}",
+                            parsed.generation
+                        );
+                        show_toast(&mut state, now, toast_widget::ErrorKind::Network);
+                    } else {
+                        eprintln!(
+                            "startup phase=parse_drop generation={} stale=true error={error}",
+                            parsed.generation
+                        );
+                    }
+                }
+            }
+        }
+
         // ── Fire border fetch if not yet started and no cache ─────
-        if !state.borders_loaded && !state.borders_fetch_fired {
+        if !state.borders_loaded && !state.borders_fetch_fired && borders_parse_generation.is_none()
+        {
             borders::fire_fetch_all();
             state.borders_fetch_fired = true;
         }
 
-        // ── Poll borders net responses ────────────────────────────
+        // ── Hand border response bodies to the parse worker ───────
         if state.borders_fetch_fired
             && !state.borders_loaded
-            && let Some(result) = borders::poll_and_merge()
+            && let Some(result) = borders::poll_raw()
         {
-            state.borders_fetch_fired = false;
             match result {
-                Ok(rings) => {
-                    // Save to cache
-                    borders::save_cached(&state.cache.storage(), &rings);
-                    state.borders = rings;
-                    state.borders_loaded = true;
+                Ok((states, coast, country)) => {
+                    let payload_bytes = states.len() + coast.len() + country.len();
+                    let generation = next_generation;
+                    let request = ParseRequest {
+                        generation,
+                        payload: ParsePayload::Borders {
+                            states,
+                            coast,
+                            country,
+                        },
+                        submitted_at: std::time::Instant::now(),
+                    };
+                    if background.submit_parse(request).is_ok() {
+                        next_generation += 1;
+                        borders_parse_generation = Some(generation);
+                        state.borders_fetch_fired = false;
+                        eprintln!(
+                            "startup phase=borders_response generation={generation} payload_bytes={payload_bytes} elapsed_ms={}",
+                            startup_started.elapsed().as_millis()
+                        );
+                    } else {
+                        state.borders_fetch_fired = false;
+                        eprintln!(
+                            "Warning: startup phase=borders_parse_queue_full generation={generation} payload_bytes={payload_bytes} retry=true"
+                        );
+                    }
                 }
                 Err(e) => {
+                    state.borders_fetch_fired = false;
                     eprintln!("Warning: border fetch failed: {e}");
-                    // Will retry on next frame (borders_fetch_fired is false)
                     show_toast(&mut state, now, toast_widget::ErrorKind::Network);
                 }
             }
@@ -1020,6 +1178,7 @@ async fn main() {
 
         // ── Fire alerts fetch if not yet started ──────────────────
         if !state.alerts_fetch_fired
+            && alerts_parse_generation.is_none()
             && (!state.alerts_loaded
                 || now - state.last_alert_poll > alerts::POLL_INTERVAL.as_secs() as f64)
         {
@@ -1028,17 +1187,38 @@ async fn main() {
             state.last_alert_poll = now;
         }
 
-        // ── Poll alerts net response ──────────────────────────────
+        // ── Hand alerts response body to the parse worker ─────────
         if state.alerts_fetch_fired
-            && let Some(result) = alerts::poll_response()
+            && let Some(result) = alerts::poll_raw()
         {
-            state.alerts_fetch_fired = false;
             match result {
-                Ok(alerts_list) => {
-                    state.alerts = alerts_list;
-                    state.alerts_loaded = true;
+                Ok(body) => {
+                    let payload_bytes = body.len();
+                    let generation = next_generation;
+                    if background
+                        .submit_parse(ParseRequest {
+                            generation,
+                            payload: ParsePayload::Alerts(body),
+                            submitted_at: std::time::Instant::now(),
+                        })
+                        .is_ok()
+                    {
+                        next_generation += 1;
+                        alerts_parse_generation = Some(generation);
+                        state.alerts_fetch_fired = false;
+                        eprintln!(
+                            "startup phase=alerts_response generation={generation} payload_bytes={payload_bytes} elapsed_ms={}",
+                            startup_started.elapsed().as_millis()
+                        );
+                    } else {
+                        state.alerts_fetch_fired = false;
+                        eprintln!(
+                            "Warning: startup phase=alerts_parse_queue_full generation={generation} payload_bytes={payload_bytes} retry=true"
+                        );
+                    }
                 }
                 Err(e) => {
+                    state.alerts_fetch_fired = false;
                     eprintln!("Warning: alert fetch failed: {e}");
                     show_toast(&mut state, now, toast_widget::ErrorKind::Network);
                 }
@@ -1059,20 +1239,60 @@ async fn main() {
         if state.nhc_fetch_fired
             && let Some(result) = state.nhc_fetch.poll()
         {
-            state.nhc_fetch_fired = false;
+            if result.as_ref().is_err() || result.as_ref().is_ok_and(|poll| poll.is_terminal()) {
+                state.nhc_fetch_fired = false;
+            }
             match result {
-                Ok(bundle) => {
-                    // Decode image products to textures.
-                    for (storm_id, images) in &bundle.image_products {
+                Ok(nhc::NhcPoll::Metadata(bodies)) => {
+                    let payload_bytes = bodies.storms.len()
+                        + bodies.gis_cone.as_ref().map_or(0, String::len)
+                        + bodies.gis_track.as_ref().map_or(0, String::len)
+                        + bodies.gis_points.as_ref().map_or(0, String::len)
+                        + bodies.gis_ww.as_ref().map_or(0, String::len);
+                    let generation = next_generation;
+                    if background
+                        .submit_parse(ParseRequest {
+                            generation,
+                            payload: ParsePayload::NhcMetadata {
+                                storms: bodies.storms,
+                                gis_cone: bodies.gis_cone,
+                                gis_track: bodies.gis_track,
+                                gis_points: bodies.gis_points,
+                                gis_ww: bodies.gis_ww,
+                            },
+                            submitted_at: std::time::Instant::now(),
+                        })
+                        .is_ok()
+                    {
+                        next_generation += 1;
+                        nhc_parse_generation = Some(generation);
+                        eprintln!(
+                            "startup phase=nhc_metadata_response generation={generation} payload_bytes={payload_bytes} elapsed_ms={}",
+                            startup_started.elapsed().as_millis()
+                        );
+                    } else {
+                        state
+                            .nhc_fetch
+                            .reject_metadata("metadata parse queue is full".to_owned());
+                    }
+                }
+                Ok(nhc::NhcPoll::Complete(mut bundle)) => {
+                    // Queue owned bytes; decode happens off-thread and uploads
+                    // are deterministically limited to one per frame below.
+                    nhc_image_generation += 1;
+                    nhc_image_results.reset(nhc_image_generation);
+                    nhc_image_submit.clear();
+                    state.nhc_image_textures.clear();
+                    let mut sequence = 0;
+                    for (storm_id, images) in &mut bundle.image_products {
                         for img in images {
-                            if let Some(ref data) = img.data
-                                && let Ok(rgba) = image::load_from_memory(data)
-                            {
-                                let rgba = rgba.to_rgba8();
-                                let (w, h) = rgba.dimensions();
-                                let tex = Texture2D::from_rgba8(w as u16, h as u16, &rgba);
-                                let key = format!("{}:{}", storm_id, img.title);
-                                state.nhc_image_textures.insert(key, tex);
+                            if let Some(bytes) = img.data.take() {
+                                nhc_image_submit.push_back((
+                                    sequence,
+                                    format!("{}:{}", storm_id, img.title),
+                                    bytes,
+                                ));
+                                sequence += 1;
                             }
                         }
                     }
@@ -1087,6 +1307,67 @@ async fn main() {
                     eprintln!("Warning: NHC fetch failed: {e:#}");
                     show_toast(&mut state, now, toast_widget::ErrorKind::Network);
                 }
+            }
+        }
+
+        // Feed the bounded decode queue without ever waiting for capacity.
+        if background.image_queue_has_capacity()
+            && let Some((sequence, key, bytes)) = nhc_image_submit.pop_front()
+        {
+            let payload_bytes = bytes.len();
+            let request = ImageDecodeRequest {
+                generation: nhc_image_generation,
+                sequence,
+                key,
+                bytes,
+                submitted_at: std::time::Instant::now(),
+            };
+            match background.submit_image(request) {
+                Ok(()) => eprintln!(
+                    "startup phase=nhc_image_queued generation={} sequence={sequence} payload_bytes={payload_bytes}",
+                    nhc_image_generation
+                ),
+                Err(ImageSubmitError::Full(request)) => {
+                    nhc_image_submit.push_front((request.sequence, request.key, request.bytes));
+                }
+                Err(ImageSubmitError::Closed(_)) => {
+                    eprintln!("Warning: NHC image decode worker closed; dropping pending images");
+                    nhc_image_generation += 1;
+                    nhc_image_results.reset(nhc_image_generation);
+                    nhc_image_submit.clear();
+                }
+            }
+        }
+        while let Some(decoded) = background.poll_image() {
+            if !nhc_image_results.push(decoded) {
+                eprintln!("startup phase=nhc_image_drop stale=true");
+            }
+        }
+        if let Some(decoded) = nhc_image_results.pop_next() {
+            match decoded.result {
+                Ok(image) => {
+                    let upload_started = std::time::Instant::now();
+                    let texture =
+                        Texture2D::from_rgba8(image.width as u16, image.height as u16, &image.rgba);
+                    state.nhc_image_textures.insert(decoded.key, texture);
+                    let elapsed = upload_started.elapsed();
+                    let prefix = if elapsed > rustywx::background_work::FRAME_BUDGET {
+                        "Warning: "
+                    } else {
+                        ""
+                    };
+                    eprintln!(
+                        "{prefix}startup phase=nhc_texture_upload generation={} sequence={} elapsed_ms={} result_age_ms={}",
+                        decoded.generation,
+                        decoded.sequence,
+                        elapsed.as_millis(),
+                        decoded.submitted_at.elapsed().as_millis()
+                    );
+                }
+                Err(error) => eprintln!(
+                    "Warning: NHC image decode failed generation={} sequence={}: {error}",
+                    decoded.generation, decoded.sequence
+                ),
             }
         }
 
@@ -1115,88 +1396,122 @@ async fn main() {
             }
         }
 
-        // ── Get current sweep ─────────────────────────────────────
-        let sweep: SweepData = if let Some(ref scan) = state.scan {
-            let sweeps = scan.sweeps(state.product);
-            if sweeps.is_empty() {
-                synthetic_sweep()
-            } else {
-                let idx = state.tilt_index.min(sweeps.len() - 1);
-                sweeps[idx].clone()
-            }
-        } else {
-            synthetic_sweep()
-        };
-
         let site = &geo::RADAR_SITES[state.site_index];
 
-        // For CC-gating (and the fuzzy non-met classifier below): find the CC
-        // sweep at the nearest elevation to the REF sweep we are about to
-        // rasterize. Only needed for Reflectivity; None for every other
-        // product (and when there is no dual-pol CC volume). The fuzzy
-        // classifier also wants CC even when the plain CC gate is off, since
-        // fuzzy supersedes it — so it's fetched whenever either is enabled.
-        let cc_sweep: Option<SweepData> = if state.product == Product::Reflectivity
-            && (state.settings.cc_gate_enabled || state.settings.nonmet_fuzzy_enabled)
-        {
-            state.scan.as_ref().and_then(|scan| {
-                let cc = &scan.correlation_coefficient;
-                cc.iter()
+        // Poll finished raster work. A changed site/product or a newly dirtied
+        // raster makes the result stale; it is discarded without blocking.
+        if let Some(result) = background.poll_raster() {
+            raster_in_flight = false;
+            let current_site = geo::RADAR_SITES[state.site_index].id;
+            let stale = !raster_result_is_current(
+                &result,
+                raster_generation,
+                current_site,
+                state.product,
+                state.needs_reraster,
+            );
+            if stale {
+                eprintln!(
+                    "startup phase=radar_raster_drop generation={} site={} product={:?} result_age_ms={} stale=true",
+                    result.generation,
+                    result.site,
+                    result.product,
+                    result.submitted_at.elapsed().as_millis()
+                );
+            } else {
+                match result.result {
+                    Ok((rgba, qc_report)) => {
+                        let upload_started = std::time::Instant::now();
+                        let texture = Texture2D::from_rgba8(
+                            scope::RASTER_SIZE_PX as u16,
+                            scope::RASTER_SIZE_PX as u16,
+                            &rgba,
+                        );
+                        let is_value = state.product == Product::Reflectivity;
+                        texture.set_filter(if is_value {
+                            macroquad::texture::FilterMode::Linear
+                        } else {
+                            macroquad::texture::FilterMode::Nearest
+                        });
+                        state.radar_texture_is_value = is_value;
+                        state.radar_texture = Some(texture);
+                        state.qc_report = qc_report;
+                        let upload_elapsed = upload_started.elapsed();
+                        let prefix = if upload_elapsed > rustywx::background_work::FRAME_BUDGET {
+                            "Warning: "
+                        } else {
+                            ""
+                        };
+                        eprintln!(
+                            "{prefix}startup phase=radar_gpu_upload generation={} payload_bytes={} elapsed_ms={} result_age_ms={} raster_elapsed_ms={}",
+                            result.generation,
+                            rgba.len(),
+                            upload_elapsed.as_millis(),
+                            result.submitted_at.elapsed().as_millis(),
+                            result.elapsed.as_millis()
+                        );
+                    }
+                    Err(error) => {
+                        state.needs_reraster = true;
+                        eprintln!(
+                            "Warning: radar raster failed generation={}: {error}; retrying",
+                            result.generation
+                        );
+                    }
+                }
+            }
+        }
+
+        // Submit a new owned raster job only when no earlier one is running.
+        if state.needs_reraster && !raster_in_flight {
+            let sweep = if let Some(ref scan) = state.scan {
+                let sweeps = scan.sweeps(state.product);
+                if sweeps.is_empty() {
+                    synthetic_sweep()
+                } else {
+                    sweeps[state.tilt_index.min(sweeps.len() - 1)].clone()
+                }
+            } else {
+                synthetic_sweep()
+            };
+            let nearest_aux = |sweeps: &[SweepData]| {
+                sweeps
+                    .iter()
                     .min_by(|a, b| {
                         (a.elevation_deg - sweep.elevation_deg)
                             .abs()
                             .total_cmp(&(b.elevation_deg - sweep.elevation_deg).abs())
                     })
                     .cloned()
-            })
-        } else {
-            None
-        };
-
-        // ZDR/ΦDP sweeps for the fuzzy non-met classifier, selected by
-        // nearest elevation exactly like `cc_sweep` above. Only needed when
-        // the classifier is on; fails open to None otherwise (and if the
-        // volume lacks the moment), same as `cc_sweep`.
-        let zdr_sweep: Option<SweepData> =
-            if state.product == Product::Reflectivity && state.settings.nonmet_fuzzy_enabled {
-                state.scan.as_ref().and_then(|scan| {
-                    let zdr = &scan.differential_reflectivity;
-                    zdr.iter()
-                        .min_by(|a, b| {
-                            (a.elevation_deg - sweep.elevation_deg)
-                                .abs()
-                                .total_cmp(&(b.elevation_deg - sweep.elevation_deg).abs())
-                        })
-                        .cloned()
-                })
+            };
+            let cc_sweep = if state.product == Product::Reflectivity
+                && (state.settings.cc_gate_enabled || state.settings.nonmet_fuzzy_enabled)
+            {
+                state
+                    .scan
+                    .as_ref()
+                    .and_then(|scan| nearest_aux(&scan.correlation_coefficient))
             } else {
                 None
             };
-        let phidp_sweep: Option<SweepData> =
-            if state.product == Product::Reflectivity && state.settings.nonmet_fuzzy_enabled {
-                state.scan.as_ref().and_then(|scan| {
-                    let phidp = &scan.differential_phase;
-                    phidp
-                        .iter()
-                        .min_by(|a, b| {
-                            (a.elevation_deg - sweep.elevation_deg)
-                                .abs()
-                                .total_cmp(&(b.elevation_deg - sweep.elevation_deg).abs())
-                        })
-                        .cloned()
-                })
-            } else {
-                None
-            };
-
-        // Rasterize when needed
-        if state.needs_reraster {
-            state.needs_reraster = false;
-
-            // Melting-layer hint (annotation overlay, not part of the QC
-            // pipeline above) — recomputed alongside the raster so it
-            // stays in step with new scans and the settings toggle without
-            // its own dirty-flag plumbing.
+            let zdr_sweep =
+                if state.product == Product::Reflectivity && state.settings.nonmet_fuzzy_enabled {
+                    state
+                        .scan
+                        .as_ref()
+                        .and_then(|scan| nearest_aux(&scan.differential_reflectivity))
+                } else {
+                    None
+                };
+            let phidp_sweep =
+                if state.product == Product::Reflectivity && state.settings.nonmet_fuzzy_enabled {
+                    state
+                        .scan
+                        .as_ref()
+                        .and_then(|scan| nearest_aux(&scan.differential_phase))
+                } else {
+                    None
+                };
             state.melting_layer_hint = if state.settings.melting_layer_hint_enabled {
                 state
                     .scan
@@ -1205,14 +1520,15 @@ async fn main() {
             } else {
                 None
             };
-            let (rgba, qc_report) = scope::rasterize_with_report(
-                &sweep,
-                state.product,
-                scope::RASTER_SIZE_PX,
-                scope::MAX_RANGE_KM,
-                &scope::QcConfig {
+            let generation = next_generation;
+            let request = RasterRequest {
+                generation,
+                site: site.id.to_owned(),
+                product: state.product,
+                sweep,
+                qc: OwnedQcConfig {
                     tdbz_kernel_size: state.settings.tdbz_kernel.size() as usize,
-                    cc_sweep: cc_sweep.as_ref(),
+                    cc_sweep,
                     cc_gate_enabled: state.settings.cc_gate_enabled,
                     cc_gate_threshold: state.settings.cc_gate_threshold,
                     refl_floor_enabled: state.settings.refl_floor_enabled,
@@ -1220,43 +1536,34 @@ async fn main() {
                     vel_dealias_enabled: state.settings.vel_dealias_enabled,
                     vel_sd_censor_enabled: state.settings.vel_sd_censor_enabled,
                     vel_sd_threshold: state.settings.vel_sd_threshold,
-                    zdr_sweep: zdr_sweep.as_ref(),
-                    phidp_sweep: phidp_sweep.as_ref(),
+                    zdr_sweep,
+                    phidp_sweep,
                     nonmet_fuzzy_enabled: state.settings.nonmet_fuzzy_enabled,
                     nonmet_threshold: state.settings.nonmet_threshold,
                     refl_gap_fill_enabled: state.settings.refl_gap_fill_enabled,
                     multi_scale_texture_enabled: state.settings.multi_scale_texture_enabled,
                     sun_spike_removal_enabled: state.settings.sun_spike_removal_enabled,
                 },
-            );
-            let tex = Texture2D::from_rgba8(
-                scope::RASTER_SIZE_PX as u16,
-                scope::RASTER_SIZE_PX as u16,
-                &rgba,
-            );
-            // Reflectivity is a value field colorized by the GPU palette shader:
-            // Linear so the GPU interpolates the dBZ value across screen pixels,
-            // then the Nearest-filtered LUT snaps to discrete colors — crisp
-            // bands, smooth edges at any zoom. Other products are CPU-colorized
-            // RGBA; Nearest keeps their band steps crisp.
-            let is_value = state.product == Product::Reflectivity;
-            tex.set_filter(if is_value {
-                macroquad::texture::FilterMode::Linear
-            } else {
-                macroquad::texture::FilterMode::Nearest
-            });
-            state.radar_texture_is_value = is_value;
-            state.radar_texture = Some(tex);
-
-            // Build the palette material + LUT once, now that the GL context is
-            // live (can't be done at State construction).
-            if state.palette_material.is_none() {
-                let lut = Texture2D::from_rgba8(256, 1, &colors::dbz_lut());
-                lut.set_filter(macroquad::texture::FilterMode::Nearest);
-                state.dbz_lut_tex = Some(lut);
-                state.palette_material = Some(scope::load_palette_material());
+                size_px: scope::RASTER_SIZE_PX,
+                max_range_km: scope::MAX_RANGE_KM,
+                submitted_at: std::time::Instant::now(),
+            };
+            if background.submit_raster(request).is_ok() {
+                next_generation += 1;
+                raster_generation = generation;
+                raster_in_flight = true;
+                state.needs_reraster = false;
+                state.radar_texture = None;
+                state.radar_texture_is_value = false;
             }
-            state.qc_report = qc_report;
+        }
+
+        // Build the palette material + LUT once on the graphics thread.
+        if state.palette_material.is_none() {
+            let lut = Texture2D::from_rgba8(256, 1, &colors::dbz_lut());
+            lut.set_filter(macroquad::texture::FilterMode::Nearest);
+            state.dbz_lut_tex = Some(lut);
+            state.palette_material = Some(scope::load_palette_material());
         }
 
         // Draw scope + overlays directly to screen (avoids render_to_texture
