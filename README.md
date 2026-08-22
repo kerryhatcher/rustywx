@@ -218,7 +218,7 @@ setup, the module map, and the build/test/lint workflow, and please read our
 ## 💬 Support
 
 - **Bugs & feature requests:** [open an issue](https://github.com/kerryhatcher/rustywx/issues)
-- **Questions & ideas:** [GitHub Discussions](https://github.com/kerryhatcher/rustywx/discussions)
+- **Questions & ideas:** [start with an issue](https://github.com/kerryhatcher/rustywx/issues)
 - **Changelog:** see [CHANGELOG.md](CHANGELOG.md) or the
   [Releases](https://github.com/kerryhatcher/rustywx/releases) page
 
