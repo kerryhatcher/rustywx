@@ -1229,7 +1229,9 @@ async fn main() {
         if state.nhc_fetch_fired
             && let Some(result) = state.nhc_fetch.poll()
         {
-            state.nhc_fetch_fired = false;
+            if result.as_ref().is_err() || result.as_ref().is_ok_and(|poll| poll.is_terminal()) {
+                state.nhc_fetch_fired = false;
+            }
             match result {
                 Ok(nhc::NhcPoll::Metadata(bodies)) => {
                     let payload_bytes = bodies.storms.len()

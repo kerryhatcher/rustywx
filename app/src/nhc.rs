@@ -897,6 +897,14 @@ pub enum NhcPoll {
     Complete(NhcBundle),
 }
 
+impl NhcPoll {
+    /// Only the final bundle ends a fetch cycle. Metadata is an intermediate
+    /// handoff and must keep the main loop polling after background parsing.
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::Complete(_))
+    }
+}
+
 impl NhcFetchState {
     pub fn new() -> Self {
         Self {
@@ -1627,6 +1635,19 @@ mod tests {
     fn nhc_fetch_state_starts_idle() {
         let state = NhcFetchState::new();
         assert!(!state.is_fetching());
+    }
+
+    #[test]
+    fn metadata_handoff_is_not_a_terminal_fetch_result() {
+        let metadata = NhcPoll::Metadata(NhcMetadataBodies {
+            storms: String::new(),
+            gis_cone: None,
+            gis_track: None,
+            gis_points: None,
+            gis_ww: None,
+        });
+        assert!(!metadata.is_terminal());
+        assert!(NhcPoll::Complete(NhcBundle::default()).is_terminal());
     }
 
     #[test]
