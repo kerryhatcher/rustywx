@@ -8,8 +8,8 @@ use ply_engine::prelude::*;
 use ply_engine::render_commands::{RenderCommand, RenderCommandConfig};
 use rustywx::alerts;
 use rustywx::background_work::{
-    BackgroundWorkers, ImageDecodeRequest, OrderedImageResults, OwnedQcConfig, ParsePayload,
-    ParseRequest, ParsedData, RasterRequest, raster_result_is_current,
+    BackgroundWorkers, ImageDecodeRequest, ImageSubmitError, OrderedImageResults, OwnedQcConfig,
+    ParsePayload, ParseRequest, ParsedData, RasterRequest, raster_result_is_current,
 };
 use rustywx::borders;
 use rustywx::cache::Cache;
@@ -1161,6 +1161,11 @@ async fn main() {
                             "startup phase=borders_response generation={generation} payload_bytes={payload_bytes} elapsed_ms={}",
                             startup_started.elapsed().as_millis()
                         );
+                    } else {
+                        state.borders_fetch_fired = false;
+                        eprintln!(
+                            "Warning: startup phase=borders_parse_queue_full generation={generation} payload_bytes={payload_bytes} retry=true"
+                        );
                     }
                 }
                 Err(e) => {
@@ -1204,6 +1209,11 @@ async fn main() {
                         eprintln!(
                             "startup phase=alerts_response generation={generation} payload_bytes={payload_bytes} elapsed_ms={}",
                             startup_started.elapsed().as_millis()
+                        );
+                    } else {
+                        state.alerts_fetch_fired = false;
+                        eprintln!(
+                            "Warning: startup phase=alerts_parse_queue_full generation={generation} payload_bytes={payload_bytes} retry=true"
                         );
                     }
                 }
@@ -1272,6 +1282,7 @@ async fn main() {
                     nhc_image_generation += 1;
                     nhc_image_results.reset(nhc_image_generation);
                     nhc_image_submit.clear();
+                    state.nhc_image_textures.clear();
                     let mut sequence = 0;
                     for (storm_id, images) in &mut bundle.image_products {
                         for img in images {
@@ -1316,7 +1327,15 @@ async fn main() {
                     "startup phase=nhc_image_queued generation={} sequence={sequence} payload_bytes={payload_bytes}",
                     nhc_image_generation
                 ),
-                Err(_) => unreachable!("capacity checked with a single producer"),
+                Err(ImageSubmitError::Full(request)) => {
+                    nhc_image_submit.push_front((request.sequence, request.key, request.bytes));
+                }
+                Err(ImageSubmitError::Closed(_)) => {
+                    eprintln!("Warning: NHC image decode worker closed; dropping pending images");
+                    nhc_image_generation += 1;
+                    nhc_image_results.reset(nhc_image_generation);
+                    nhc_image_submit.clear();
+                }
             }
         }
         while let Some(decoded) = background.poll_image() {
@@ -1432,10 +1451,13 @@ async fn main() {
                             result.elapsed.as_millis()
                         );
                     }
-                    Err(error) => eprintln!(
-                        "Warning: radar raster failed generation={}: {error}",
-                        result.generation
-                    ),
+                    Err(error) => {
+                        state.needs_reraster = true;
+                        eprintln!(
+                            "Warning: radar raster failed generation={}: {error}; retrying",
+                            result.generation
+                        );
+                    }
                 }
             }
         }
@@ -1531,6 +1553,8 @@ async fn main() {
                 raster_generation = generation;
                 raster_in_flight = true;
                 state.needs_reraster = false;
+                state.radar_texture = None;
+                state.radar_texture_is_value = false;
             }
         }
 

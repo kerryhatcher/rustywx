@@ -25,6 +25,11 @@ pub enum SubmitError {
     Closed,
 }
 
+pub enum ImageSubmitError {
+    Full(ImageDecodeRequest),
+    Closed(ImageDecodeRequest),
+}
+
 fn map_submit<T>(error: mpsc::error::TrySendError<T>) -> SubmitError {
     match error {
         mpsc::error::TrySendError::Full(_) => SubmitError::Full,
@@ -231,8 +236,7 @@ impl BackgroundWorkers {
                     .map_err(|e| format!("parse worker join: {e}"))
                     .and_then(|r| r);
                 let elapsed = started.elapsed();
-                log_background(phase, generation, elapsed);
-                eprintln!("startup phase={phase} generation={generation} payload_bytes={payload_bytes} elapsed_ms={}", elapsed.as_millis());
+                log_background(phase, generation, elapsed, Some(payload_bytes));
                 let _ = parse_results
                     .send(ParseResult {
                         generation,
@@ -267,7 +271,7 @@ impl BackgroundWorkers {
                 .map_err(|e| format!("raster worker join: {e}"))
                 .and_then(|r: Result<_, String>| r);
                 let elapsed = started.elapsed();
-                log_background("radar_raster_finish", generation, elapsed);
+                log_background("radar_raster_finish", generation, elapsed, None);
                 let _ = raster_results.send(RasterResult {
                     generation, site, product, result, submitted_at, elapsed,
                 }).await;
@@ -288,7 +292,7 @@ impl BackgroundWorkers {
                     .map_err(|e| format!("image worker join: {e}"))
                     .and_then(|r| r);
                 let elapsed = started.elapsed();
-                log_background("nhc_image_decode", generation, elapsed);
+                log_background("nhc_image_decode", generation, elapsed, None);
                 let _ = image_results
                     .send(ImageDecodeResult {
                         generation,
@@ -324,8 +328,13 @@ impl BackgroundWorkers {
     pub fn poll_raster(&mut self) -> Option<RasterResult> {
         self.raster_rx.try_recv().ok()
     }
-    pub fn submit_image(&self, request: ImageDecodeRequest) -> Result<(), SubmitError> {
-        self.image_tx.try_send(request).map_err(map_submit)
+    pub fn submit_image(&self, request: ImageDecodeRequest) -> Result<(), ImageSubmitError> {
+        self.image_tx
+            .try_send(request)
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(request) => ImageSubmitError::Full(request),
+                mpsc::error::TrySendError::Closed(request) => ImageSubmitError::Closed(request),
+            })
     }
     pub fn image_queue_has_capacity(&self) -> bool {
         self.image_tx.capacity() > 0
@@ -383,16 +392,29 @@ fn decode_image(bytes: &[u8]) -> Result<DecodedImage, String> {
     })
 }
 
-fn log_background(phase: &str, generation: u64, elapsed: Duration) {
+fn background_log_line(
+    phase: &str,
+    generation: u64,
+    elapsed: Duration,
+    payload_bytes: Option<usize>,
+) -> String {
     let ms = elapsed.as_millis();
+    let payload = payload_bytes.map_or_else(String::new, |bytes| format!(" payload_bytes={bytes}"));
     if elapsed > BACKGROUND_WARN {
-        eprintln!(
-            "Warning: startup phase={phase} generation={generation} elapsed_ms={ms} background_threshold_ms={}",
+        format!(
+            "Warning: startup phase={phase} generation={generation}{payload} elapsed_ms={ms} background_threshold_ms={}",
             BACKGROUND_WARN.as_millis()
-        );
+        )
     } else {
-        eprintln!("startup phase={phase} generation={generation} elapsed_ms={ms}");
+        format!("startup phase={phase} generation={generation}{payload} elapsed_ms={ms}")
     }
+}
+
+fn log_background(phase: &str, generation: u64, elapsed: Duration, payload_bytes: Option<usize>) {
+    eprintln!(
+        "{}",
+        background_log_line(phase, generation, elapsed, payload_bytes)
+    );
 }
 
 /// Reorders independently completed decodes and yields one item per caller
@@ -441,6 +463,43 @@ mod tests {
                 .unwrap_err()
                 .contains("decoding NHC image")
         );
+    }
+
+    #[test]
+    fn image_worker_preserves_request_identity_and_dimensions() {
+        use std::io::Cursor;
+
+        let mut encoded = Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(2, 1)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _guard = runtime.enter();
+        let mut workers = BackgroundWorkers::new(runtime.handle());
+        workers
+            .submit_image(ImageDecodeRequest {
+                generation: 14,
+                sequence: 3,
+                key: "storm:cone".to_owned(),
+                bytes: encoded.into_inner(),
+                submitted_at: Instant::now(),
+            })
+            .map_err(|_| "image request rejected")
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(result) = workers.poll_image() {
+                assert_eq!(result.generation, 14);
+                assert_eq!(result.sequence, 3);
+                assert_eq!(result.key, "storm:cone");
+                let image = result.result.unwrap();
+                assert_eq!((image.width, image.height), (2, 1));
+                break;
+            }
+            assert!(Instant::now() < deadline, "image worker timed out");
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     #[test]
@@ -554,16 +613,11 @@ mod tests {
 
     #[test]
     fn timing_log_contains_required_fields() {
-        let phase = "alerts_parse";
-        let generation = 12;
-        let elapsed = Duration::from_millis(4);
-        let line = format!(
-            "startup phase={phase} generation={generation} elapsed_ms={}",
-            elapsed.as_millis()
-        );
+        let line = background_log_line("alerts_parse", 12, Duration::from_millis(4), Some(2048));
         assert!(line.contains("phase=alerts_parse"));
         assert!(line.contains("generation=12"));
         assert!(line.contains("elapsed_ms=4"));
+        assert!(line.contains("payload_bytes=2048"));
     }
 
     #[test]

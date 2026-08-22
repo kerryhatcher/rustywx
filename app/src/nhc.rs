@@ -29,6 +29,13 @@ const CURRENT_STORMS_URL: &str = "https://www.nhc.noaa.gov/CurrentStorms.json";
 pub const NET_ID_CURRENT_STORMS: &str = "nhc-current-storms";
 pub const NET_ID_GIS_PREFIX: &str = "nhc-gis-"; // + layer number
 
+fn fire_gis_layer(layer: u32) {
+    use ply_engine::prelude::net;
+    let id = format!("{NET_ID_GIS_PREFIX}{layer}");
+    let url = format!("{MAPSERVER}/{layer}/query?where=1%3D1&outFields=*&f=geojson");
+    net::get(&id, &url, |c| c);
+}
+
 // ── Data types ──────────────────────────────────────────────────────────
 
 /// Storm metadata from the NHC CurrentStorms.json API.
@@ -930,15 +937,14 @@ impl NhcFetchState {
             c.header("User-Agent", "rustywx/0.3")
         });
         for layer in [5, 6, 7, 8] {
-            let id = format!("{NET_ID_GIS_PREFIX}{layer}");
-            let url = format!("{MAPSERVER}/{layer}/query?where=1%3D1&outFields=*&f=geojson");
-            net::get(&id, &url, |c| c);
+            fire_gis_layer(layer);
         }
         self.phase = NhcFetchPhase::Phase1;
     }
 
-    /// Poll the fetch state machine. Returns `Some(bundle)` when the fetch
-    /// is complete, or `None` if still in progress.
+    /// Poll the fetch state machine. Returns an intermediate metadata handoff
+    /// for background parsing, a final bundle when complete, or `None` while
+    /// network/background work is still in progress.
     pub fn poll(&mut self) -> Option<Result<NhcPoll>> {
         let phase = std::mem::replace(&mut self.phase, NhcFetchPhase::Idle);
         match phase {
@@ -1038,6 +1044,9 @@ impl NhcFetchState {
             (8, gis_ww_val.is_some()),
         ] {
             if !arrived {
+                // Refresh the request registration in case Ply evicted it
+                // while phase-1 metadata was being parsed off-thread.
+                fire_gis_layer(layer);
                 let net_id = format!("{NET_ID_GIS_PREFIX}{layer}");
                 pending.push(PendingRequest {
                     net_id,
