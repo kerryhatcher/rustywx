@@ -74,6 +74,35 @@ pub fn poll_and_merge() -> Option<Result<Vec<Ring>>> {
     Some(result)
 }
 
+/// Poll all border responses and return their owned bodies without parsing.
+/// Copying the response is short; JSON parsing belongs on the parse worker.
+pub fn poll_raw() -> Option<Result<(String, String, String)>> {
+    use ply_engine::prelude::net;
+
+    let states = net::request(NET_ID_STATES)?.response()?;
+    let coast = net::request(NET_ID_COAST)?.response()?;
+    let country = net::request(NET_ID_COUNTRY)?.response()?;
+    Some(match (states, coast, country) {
+        (Ok(states), Ok(coast), Ok(country)) => Ok((
+            states.text().to_owned(),
+            coast.text().to_owned(),
+            country.text().to_owned(),
+        )),
+        (Err(e), _, _) => Err(anyhow!("fetching states: {e}")),
+        (_, Err(e), _) => Err(anyhow!("fetching coastlines: {e}")),
+        (_, _, Err(e)) => Err(anyhow!("fetching country lines: {e}")),
+    })
+}
+
+/// Parse and merge the three owned network payloads. Intended for the
+/// background parse worker; it does no networking or graphics work.
+pub fn parse_and_merge(states: &str, coast: &str, country: &str) -> Result<Vec<Ring>> {
+    let mut rings = parse_state_lines(states)?;
+    rings.extend(parse_coastlines(coast)?);
+    rings.extend(parse_country_lines(country)?);
+    Ok(rings)
+}
+
 /// Load cached border rings from Ply storage (async).
 ///
 /// A corrupt/unparseable cache entry degrades to `Ok(None)` (cache miss —

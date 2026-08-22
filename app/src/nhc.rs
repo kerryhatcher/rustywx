@@ -860,6 +860,8 @@ enum NhcFetchPhase {
     Idle,
     /// Phase 1: CurrentStorms.json + 4 GIS layers in flight.
     Phase1,
+    /// Network payloads have been handed to the background parser.
+    AwaitingMetadata,
     /// Phase 2: per-storm text/image/KMZ requests in flight.
     Phase2 {
         metas: Vec<StormMeta>,
@@ -881,6 +883,20 @@ pub struct NhcFetchState {
     phase: NhcFetchPhase,
 }
 
+/// Owned phase-1 bodies ready for background metadata/GIS parsing.
+pub struct NhcMetadataBodies {
+    pub storms: String,
+    pub gis_cone: Option<String>,
+    pub gis_track: Option<String>,
+    pub gis_points: Option<String>,
+    pub gis_ww: Option<String>,
+}
+
+pub enum NhcPoll {
+    Metadata(NhcMetadataBodies),
+    Complete(NhcBundle),
+}
+
 impl NhcFetchState {
     pub fn new() -> Self {
         Self {
@@ -892,7 +908,7 @@ impl NhcFetchState {
     pub fn is_fetching(&self) -> bool {
         matches!(
             self.phase,
-            NhcFetchPhase::Phase1 | NhcFetchPhase::Phase2 { .. }
+            NhcFetchPhase::Phase1 | NhcFetchPhase::AwaitingMetadata | NhcFetchPhase::Phase2 { .. }
         )
     }
 
@@ -915,13 +931,15 @@ impl NhcFetchState {
 
     /// Poll the fetch state machine. Returns `Some(bundle)` when the fetch
     /// is complete, or `None` if still in progress.
-    pub fn poll(&mut self) -> Option<Result<NhcBundle>> {
+    pub fn poll(&mut self) -> Option<Result<NhcPoll>> {
         let phase = std::mem::replace(&mut self.phase, NhcFetchPhase::Idle);
         match phase {
             NhcFetchPhase::Idle => None,
 
-            NhcFetchPhase::Phase1 => {
-                self.poll_phase1();
+            NhcFetchPhase::Phase1 => self.poll_phase1(),
+
+            NhcFetchPhase::AwaitingMetadata => {
+                self.phase = NhcFetchPhase::AwaitingMetadata;
                 None
             }
 
@@ -940,12 +958,12 @@ impl NhcFetchState {
                 None
             }
 
-            NhcFetchPhase::Complete(bundle) => Some(Ok(bundle)),
+            NhcFetchPhase::Complete(bundle) => Some(Ok(NhcPoll::Complete(bundle))),
             NhcFetchPhase::Error(e) => Some(Err(anyhow!(e))),
         }
     }
 
-    fn poll_phase1(&mut self) {
+    fn poll_phase1(&mut self) -> Option<Result<NhcPoll>> {
         use ply_engine::prelude::net;
 
         // Check CurrentStorms.json.
@@ -960,36 +978,44 @@ impl NhcFetchState {
             None => {
                 // Still pending — put the phase back and wait.
                 self.phase = NhcFetchPhase::Phase1;
-                return;
+                return None;
             }
             Some(Ok(resp)) => resp.text().to_string(),
             Some(Err(e)) => {
                 self.phase = NhcFetchPhase::Error(format!("CurrentStorms.json: {e}"));
-                return;
+                return None;
             }
         };
 
-        let metas = match parse_current_storms(&storms_body) {
-            Ok(m) => m,
-            Err(e) => {
-                self.phase = NhcFetchPhase::Error(format!("{e:#}"));
-                return;
-            }
-        };
+        let response_body =
+            |response: Option<Result<std::sync::Arc<ply_engine::net::Response>, String>>| {
+                response
+                    .and_then(Result::ok)
+                    .map(|response| response.text().to_owned())
+            };
+        self.phase = NhcFetchPhase::AwaitingMetadata;
+        Some(Ok(NhcPoll::Metadata(NhcMetadataBodies {
+            storms: storms_body,
+            gis_cone: response_body(gis_cone),
+            gis_track: response_body(gis_track),
+            gis_points: response_body(gis_points),
+            gis_ww: response_body(gis_ww),
+        })))
+    }
 
-        // Parse any GIS layers that have arrived.
-        let gis_cone_val = gis_cone
-            .and_then(|r| r.ok())
-            .and_then(|r| parse_gis_layer(r.text()).ok());
-        let gis_track_val = gis_track
-            .and_then(|r| r.ok())
-            .and_then(|r| parse_gis_layer(r.text()).ok());
-        let gis_points_val = gis_points
-            .and_then(|r| r.ok())
-            .and_then(|r| parse_gis_layer(r.text()).ok());
-        let gis_ww_val = gis_ww
-            .and_then(|r| r.ok())
-            .and_then(|r| parse_gis_layer(r.text()).ok());
+    /// Continue phase 2 after the background parser completes phase 1.
+    pub fn accept_metadata(
+        &mut self,
+        metas: Vec<StormMeta>,
+        gis_cone_val: Option<Value>,
+        gis_track_val: Option<Value>,
+        gis_points_val: Option<Value>,
+        gis_ww_val: Option<Value>,
+    ) {
+        if !matches!(self.phase, NhcFetchPhase::AwaitingMetadata) {
+            return;
+        }
+        use ply_engine::prelude::net;
 
         // Build phase-2 pending requests.
         let mut pending: Vec<PendingRequest> = Vec::new();
@@ -1112,6 +1138,12 @@ impl NhcFetchState {
                 gis_points: gis_points_val,
                 gis_ww: gis_ww_val,
             };
+        }
+    }
+
+    pub fn reject_metadata(&mut self, error: String) {
+        if matches!(self.phase, NhcFetchPhase::AwaitingMetadata) {
+            self.phase = NhcFetchPhase::Error(error);
         }
     }
 
