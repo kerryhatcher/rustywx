@@ -15,6 +15,7 @@ pub const BORDERS_TOGGLE_ID: &str = "settings-toggle-borders";
 pub const WATCHES_TOGGLE_ID: &str = "settings-toggle-watches";
 pub const WARNINGS_TOGGLE_ID: &str = "settings-toggle-warnings";
 pub const NHC_TOGGLE_ID: &str = "settings-toggle-nhc";
+pub const MODEL_TRACKS_TOGGLE_ID: &str = "settings-toggle-model-tracks";
 pub const ANIMATION_CYCLE_ID: &str = "settings-cycle-animation";
 pub const TDBZ_CYCLE_ID: &str = "settings-cycle-tdbz";
 pub const USE_CURRENT_SITE_ID: &str = "settings-use-current-site";
@@ -308,6 +309,14 @@ pub fn draw(
                             NHC_TOGGLE_ID,
                             "Show tropical panel on startup",
                             settings.show_nhc,
+                        );
+                    });
+                    row(ui, "Spaghetti models (tropical)", |ui| {
+                        bool_toggle(
+                            ui,
+                            MODEL_TRACKS_TOGGLE_ID,
+                            "Spaghetti models (tropical)",
+                            settings.show_model_tracks,
                         );
                     });
                     row(ui, "Dyslexia-friendly font", |ui| {

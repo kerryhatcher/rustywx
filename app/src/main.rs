@@ -3648,6 +3648,10 @@ fn handle_input(
             // recompute that lives alongside the raster (see above).
             state.needs_reraster = true;
         }
+        if ply.is_just_pressed(settings_widget::MODEL_TRACKS_TOGGLE_ID) {
+            state.settings.show_model_tracks = !state.settings.show_model_tracks;
+            state.cache.save_settings(&state.settings);
+        }
         // Threshold steppers: nudge each QC knob, clamp to a sane range,
         // persist, and re-raster so the effect is visible immediately.
         {
