@@ -194,7 +194,10 @@ pub struct AppState {
     /// Last good model guidance per active storm.
     pub model_guidance: crate::adeck::GuidanceStore,
     /// `model_guidance` projected to km for the current site, keyed by
-    /// (site index, store revision). Rebuilt only when either changes.
+    /// (site index, store revision). Rebuilt only when either changes while
+    /// `model_guidance` is non-empty; the draw call ignores this cache (and
+    /// draws nothing) whenever `model_guidance` is empty, so a storm that
+    /// drains out of `CurrentStorms.json` never leaves stale tracks on screen.
     pub model_projection: Option<(usize, u64, Vec<crate::adeck_style::ProjectedTrack>)>,
 
     /// Last mouse position for manual pan delta calculation.

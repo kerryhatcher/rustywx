@@ -196,8 +196,11 @@ pub fn is_stale(fetched_at_unix: i64, now_unix: i64) -> bool {
 }
 
 /// A visible track pre-projected to km offsets from the radar site.
-/// Rebuilt only when the site or the store changes, so per frame the draw
-/// is a bbox cull plus one multiply-add per vertex (review H5).
+/// The caller (`main.rs`) rebuilds its cache of these only when the site or
+/// a non-empty store's revision changes, so per frame the draw is a bbox
+/// cull plus one multiply-add per vertex (review H5). When the store drains
+/// to empty (e.g. the storm leaves `CurrentStorms.json`), the caller draws
+/// nothing rather than reusing the last cached, now-stale tracks.
 #[derive(Clone, Debug)]
 pub struct ProjectedTrack {
     pub tech: String,

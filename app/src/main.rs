@@ -548,6 +548,32 @@ mod window_backend_tests {
     }
 }
 
+/// Whether the model-tracks overlay should be rebuilt and drawn this frame.
+/// A single gate shared by the projection-cache rebuild and the draw-call
+/// lookup, so the two can never disagree: if `model_guidance` drains to
+/// empty (e.g. the storm leaves `CurrentStorms.json`), both the rebuild and
+/// the draw must turn off together, or the last cached projection keeps
+/// rendering as phantom spaghetti for a storm that no longer exists.
+fn model_tracks_enabled(show_model_tracks: bool, guidance_is_empty: bool) -> bool {
+    show_model_tracks && !guidance_is_empty
+}
+
+#[cfg(test)]
+mod model_tracks_gate_tests {
+    use super::*;
+
+    #[test]
+    fn requires_both_the_setting_on_and_nonempty_guidance() {
+        assert!(model_tracks_enabled(true, false));
+        assert!(
+            !model_tracks_enabled(true, true),
+            "empty store must disable, even though the setting is on"
+        );
+        assert!(!model_tracks_enabled(false, false));
+        assert!(!model_tracks_enabled(false, true));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -1669,7 +1695,10 @@ async fn main() {
             } else {
                 None
             };
-            if state.settings.show_model_tracks && !state.model_guidance.is_empty() {
+            if model_tracks_enabled(
+                state.settings.show_model_tracks,
+                state.model_guidance.is_empty(),
+            ) {
                 let key = (state.site_index, state.model_guidance.revision());
                 let fresh = state
                     .model_projection
@@ -1684,7 +1713,10 @@ async fn main() {
                     state.model_projection = Some((key.0, key.1, tracks));
                 }
             }
-            let model_tracks = if state.settings.show_model_tracks {
+            let model_tracks = if model_tracks_enabled(
+                state.settings.show_model_tracks,
+                state.model_guidance.is_empty(),
+            ) {
                 state
                     .model_projection
                     .as_ref()
