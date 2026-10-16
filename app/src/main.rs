@@ -2744,7 +2744,124 @@ async fn main() {
                                             "Most Likely Arrival (34kt)",
                                             state.nhc_overlays.show_most_likely_arrival,
                                         );
+                                        nhc_toggle_button(
+                                            ui,
+                                            "btn-nhc-models",
+                                            "Model Tracks (spaghetti)",
+                                            state.settings.show_model_tracks,
+                                        );
                                     });
+
+                                // Model guidance (spaghetti) — only while on.
+                                if state.settings.show_model_tracks {
+                                    let now_unix = chrono::Utc::now().timestamp();
+                                    let guidance = state.model_guidance.get(&meta.id);
+                                    let status = state.adeck_fetch.status(&meta.id, now);
+                                    ui.element()
+                                        .width(grow!())
+                                        .height(fit!())
+                                        .background_color(0x171A1F)
+                                        .corner_radius(4.0)
+                                        .layout(|layout| {
+                                            layout.direction(TopToBottom).padding(8).gap(4)
+                                        })
+                                        .children(|ui| {
+                                            ui.text("Model Guidance", |t| {
+                                                t.font_size(12).color(0xE8E0DC)
+                                            });
+                                            if let Some(g) = guidance {
+                                                let stale = rustywx::adeck_style::is_stale(
+                                                    g.fetched_at_unix,
+                                                    now_unix,
+                                                );
+                                                ui.text(
+                                                    &format!(
+                                                        "{} cycle",
+                                                        rustywx::adeck_style::format_cycle(g.init)
+                                                    ),
+                                                    |t| t.font_size(11).color(0x9E9590),
+                                                );
+                                                ui.text(
+                                                    &format!(
+                                                        "Updated {}{}",
+                                                        rustywx::adeck_style::format_age(
+                                                            g.fetched_at_unix,
+                                                            now_unix
+                                                        ),
+                                                        if stale { " (stale)" } else { "" }
+                                                    ),
+                                                    |t| {
+                                                        t.font_size(11).color(if stale {
+                                                            0xFFC140
+                                                        } else {
+                                                            0x9E9590
+                                                        })
+                                                    },
+                                                );
+                                                let shown = g
+                                                    .tracks
+                                                    .iter()
+                                                    .filter(|t| t.default_visible)
+                                                    .count();
+                                                ui.text(
+                                                    &format!(
+                                                        "{shown} tracks, {} intensity models",
+                                                        g.intensity.len()
+                                                    ),
+                                                    |t| t.font_size(11).color(0x9E9590),
+                                                );
+                                                if !g.has_official {
+                                                    ui.text(
+                                                        "No NHC official forecast this cycle",
+                                                        |t| t.font_size(11).color(0xFFC140),
+                                                    );
+                                                }
+                                                if let rustywx::adeck_fetch::SlotStatus::Retrying {
+                                                    in_secs,
+                                                } = &status
+                                                {
+                                                    ui.text(
+                                                        &format!(
+                                                            "Refresh failed, retrying in {in_secs} s"
+                                                        ),
+                                                        |t| t.font_size(10).color(0xFFC140),
+                                                    );
+                                                }
+                                                // Intensity chart (Task 16)
+                                            } else {
+                                                ui.text(
+                                                    &rustywx::adeck_fetch::status_message(&status),
+                                                    |t| t.font_size(11).color(0x9E9590),
+                                                );
+                                            }
+                                            for line in rustywx::adeck_style::DISCLAIMER_LINES {
+                                                ui.text(line, |t| t.font_size(10).color(0x9E9590));
+                                            }
+                                            ui.element()
+                                                .id("btn-nhc-model-summary")
+                                                .width(fit!())
+                                                .height(fixed!(22.0))
+                                                .background_color(0x1E1B1B)
+                                                .corner_radius(4.0)
+                                                .layout(|layout| {
+                                                    layout
+                                                        .padding((0, 8, 0, 8))
+                                                        .gap(5)
+                                                        .align(CenterX, CenterY)
+                                                })
+                                                .accessibility(|a| a.link("NHC model summary"))
+                                                .children(|ui| {
+                                                    ui.text("NHC model summary", |t| {
+                                                        t.font_size(11).color(0x4a90d9)
+                                                    });
+                                                    ui.text(nf::EXTERNAL_LINK, |t| {
+                                                        t.font_size(11)
+                                                            .font(&SYMBOL_FONT)
+                                                            .color(0x4a90d9)
+                                                    });
+                                                });
+                                        });
+                                }
 
                                 // Graphics products (thumbnails)
                                 ui.element()
@@ -4107,6 +4224,14 @@ fn handle_input(
     }
     if ply.is_just_pressed("btn-nhc-likely") {
         state.nhc_overlays.show_most_likely_arrival = !state.nhc_overlays.show_most_likely_arrival;
+    }
+    if ply.is_just_pressed("btn-nhc-models") {
+        // Same persisted field as the Settings-panel row.
+        state.settings.show_model_tracks = !state.settings.show_model_tracks;
+        state.cache.save_settings(&state.settings);
+    }
+    if ply.is_just_pressed("btn-nhc-model-summary") {
+        let _ = webbrowser::open(rustywx::adeck_style::MODEL_SUMMARY_URL);
     }
 
     // ── NHC modal scrolling / close / browser buttons ─────────────
