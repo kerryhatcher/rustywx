@@ -2,6 +2,8 @@
 //! model-guidance tracks and intensities. Pure functions only (no network, no
 //! drawing). Record format: `docs/research/spaghetti-models.md` section 2.
 
+use anyhow::{Result, anyhow, bail};
+
 /// One a-deck row, reduced to the columns the overlay needs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ADeckRecord {
@@ -121,6 +123,40 @@ pub fn adeck_url(storm_id: &str) -> Option<String> {
     Some(format!("{ADECK_BASE_URL}a{id}.dat.gz"))
 }
 
+/// Largest compressed body accepted. Ply's ureq backend already refuses
+/// bodies over 10 MiB (`ureq` `MAX_BODY_SIZE`). The biggest live a-deck seen
+/// was 2.7 MB gzipped, so real files never hit this.
+pub const MAX_GZIP_BYTES: usize = 10 * 1024 * 1024;
+
+/// Uncompressed cap. A 350 KB live file inflates to 2.9 MB, so 64 MiB leaves
+/// over 20x headroom while stopping a decompression bomb (review M20).
+pub const MAX_UNCOMPRESSED_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Inflate a gzip body, refusing non-gzip input and anything that inflates
+/// past `max_out` bytes. Invalid UTF-8 is replaced, not rejected (a-decks
+/// are ASCII). Run on the background worker only, never the UI thread.
+pub fn gunzip_limited(gz: &[u8], max_out: u64) -> Result<String> {
+    use std::io::Read;
+    if gz.len() > MAX_GZIP_BYTES {
+        bail!(
+            "a-deck body is {} bytes, over the {MAX_GZIP_BYTES} byte cap",
+            gz.len()
+        );
+    }
+    if gz.get(0..2) != Some(&[0x1f, 0x8b][..]) {
+        bail!("a-deck body is not gzip ({} bytes)", gz.len());
+    }
+    let mut out = Vec::new();
+    flate2::read::GzDecoder::new(gz)
+        .take(max_out + 1)
+        .read_to_end(&mut out)
+        .map_err(|e| anyhow!("inflating a-deck: {e}"))?;
+    if out.len() as u64 > max_out {
+        bail!("a-deck inflates past {max_out} bytes");
+    }
+    Ok(String::from_utf8_lossy(&out).into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,5 +271,46 @@ mod tests {
         ] {
             assert_eq!(adeck_url(bad), None, "should reject {bad:?}");
         }
+    }
+
+    fn gzip(bytes: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(bytes).unwrap();
+        enc.finish().unwrap()
+    }
+
+    #[test]
+    fn gunzip_round_trips_fixture() {
+        let text = gunzip_limited(&gzip(FIXTURE.as_bytes()), MAX_UNCOMPRESSED_BYTES).unwrap();
+        assert_eq!(text, FIXTURE);
+    }
+
+    #[test]
+    fn gunzip_rejects_non_gzip_body() {
+        let err = gunzip_limited(b"<html>404</html>", MAX_UNCOMPRESSED_BYTES).unwrap_err();
+        assert!(format!("{err:#}").contains("not gzip"), "{err:#}");
+    }
+
+    #[test]
+    fn gunzip_stops_a_decompression_bomb() {
+        let bomb = gzip(&vec![0u8; 1_000_000]);
+        let err = gunzip_limited(&bomb, 1024).unwrap_err();
+        assert!(format!("{err:#}").contains("inflates past"), "{err:#}");
+    }
+
+    #[test]
+    fn gunzip_rejects_truncated_input() {
+        let gz = gzip(FIXTURE.as_bytes());
+        let half = gz.get(..gz.len() / 2).unwrap();
+        assert!(gunzip_limited(half, MAX_UNCOMPRESSED_BYTES).is_err());
+    }
+
+    #[test]
+    fn gunzip_rejects_oversized_body() {
+        let mut big = vec![0x1f, 0x8b];
+        big.resize(MAX_GZIP_BYTES + 1, 0);
+        let err = gunzip_limited(&big, MAX_UNCOMPRESSED_BYTES).unwrap_err();
+        assert!(format!("{err:#}").contains("cap"), "{err:#}");
     }
 }

@@ -2610,6 +2610,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "criterion",
+ "flate2",
  "image 0.25.10",
  "nexrad-data",
  "nexrad-decode",
