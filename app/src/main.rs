@@ -2942,16 +2942,28 @@ async fn main() {
                                                         |t| t.font_size(11).color(0xFFC140),
                                                     );
                                                 }
-                                                if let rustywx::adeck_fetch::SlotStatus::Retrying {
-                                                    in_secs,
-                                                } = &status
-                                                {
-                                                    ui.text(
-                                                        &format!(
-                                                            "Refresh failed, retrying in {in_secs} s"
-                                                        ),
-                                                        |t| t.font_size(10).color(0xFFC140),
-                                                    );
+                                                match &status {
+                                                    rustywx::adeck_fetch::SlotStatus::Retrying {
+                                                        in_secs,
+                                                    } => {
+                                                        ui.text(
+                                                            &format!(
+                                                                "Refresh failed, retrying in {in_secs} s"
+                                                            ),
+                                                            |t| t.font_size(10).color(0xFFC140),
+                                                        );
+                                                    }
+                                                    rustywx::adeck_fetch::SlotStatus::WaitingForGuidance {
+                                                        in_secs,
+                                                    } => {
+                                                        ui.text(
+                                                            &format!(
+                                                                "No model guidance published yet, checking again in {in_secs} s"
+                                                            ),
+                                                            |t| t.font_size(10).color(0x9E9590),
+                                                        );
+                                                    }
+                                                    _ => {}
                                                 }
                                                 if !g.intensity.is_empty() {
                                                     ui.element()
