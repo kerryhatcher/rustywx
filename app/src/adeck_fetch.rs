@@ -261,6 +261,16 @@ impl AdeckFetcher {
             .any(|s| matches!(s.phase, Phase::Parsing { generation: g } if g == generation))
     }
 
+    /// True while any slot is in the shared parse queue (`Phase::Parsing`).
+    /// The submit loop in `main.rs` uses this to cap a-decks to at most one
+    /// in-flight parse job, so they can't fill all of `QUEUE_CAPACITY` and
+    /// starve the NHC metadata, alerts, and borders jobs that share it.
+    pub fn has_parsing(&self) -> bool {
+        self.slots
+            .values()
+            .any(|s| matches!(s.phase, Phase::Parsing { .. }))
+    }
+
     /// Record a parse result. `None` when the generation isn't ours (storm
     /// removed or overlay disabled meanwhile): the caller drops the result.
     pub fn parse_finished(&mut self, generation: u64, ok: bool, now: f64) -> Option<ParseOutcome> {
@@ -425,6 +435,25 @@ mod tests {
         assert_eq!(net.fired.len(), 2);
         assert_eq!(net.fired[1].0, AL, "same stable id, re-fired after cancel");
         assert!(net.ignored.is_empty());
+    }
+
+    #[test]
+    fn has_parsing_true_only_while_a_slot_is_in_the_parsing_phase() {
+        let mut f = AdeckFetcher::new();
+        let mut net = FakeNet::default();
+        let active = ids(&["al092026"]);
+        f.tick(0.0, &active, &mut net);
+        assert!(!f.has_parsing(), "idle/in-flight slot is not parsing");
+        net.respond(AL, NetPoll::Done(Ok(vec![1, 2, 3])));
+        f.tick(1.0, &active, &mut net);
+        assert!(!f.has_parsing(), "downloaded-but-not-taken is not parsing");
+        assert_eq!(
+            f.take_parse_job(7),
+            Some(("al092026".to_owned(), vec![1, 2, 3]))
+        );
+        assert!(f.has_parsing(), "take_parse_job moved the slot to Parsing");
+        f.parse_finished(7, true, 2.0);
+        assert!(!f.has_parsing(), "parse_finished cleared the Parsing slot");
     }
 
     #[test]

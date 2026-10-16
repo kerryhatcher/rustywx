@@ -1555,31 +1555,35 @@ async fn main() {
             {
                 show_toast(&mut state, now, toast_widget::ErrorKind::Network);
             }
-            while background.parse_queue_has_capacity() {
+            // At most one a-deck parse job in flight at a time: the shared
+            // parse queue has only QUEUE_CAPACITY slots, and the NHC
+            // metadata, alerts, and borders jobs that pre-date this feature
+            // also submit to it (S2). Without this cap, a-decks from 4+
+            // active storms could grab every free slot and starve them.
+            if background.parse_queue_has_capacity() && !state.adeck_fetch.has_parsing() {
                 let generation = next_generation;
-                let Some((storm_id, gz)) = state.adeck_fetch.take_parse_job(generation) else {
-                    break;
-                };
-                next_generation += 1;
-                let payload_bytes = gz.len();
-                let request = ParseRequest {
-                    generation,
-                    payload: ParsePayload::ADeck {
-                        storm_id: storm_id.clone(),
-                        gz,
-                    },
-                    submitted_at: std::time::Instant::now(),
-                };
-                if background.submit_parse(request).is_ok() {
-                    eprintln!(
-                        "startup phase=adeck_response generation={generation} storm={storm_id} payload_bytes={payload_bytes}"
-                    );
-                } else if state
-                    .adeck_fetch
-                    .parse_finished(generation, false, now)
-                    .is_some_and(|o| o.show_toast)
-                {
-                    show_toast(&mut state, now, toast_widget::ErrorKind::Network);
+                if let Some((storm_id, gz)) = state.adeck_fetch.take_parse_job(generation) {
+                    next_generation += 1;
+                    let payload_bytes = gz.len();
+                    let request = ParseRequest {
+                        generation,
+                        payload: ParsePayload::ADeck {
+                            storm_id: storm_id.clone(),
+                            gz,
+                        },
+                        submitted_at: std::time::Instant::now(),
+                    };
+                    if background.submit_parse(request).is_ok() {
+                        eprintln!(
+                            "startup phase=adeck_response generation={generation} storm={storm_id} payload_bytes={payload_bytes}"
+                        );
+                    } else if state
+                        .adeck_fetch
+                        .parse_finished(generation, false, now)
+                        .is_some_and(|o| o.show_toast)
+                    {
+                        show_toast(&mut state, now, toast_widget::ErrorKind::Network);
+                    }
                 }
             }
         } else if state.adeck_fetch.is_active() {
