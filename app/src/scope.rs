@@ -2,6 +2,7 @@
 //! Uses render_to_texture for the radar sweep and macroquad draw calls
 //! for overlays (range rings, borders, markers, etc.).
 
+use crate::adeck_style::{self, ProjectedTrack};
 use crate::alerts::Alert;
 use crate::borders::Ring;
 use crate::colors;
@@ -1388,6 +1389,8 @@ pub fn project_site(
 ///
 /// Stage 4 adds optional border and alert overlay drawing.
 /// Stage 5 adds optional NHC tropical cyclone overlay drawing.
+/// `model_tracks` adds the optional spaghetti-models overlay, drawn under
+/// the official NHC layers.
 /// `melting_layer` adds the optional melting-layer hint ring (see
 /// `melting_layer.rs`); `Some` only when the feature is on and a ring was
 /// detected in the current scan.
@@ -1400,6 +1403,7 @@ pub fn draw_scope_to_texture(
     borders: Option<(&[Ring], bool)>,
     alerts: Option<(&[Alert], bool, bool)>,
     nhc: Option<(&NhcBundle, &NhcOverlayState)>,
+    model_tracks: Option<&[ProjectedTrack]>,
     user: Option<Coords>,
     show_sites: bool,
     show_rings: bool,
@@ -1596,8 +1600,12 @@ pub fn draw_scope_to_texture(
         );
     }
 
-    // ── NHC overlays (Stage 5) ──────────────────────────────────
+    // ── NHC overlays (Stage 5) + model tracks (spaghetti) ───────
     if let Some((bundle, overlays)) = nhc {
+        // Models first so the official cone/track sit on top.
+        if let Some(tracks) = model_tracks {
+            draw_model_tracks(tracks, center_x, center_y, px_per_km);
+        }
         draw_nhc_overlays(bundle, overlays, site, center_x, center_y, px_per_km);
     }
 
@@ -2016,6 +2024,76 @@ fn draw_nhc_overlays(
             margin,
             MacroquadColor::from_rgba(0x66, 0xdd, 0x88, 180),
         );
+    }
+}
+
+/// Draw ATCF model-guidance tracks ("spaghetti"). Each segment is coloured
+/// by the forecast wind at its start (`adeck_style::segment_rgba`); OFCL gets
+/// a white outline. Tech ids are drawn at track ends with greedy collision
+/// skipping (same idiom as the city labels).
+fn draw_model_tracks(tracks: &[ProjectedTrack], center_x: f32, center_y: f32, px_per_km: f32) {
+    let sw = screen_width();
+    let sh = screen_height();
+    let margin = 50.0;
+    let to_px = |km: Vec2| (center_x + km.x * px_per_km, center_y + km.y * px_per_km);
+    let mut labels: Vec<(&str, f32, f32)> = Vec::new();
+
+    for track in tracks {
+        let (x0, y0) = to_px(track.min_km);
+        let (x1, y1) = to_px(track.max_km);
+        if x1 < -margin || x0 > sw + margin || y1 < -margin || y0 > sh + margin {
+            continue; // whole track off-screen
+        }
+        let style = adeck_style::track_style(track.group);
+        let pts: Vec<(f32, f32)> = track.km.iter().map(|&k| to_px(k)).collect();
+        if let Some(under) = style.underlay_px {
+            let outline = MacroquadColor::from_rgba(0xff, 0xff, 0xff, 230);
+            for w in pts.windows(2) {
+                draw_line(w[0].0, w[0].1, w[1].0, w[1].1, under, outline);
+            }
+        }
+        for (i, w) in pts.windows(2).enumerate() {
+            let start = track.vmax_kt.get(i).copied().flatten();
+            let end = track.vmax_kt.get(i + 1).copied().flatten();
+            let [r, g, b, a] = adeck_style::segment_rgba(track.group, start, end);
+            draw_line(
+                w[0].0,
+                w[0].1,
+                w[1].0,
+                w[1].1,
+                style.width_px,
+                MacroquadColor::from_rgba(r, g, b, a),
+            );
+        }
+        if style.label
+            && let Some(&(lx, ly)) = pts.last()
+        {
+            labels.push((track.tech.as_str(), lx, ly));
+        }
+    }
+
+    // OFCL is last in draw order; reversing gives it first pick of space.
+    let label_font = 12.0;
+    let pad = 3.0;
+    let label_color = MacroquadColor::from_rgba(0xe8, 0xe0, 0xdc, 230);
+    let mut placed: Vec<(f32, f32, f32, f32)> = Vec::new();
+    for &(text, x, y) in labels.iter().rev() {
+        if x < 0.0 || x > sw || y < 0.0 || y > sh {
+            continue;
+        }
+        let dims = measure_text(text, None, label_font as u16, 1.0);
+        let bx = x + 4.0 - pad;
+        let by = y - 4.0 - dims.height - pad;
+        let bw = dims.width + 2.0 * pad;
+        let bh = dims.height + 2.0 * pad;
+        let collides = placed
+            .iter()
+            .any(|&(px0, py0, px1, py1)| bx < px1 && bx + bw > px0 && by < py1 && by + bh > py0);
+        if collides {
+            continue;
+        }
+        draw_text(text, x + 4.0, y - 4.0, label_font, label_color);
+        placed.push((bx, by, bx + bw, by + bh));
     }
 }
 

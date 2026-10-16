@@ -753,6 +753,7 @@ async fn main() {
         alert_modal_scroll: 0.0,
         adeck_fetch: rustywx::adeck_fetch::AdeckFetcher::new(),
         model_guidance: rustywx::adeck::GuidanceStore::default(),
+        model_projection: None,
         last_mouse_pos: None,
         start_time: get_time(),
         nhc_anim_start: 0.0,
@@ -1668,6 +1669,29 @@ async fn main() {
             } else {
                 None
             };
+            if state.settings.show_model_tracks && !state.model_guidance.is_empty() {
+                let key = (state.site_index, state.model_guidance.revision());
+                let fresh = state
+                    .model_projection
+                    .as_ref()
+                    .is_some_and(|(s, r, _)| (*s, *r) == key);
+                if !fresh {
+                    let tracks = rustywx::adeck_style::project_tracks(
+                        &state.model_guidance,
+                        site.lat,
+                        site.lon,
+                    );
+                    state.model_projection = Some((key.0, key.1, tracks));
+                }
+            }
+            let model_tracks = if state.settings.show_model_tracks {
+                state
+                    .model_projection
+                    .as_ref()
+                    .map(|(_, _, t)| t.as_slice())
+            } else {
+                None
+            };
             scope::draw_scope_to_texture(
                 if state.show_radar_data {
                     state.radar_texture.as_ref()
@@ -1684,6 +1708,7 @@ async fn main() {
                 } else {
                     None
                 },
+                model_tracks,
                 if state.show_location {
                     state.user_location
                 } else {

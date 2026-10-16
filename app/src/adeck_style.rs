@@ -2,7 +2,9 @@
 //! per-segment colour, line styles, the km-projection cache, cycle/age text,
 //! the disclaimer, and intensity-chart scaling. Pure: no drawing calls.
 
-use crate::adeck::ModelGroup;
+use crate::adeck::{GuidanceStore, ModelGroup};
+use crate::geo;
+use ply_engine::prelude::Vec2;
 
 /// Saffir-Simpson wind category of a forecast point.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -193,10 +195,132 @@ pub fn is_stale(fetched_at_unix: i64, now_unix: i64) -> bool {
     now_unix - fetched_at_unix > STALE_AFTER_SECS
 }
 
+/// A visible track pre-projected to km offsets from the radar site.
+/// Rebuilt only when the site or the store changes, so per frame the draw
+/// is a bbox cull plus one multiply-add per vertex (review H5).
+#[derive(Clone, Debug)]
+pub struct ProjectedTrack {
+    pub tech: String,
+    pub group: ModelGroup,
+    pub km: Vec<Vec2>,
+    pub vmax_kt: Vec<Option<u32>>,
+    pub min_km: Vec2,
+    pub max_km: Vec2,
+}
+
+/// Project every default-visible track, ordered by draw rank (models, then
+/// CARQ, then OFCL on top).
+pub fn project_tracks(
+    store: &GuidanceStore,
+    origin_lat: f64,
+    origin_lon: f64,
+) -> Vec<ProjectedTrack> {
+    let mut out: Vec<ProjectedTrack> = store
+        .iter()
+        .flat_map(|g| g.tracks.iter())
+        .filter(|t| t.default_visible && t.points.len() >= 2)
+        .map(|t| {
+            let km: Vec<Vec2> = t
+                .points
+                .iter()
+                .map(|p| geo::point_to_km_offset(origin_lat, origin_lon, (p.lat, p.lon)))
+                .collect();
+            let min_km = km.iter().copied().reduce(Vec2::min).unwrap_or(Vec2::ZERO);
+            let max_km = km.iter().copied().reduce(Vec2::max).unwrap_or(Vec2::ZERO);
+            ProjectedTrack {
+                tech: t.tech.clone(),
+                group: t.group,
+                vmax_kt: t.points.iter().map(|p| p.vmax_kt).collect(),
+                km,
+                min_km,
+                max_km,
+            }
+        })
+        .collect();
+    out.sort_by_key(|t| track_style(t.group).draw_rank);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::adeck::ModelGroup;
+    use crate::adeck::{AidTrack, GuidanceStore, StormGuidance, TrackPoint};
+
+    const FIXTURE: &str = include_str!("testdata/aal092026_sample.dat");
+
+    fn fixture_store() -> GuidanceStore {
+        let records = crate::adeck::parse_adeck(FIXTURE);
+        let mut store = GuidanceStore::default();
+        store.insert(crate::adeck::build_guidance(
+            "al092026", &records, 2026100912,
+        ));
+        store
+    }
+
+    #[test]
+    fn project_tracks_orders_official_last() {
+        let tracks = project_tracks(&fixture_store(), 27.0, -87.6);
+        let techs: Vec<&str> = tracks.iter().map(|t| t.tech.as_str()).collect();
+        assert_eq!(techs, ["AVNI", "HWFI", "TVCN", "CARQ", "OFCL"]);
+        let ofcl = tracks.last().unwrap();
+        assert!(ofcl.km[0].length() < 0.01, "OFCL tau 0 is at the origin");
+        for t in &tracks {
+            assert_eq!(t.km.len(), t.vmax_kt.len());
+            for p in &t.km {
+                assert!(p.x >= t.min_km.x && p.x <= t.max_km.x);
+                assert!(p.y >= t.min_km.y && p.y <= t.max_km.y);
+            }
+        }
+    }
+
+    #[test]
+    fn project_tracks_skips_hidden_models() {
+        let mut store = fixture_store();
+        let mut g = store.get("al092026").unwrap().clone();
+        g.tracks.push(AidTrack {
+            tech: "TABS".into(),
+            group: ModelGroup::Trajectory,
+            default_visible: false,
+            points: g.tracks[0].points.clone(),
+        });
+        store.insert(g);
+        assert!(
+            project_tracks(&store, 27.0, -87.6)
+                .iter()
+                .all(|t| t.tech != "TABS")
+        );
+    }
+
+    #[test]
+    fn projection_is_continuous_across_antimeridian() {
+        let point = |lon: f64| TrackPoint {
+            tau_h: 0,
+            lat: 20.0,
+            lon,
+            vmax_kt: Some(50),
+        };
+        let mut store = GuidanceStore::default();
+        store.insert(StormGuidance {
+            storm_id: "cp012026".into(),
+            init: 2026100912,
+            has_official: true,
+            tracks: vec![AidTrack {
+                tech: "AVNI".into(),
+                group: ModelGroup::Global,
+                default_visible: true,
+                points: vec![point(179.5), point(-179.5)],
+            }],
+            intensity: Vec::new(),
+            fetched_at_unix: 0,
+        });
+        let tracks = project_tracks(&store, 20.0, 179.0);
+        let gap = (tracks[0].km[1] - tracks[0].km[0]).length();
+        assert!(
+            gap < 200.0,
+            "1 degree of longitude, not a 360-degree wrap: {gap} km"
+        );
+    }
 
     #[test]
     fn wind_category_thresholds_follow_saffir_simpson() {

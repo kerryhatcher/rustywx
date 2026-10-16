@@ -193,6 +193,9 @@ pub struct AppState {
     pub adeck_fetch: crate::adeck_fetch::AdeckFetcher,
     /// Last good model guidance per active storm.
     pub model_guidance: crate::adeck::GuidanceStore,
+    /// `model_guidance` projected to km for the current site, keyed by
+    /// (site index, store revision). Rebuilt only when either changes.
+    pub model_projection: Option<(usize, u64, Vec<crate::adeck_style::ProjectedTrack>)>,
 
     /// Last mouse position for manual pan delta calculation.
     pub last_mouse_pos: Option<(f32, f32)>,
