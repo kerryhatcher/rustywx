@@ -27,17 +27,14 @@ pub fn draw(
     cycle_stale: bool,
     age_line: &str,
     fetch_stale: bool,
-    // Whether at least one shown storm's OFCL track is actually drawn this
-    // frame (review L1 + fix-round Important 4). Callers pass
-    // `adeck_style::any_official_track_shown(...)`, which mirrors
-    // `draw_model_tracks`'s own per-track condition — not
+    // Which of the three OFCL states applies this frame (review L1 +
+    // fix-round Important 4; `adeck_style::OfficialLegendState` doc
+    // explains why two states aren't enough). Callers compute this from
+    // `adeck_style::official_legend_state(any_official_track_shown(...),
+    // any_official_suppressed_by_gis(...))`, not from
     // `StormGuidance::has_official` (a cycle-selection flag from review
-    // S8), which can disagree with what's actually drawn: a storm can have
-    // `has_official == false` while its GIS advisory track is shown, or
-    // `has_official == true` yet have its OFCL suppressed by the S4 GIS-
-    // overlap fix. Basing the legend on `has_official` let it contradict
-    // the map.
-    ofcl_drawn: bool,
+    // S8, which can disagree with what's actually drawn).
+    ofcl_state: adeck_style::OfficialLegendState,
 ) {
     glass_panel::glass(
         ui.element()
@@ -61,7 +58,7 @@ pub fn draw(
         for cat in WindCategory::LEGEND {
             swatch_row(ui, cat.hex(), 4.0, cat.label());
         }
-        if ofcl_drawn {
+        if ofcl_state == adeck_style::OfficialLegendState::Drawn {
             // Matches how OFCL is actually drawn on the map — wind-coloured
             // with a dark outline (review S4's "swatch mismatch"). Shown as
             // a few adjacent wind-category segments rather than one solid
@@ -74,14 +71,15 @@ pub fn draw(
                 ui,
                 &adeck_style::OFFICIAL_SWATCH_SEGMENTS.map(WindCategory::hex),
                 adeck_style::official_outline_legend_hex(),
-                adeck_style::official_legend_label(true),
+                adeck_style::official_legend_label(ofcl_state),
             );
         } else {
-            // Review L1 + fix-round Important 4: no OFCL swatch, and no
-            // blanket "No official forecast" claim, when this frame isn't
-            // actually drawing an OFCL track — a GIS advisory track may
-            // still be showing (see the rows below).
-            ui.text(adeck_style::official_legend_label(false), |t| {
+            // Review L1 + fix-round Important 4: distinct text for "OFCL
+            // genuinely absent this cycle" vs. "OFCL exists but is shown as
+            // the NHC advisory track instead" — conflating them into one
+            // "not drawn" state let the legend claim "No OFCL" directly
+            // above a row that implies an official forecast *is* shown.
+            ui.text(adeck_style::official_legend_label(ofcl_state), |t| {
                 t.font_size(10).color(MUTED)
             });
         }

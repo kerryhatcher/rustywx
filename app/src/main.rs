@@ -3159,12 +3159,14 @@ async fn main() {
                         fetch_stale,
                     );
                     // Review fix-round Important 4: drive the legend's OFCL
-                    // row off what's actually drawn this frame, not off
-                    // `cycle_storm.has_official` (a cycle-selection flag
-                    // from review S8) — the two can disagree, e.g. a GIS
-                    // advisory track shown while `has_official` is false,
-                    // or OFCL suppressed by the S4 GIS-overlap fix while
-                    // `has_official` is true.
+                    // row off what's actually drawn/suppressed this frame,
+                    // not off `cycle_storm.has_official` (a cycle-selection
+                    // flag from review S8) — the two can disagree, e.g. a
+                    // GIS advisory track shown while `has_official` is
+                    // false, or OFCL suppressed by the S4 GIS-overlap fix
+                    // while `has_official` is true. Two independent facts
+                    // (drawn, suppressed-for-GIS) resolve to one of three
+                    // legend states — see `OfficialLegendState`.
                     let empty_metas: &[rustywx::nhc::StormMeta] = &[];
                     let empty_gis: &[rustywx::nhc::StormGis] = &[];
                     let (bundle_metas, bundle_gis) = state
@@ -3172,12 +3174,20 @@ async fn main() {
                         .as_ref()
                         .map(|b| (b.metas.as_slice(), b.gis_storms.as_slice()))
                         .unwrap_or((empty_metas, empty_gis));
-                    let ofcl_drawn = rustywx::adeck_style::any_official_track_shown(
+                    let any_drawn = rustywx::adeck_style::any_official_track_shown(
                         &state.model_guidance,
                         bundle_metas,
                         bundle_gis,
                         state.nhc_overlays.show_track,
                     );
+                    let any_suppressed = rustywx::adeck_style::any_official_suppressed_by_gis(
+                        &state.model_guidance,
+                        bundle_metas,
+                        bundle_gis,
+                        state.nhc_overlays.show_track,
+                    );
+                    let ofcl_state =
+                        rustywx::adeck_style::official_legend_state(any_drawn, any_suppressed);
                     // 46 px bottom status bar + 8 px gap.
                     let y = screen_height() - 54.0 - rustywx::widgets::model_legend::HEIGHT;
                     rustywx::widgets::model_legend::draw(
@@ -3188,7 +3198,7 @@ async fn main() {
                         cycle_stale,
                         &age_line,
                         fetch_stale,
-                        ofcl_drawn,
+                        ofcl_state,
                     );
                 }
 
