@@ -62,8 +62,7 @@ impl WindCategory {
 
     /// `0xRRGGBB` for Ply `background_color`.
     pub fn hex(self) -> u32 {
-        let [r, g, b] = self.rgb();
-        (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)
+        rgb_hex(self.rgb())
     }
 
     pub fn label(self) -> &'static str {
@@ -92,6 +91,15 @@ impl WindCategory {
             WindCategory::Cat5 => Some(137),
         }
     }
+}
+
+/// `[r, g, b]` -> `0xRRGGBB`, shared by every swatch/outline colour that
+/// needs both an RGB triplet (for draw calls that take separate channels)
+/// and a packed hex (for Ply `background_color`), so the two never drift
+/// apart.
+pub fn rgb_hex(rgb: [u8; 3]) -> u32 {
+    let [r, g, b] = rgb;
+    (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)
 }
 
 /// RGBA for the segment between two consecutive points: coloured by the
@@ -143,6 +151,95 @@ pub fn track_style(group: ModelGroup) -> TrackStyle {
             draw_rank: 0,
         },
     }
+}
+
+/// OFCL's outline colour, drawn under its own wind-coloured line
+/// (`scope.rs`'s `draw_model_tracks`, `underlay_px`). Dark instead of white
+/// (review S4): the palest wind colours, used right where hurricane
+/// strength starts — Cat 1 `#FFFFCC` and Cat 2 `#FFE775` — were nearly
+/// invisible against a white 5 px outline. A dark outline gives
+/// near-maximal contrast against every colour in the wind palette (all of
+/// which are light or saturated), not just the two palest ones, so this
+/// one change covers the whole scale rather than only re-saturating Cat
+/// 1/2 in isolation.
+pub const OFFICIAL_OUTLINE_RGB: [u8; 3] = [0x10, 0x10, 0x10];
+
+/// Alpha for the outline underlay before cycle-age dimming
+/// (`track_alpha_mult`) is applied to it, same base alpha as the white
+/// outline it replaces.
+pub const OFFICIAL_OUTLINE_ALPHA: u8 = 230;
+
+/// `OFFICIAL_OUTLINE_RGB` as `0xRRGGBB`, for the legend's OFCL swatch.
+pub fn official_outline_hex() -> u32 {
+    rgb_hex(OFFICIAL_OUTLINE_RGB)
+}
+
+/// Colour for the pre-existing NHC advisory GIS track/cone, drawn in
+/// `scope.rs::draw_nhc_overlays` from `NhcBundle.gis_storms` — code that
+/// predates this branch. Moved off the Saffir-Simpson palette (review S4:
+/// the old `#FFCC66` sat close to Cat 3's `#FFC140` and wasn't in the
+/// legend, so it could pass for a model track). A violet hue appears
+/// nowhere else on the scope — the crosshair is cyan, the cone outline is
+/// white, and Saffir-Simpson runs blue -> cyan -> yellow -> orange -> red —
+/// so this reads unambiguously as "the other kind of forecast track."
+/// Shared by the GIS draw code and the legend swatch so both stay in sync.
+pub const GIS_ADVISORY_RGB: [u8; 3] = [0xB2, 0x66, 0xFF];
+
+/// Legend text for the OFCL row: the real label when this cycle has an
+/// official forecast, or an explicit "no official forecast" notice when it
+/// doesn't (review L1). `has_official` is false for most invests — showing
+/// the OFCL swatch anyway, as the legend did before this fix, implies
+/// guidance that was never issued for this storm's cycle.
+pub fn official_legend_label(has_official: bool) -> &'static str {
+    if has_official {
+        "OFCL  NHC official"
+    } else {
+        "No official forecast"
+    }
+}
+
+/// Appends " (stale)" to a legend line already coloured amber for
+/// staleness. Colour alone is an accessibility gap (review L1) — the
+/// model-guidance card already appends this suffix to its own age line;
+/// this gives the legend the same text cue, not just the card.
+pub fn stale_suffix(line: &str, stale: bool) -> String {
+    if stale {
+        format!("{line} (stale)")
+    } else {
+        line.to_string()
+    }
+}
+
+/// True when `storm_id`'s a-deck OFCL track already has a matching NHC
+/// advisory GIS track/cone drawn for it, so the OFCL track should be
+/// suppressed rather than drawn as a second, possibly-diverging "official"
+/// track (review S4: a-deck OFCL "can differ from official NHC products"
+/// per the ATCF README, and can lag the live advisory — see review S8).
+///
+/// `StormGis` carries no storm id, only a bare name (`nhc::parse_gis_storms`
+/// merges GIS map layers onto each other the same way, by name substring,
+/// not id — there is no existing id-based accessor to reuse). So this looks
+/// up `storm_id` in `metas` (`StormMeta::id` is the same CurrentStorms id
+/// `GuidanceStore` keys on) to get its bare name, then checks that name
+/// against each `StormGis::name` with the same case-insensitive, either-
+/// direction substring match NHC's own GIS-layer merge uses (its cone layer
+/// writes "Fausto"; its points layer writes "Tropical Storm Fausto").
+pub fn gis_track_shown_for(
+    storm_id: &str,
+    metas: &[crate::nhc::StormMeta],
+    gis_storms: &[crate::nhc::StormGis],
+) -> bool {
+    let Some(meta) = metas.iter().find(|m| m.id.eq_ignore_ascii_case(storm_id)) else {
+        return false;
+    };
+    let name = meta.name.trim().to_ascii_lowercase();
+    if name.is_empty() {
+        return false;
+    }
+    gis_storms.iter().any(|g| {
+        let gname = g.name.trim().to_ascii_lowercase();
+        !gname.is_empty() && (name.contains(&gname) || gname.contains(&name))
+    })
 }
 
 /// Full disclaimer and attribution, one panel line each (no auto-wrap).
@@ -257,6 +354,10 @@ pub fn cycle_alpha_mult(age_secs: i64) -> f32 {
 /// outage scenario it exists to catch).
 #[derive(Clone, Debug)]
 pub struct ProjectedTrack {
+    /// The CurrentStorms id this track belongs to (`StormGuidance::storm_id`),
+    /// so a draw-time pass can decide per storm whether to suppress its
+    /// OFCL track (review S4, `gis_track_shown_for`).
+    pub storm_id: String,
     pub tech: String,
     pub group: ModelGroup,
     pub km: Vec<Vec2>,
@@ -291,10 +392,12 @@ pub fn project_tracks(
         .iter()
         .flat_map(|g| {
             let cycle_unix = crate::adeck::cycle_time_unix(g.init);
-            g.tracks.iter().map(move |t| (t, cycle_unix))
+            g.tracks
+                .iter()
+                .map(move |t| (g.storm_id.as_str(), t, cycle_unix))
         })
-        .filter(|(t, _)| t.default_visible && t.points.len() >= 2)
-        .map(|(t, cycle_unix)| {
+        .filter(|(_, t, _)| t.default_visible && t.points.len() >= 2)
+        .map(|(storm_id, t, cycle_unix)| {
             let km: Vec<Vec2> = t
                 .points
                 .iter()
@@ -303,6 +406,7 @@ pub fn project_tracks(
             let min_km = km.iter().copied().reduce(Vec2::min).unwrap_or(Vec2::ZERO);
             let max_km = km.iter().copied().reduce(Vec2::max).unwrap_or(Vec2::ZERO);
             ProjectedTrack {
+                storm_id: storm_id.to_string(),
                 tech: t.tech.clone(),
                 group: t.group,
                 vmax_kt: t.points.iter().map(|p| p.vmax_kt).collect(),
@@ -578,6 +682,137 @@ mod tests {
         assert!(ofcl.width_px > model.width_px);
         assert!(ofcl.underlay_px.is_some() && model.underlay_px.is_none());
         assert!(!carq.label && model.label && ofcl.label);
+    }
+
+    // ── S4: OFCL outline / GIS advisory colour / legend text ────────────
+
+    #[test]
+    fn rgb_hex_packs_channels() {
+        assert_eq!(rgb_hex([0xB2, 0x66, 0xFF]), 0xB266FF);
+        assert_eq!(rgb_hex([0, 0, 0]), 0);
+        assert_eq!(rgb_hex([0xFF, 0xFF, 0xFF]), 0xFFFFFF);
+    }
+
+    #[test]
+    fn official_outline_is_dark_not_white() {
+        // Review S4: a white outline erased OFCL's own Cat 1/2 colours. A
+        // dark outline contrasts with every colour in the wind palette.
+        assert_eq!(OFFICIAL_OUTLINE_RGB, [0x10, 0x10, 0x10]);
+        assert_eq!(official_outline_hex(), 0x101010);
+    }
+
+    #[test]
+    fn gis_advisory_color_is_off_the_saffir_simpson_palette() {
+        let gis_hex = rgb_hex(GIS_ADVISORY_RGB);
+        for cat in WindCategory::LEGEND {
+            assert_ne!(
+                gis_hex,
+                cat.hex(),
+                "GIS advisory colour must not collide with a wind category"
+            );
+        }
+        // Must also differ from the old pre-branch colour it replaces
+        // (`#FFCC66`), which review S4 flagged as visually close to Cat 3.
+        assert_ne!(gis_hex, 0xFFCC66);
+    }
+
+    #[test]
+    fn official_legend_label_reflects_has_official() {
+        assert_eq!(official_legend_label(true), "OFCL  NHC official");
+        assert_eq!(official_legend_label(false), "No official forecast");
+    }
+
+    #[test]
+    fn stale_suffix_appends_only_when_stale() {
+        assert_eq!(
+            stale_suffix("12Z Oct 9 cycle, 3 h ago", false),
+            "12Z Oct 9 cycle, 3 h ago"
+        );
+        assert_eq!(
+            stale_suffix("12Z Oct 9 cycle, 3 h ago", true),
+            "12Z Oct 9 cycle, 3 h ago (stale)"
+        );
+    }
+
+    fn test_meta(id: &str, name: &str) -> crate::nhc::StormMeta {
+        crate::nhc::StormMeta {
+            id: id.to_string(),
+            name: name.to_string(),
+            classification: String::new(),
+            intensity_kt: 0,
+            pressure_mb: 0,
+            lat: 0.0,
+            lon: 0.0,
+            movement_dir_deg: None,
+            movement_speed_kt: None,
+            last_update: String::new(),
+            bin_number: String::new(),
+            advisory_num: String::new(),
+            graphics_url: String::new(),
+            graphics_issuance: String::new(),
+            earliest_arrival_kmz: String::new(),
+            most_likely_arrival_kmz: String::new(),
+            wind_probs_34kt_kmz: String::new(),
+            wind_probs_50kt_kmz: String::new(),
+            wind_probs_64kt_kmz: String::new(),
+        }
+    }
+
+    fn test_gis(name: &str) -> crate::nhc::StormGis {
+        crate::nhc::StormGis {
+            name: name.to_string(),
+            storm_type: String::new(),
+            basin: String::new(),
+            advisory_num: String::new(),
+            advisory_date: String::new(),
+            cone: Vec::new(),
+            track: Vec::new(),
+            points: Vec::new(),
+            watches_warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn gis_track_shown_for_matches_by_name_case_insensitive() {
+        let metas = [test_meta("al092026", "Fausto")];
+        let gis = [test_gis("FAUSTO")];
+        assert!(gis_track_shown_for("al092026", &metas, &gis));
+        // Storm id is matched case-insensitively too.
+        assert!(gis_track_shown_for("AL092026", &metas, &gis));
+    }
+
+    #[test]
+    fn gis_track_shown_for_matches_either_substring_direction() {
+        // Points-layer-style longer name containing the bare GIS name.
+        let metas = [test_meta("al092026", "Tropical Storm Fausto")];
+        let gis = [test_gis("Fausto")];
+        assert!(gis_track_shown_for("al092026", &metas, &gis));
+    }
+
+    #[test]
+    fn gis_track_shown_for_false_when_storm_unknown() {
+        let metas = [test_meta("al092026", "Fausto")];
+        let gis = [test_gis("Fausto")];
+        assert!(!gis_track_shown_for("ep182026", &metas, &gis));
+    }
+
+    #[test]
+    fn gis_track_shown_for_false_when_no_gis_match() {
+        let metas = [test_meta("al092026", "Fausto")];
+        let gis = [test_gis("Helene")];
+        assert!(!gis_track_shown_for("al092026", &metas, &gis));
+    }
+
+    #[test]
+    fn gis_track_shown_for_false_with_no_gis_storms() {
+        let metas = [test_meta("al092026", "Fausto")];
+        assert!(!gis_track_shown_for("al092026", &metas, &[]));
+    }
+
+    #[test]
+    fn project_tracks_carries_the_storm_id() {
+        let tracks = project_tracks(&fixture_store(), 27.0, -87.6);
+        assert!(tracks.iter().all(|t| t.storm_id == "al092026"));
     }
 
     #[test]

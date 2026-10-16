@@ -3141,12 +3141,23 @@ async fn main() {
                         mixed,
                         now_unix,
                     );
+                    // Review L1: colour alone ("(stale)" shown only via the
+                    // amber warn colour below) is an accessibility gap, so
+                    // both freshness lines also get the text suffix.
+                    let cycle_line = rustywx::adeck_style::stale_suffix(&cycle_line, cycle_stale);
                     // Fetch line: unchanged from before (review S5 keeps
                     // this one as-is) — the least-recently-fetched storm, so
                     // the legend never claims fresher data than the
                     // stalest track on screen.
                     let fetch_stale =
                         rustywx::adeck_style::is_stale(oldest.fetched_at_unix, now_unix);
+                    let age_line = rustywx::adeck_style::stale_suffix(
+                        &format!(
+                            "checked {}",
+                            rustywx::adeck_style::format_age(oldest.fetched_at_unix, now_unix)
+                        ),
+                        fetch_stale,
+                    );
                     // 46 px bottom status bar + 8 px gap.
                     let y = screen_height() - 54.0 - rustywx::widgets::model_legend::HEIGHT;
                     rustywx::widgets::model_legend::draw(
@@ -3155,11 +3166,9 @@ async fn main() {
                         y,
                         &cycle_line,
                         cycle_stale,
-                        &format!(
-                            "checked {}",
-                            rustywx::adeck_style::format_age(oldest.fetched_at_unix, now_unix)
-                        ),
+                        &age_line,
                         fetch_stale,
+                        cycle_storm.has_official,
                     );
                 }
 

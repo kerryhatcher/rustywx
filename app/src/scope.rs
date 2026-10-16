@@ -1605,9 +1605,12 @@ pub fn draw_scope_to_texture(
 
     // ── NHC overlays (Stage 5) + model tracks (spaghetti) ───────
     if let Some((bundle, overlays)) = nhc {
-        // Models first so the official cone/track sit on top.
+        // Models first so the official cone/track sit on top. `bundle` is
+        // passed through so a storm with a live GIS advisory track can have
+        // its a-deck OFCL track suppressed (review S4 "two official
+        // tracks").
         if let Some(tracks) = model_tracks {
-            draw_model_tracks(tracks, center_x, center_y, px_per_km, now_unix);
+            draw_model_tracks(tracks, bundle, center_x, center_y, px_per_km, now_unix);
         }
         draw_nhc_overlays(bundle, overlays, site, center_x, center_y, px_per_km);
     }
@@ -1899,9 +1902,13 @@ fn draw_nhc_overlays(
             }
         }
 
-        // Forecast track (dotted line in storm color)
+        // Forecast track (dotted line in storm color). The colour is moved
+        // off the Saffir-Simpson palette and shared with the legend swatch
+        // (review S4: the old `#FFCC66` sat close to the Cat 3 model
+        // colour and wasn't in the legend).
         if overlays.show_track {
-            let track_color = MacroquadColor::from_rgba(0xff, 0xcc, 0x66, 200);
+            let [r, g, b] = adeck_style::GIS_ADVISORY_RGB;
+            let track_color = MacroquadColor::from_rgba(r, g, b, 200);
             for ring in &storm.track {
                 for pair in ring.windows(2) {
                     let a_km = geo::point_to_km_offset(site.lat, site.lon, pair[0]);
@@ -1924,7 +1931,8 @@ fn draw_nhc_overlays(
 
         // Forecast points (markers with labels)
         if overlays.show_points {
-            let pt_color = MacroquadColor::from_rgba(0xff, 0xcc, 0x66, 255);
+            let [r, g, b] = adeck_style::GIS_ADVISORY_RGB;
+            let pt_color = MacroquadColor::from_rgba(r, g, b, 255);
             for &(lat, lon, ref label) in &storm.points {
                 let km = geo::point_to_km_offset(site.lat, site.lon, (lat, lon));
                 let px = center_x + km.x * px_per_km;
@@ -2032,7 +2040,8 @@ fn draw_nhc_overlays(
 
 /// Draw ATCF model-guidance tracks ("spaghetti"). Each segment is coloured
 /// by the forecast wind at its start (`adeck_style::segment_rgba`); OFCL gets
-/// a white outline. Tech ids are drawn at track ends with greedy collision
+/// a dark outline (review S4: a white outline erased OFCL's own pale Cat
+/// 1/2 colours). Tech ids are drawn at track ends with greedy collision
 /// skipping (same idiom as the city labels).
 ///
 /// `now_unix` drives each track's dim level via `adeck_style::track_alpha_mult`,
@@ -2040,8 +2049,17 @@ fn draw_nhc_overlays(
 /// keeps advancing with real time even across a total fetch outage, when
 /// nothing bumps the guidance store's revision and the caller's projection
 /// cache never rebuilds (review S1 fix-round critical fix).
+///
+/// `bundle` is used only to suppress a storm's OFCL track when that same
+/// storm already has an NHC advisory GIS track/cone shown (review S4 "two
+/// official tracks") — see `adeck_style::gis_track_shown_for`. Doing this
+/// here, at draw time, means the decision is always as fresh as `bundle`
+/// itself: it doesn't wait on the `(site_index, revision)` projection cache
+/// (`main.rs`), which only rebuilds when the a-deck guidance store changes,
+/// not when the independently-polled NHC bundle does.
 fn draw_model_tracks(
     tracks: &[ProjectedTrack],
+    bundle: &NhcBundle,
     center_x: f32,
     center_y: f32,
     px_per_km: f32,
@@ -2056,6 +2074,11 @@ fn draw_model_tracks(
     let mut labels: Vec<(&str, f32, f32, f32)> = Vec::new();
 
     for track in tracks {
+        if track.group == crate::adeck::ModelGroup::Official
+            && adeck_style::gis_track_shown_for(&track.storm_id, &bundle.metas, &bundle.gis_storms)
+        {
+            continue; // the advisory GIS track already shows this storm's official forecast
+        }
         let (x0, y0) = to_px(track.min_km);
         let (x1, y1) = to_px(track.max_km);
         if x1 < -margin || x0 > sw + margin || y1 < -margin || y0 > sh + margin {
@@ -2066,7 +2089,9 @@ fn draw_model_tracks(
         let alpha_mult = adeck_style::track_alpha_mult(track, now_unix);
         let dim = |a: u8| ((f32::from(a)) * alpha_mult).round().clamp(0.0, 255.0) as u8;
         if let Some(under) = style.underlay_px {
-            let outline = MacroquadColor::from_rgba(0xff, 0xff, 0xff, dim(230));
+            let [or, og, ob] = adeck_style::OFFICIAL_OUTLINE_RGB;
+            let outline =
+                MacroquadColor::from_rgba(or, og, ob, dim(adeck_style::OFFICIAL_OUTLINE_ALPHA));
             for w in pts.windows(2) {
                 draw_line(w[0].0, w[0].1, w[1].0, w[1].1, under, outline);
             }
