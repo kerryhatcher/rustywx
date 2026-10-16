@@ -97,6 +97,31 @@ pub fn parse_lon(s: &str) -> Option<f64> {
     (-180.0..=180.0).contains(&lon).then_some(lon)
 }
 
+/// Split `init` (`YYYYMMDDHH`) into its (year, month, day, hour) digit
+/// groups by arithmetic, never slicing. Out-of-range groups (bad input) are
+/// returned unvalidated; `cycle_time_unix` checks them via `chrono`, and
+/// `adeck_style::format_cycle` falls back to "???" for a bad month.
+pub(crate) fn cycle_digits(init: u32) -> (i32, u32, u32, u32) {
+    let hour = init % 100;
+    let day = (init / 100) % 100;
+    let month = (init / 10_000) % 100;
+    let year = (init / 1_000_000) as i32;
+    (year, month, day, hour)
+}
+
+/// Parse `init` (`YYYYMMDDHH`, UTC) into a unix timestamp. `None` for an
+/// impossible month, day, or hour — `chrono`'s `from_ymd_opt`/`from_hms_opt`
+/// validate and return `None` rather than panicking or wrapping. Lets the
+/// overlay show forecast-cycle age instead of fetch age (review S1) and
+/// measure OFCL lag by elapsed time rather than synoptic-cycle counting
+/// (review S8).
+pub fn cycle_time_unix(init: u32) -> Option<i64> {
+    let (year, month, day, hour) = cycle_digits(init);
+    let date = chrono::NaiveDate::from_ymd_opt(year, month, day)?;
+    let time = chrono::NaiveTime::from_hms_opt(hour, 0, 0)?;
+    Some(date.and_time(time).and_utc().timestamp())
+}
+
 /// Public ATCF guidance directory (HTTPS, public domain).
 pub const ADECK_BASE_URL: &str = "https://ftp.nhc.noaa.gov/atcf/aid_public/";
 
@@ -289,16 +314,49 @@ pub struct StormGuidance {
     pub fetched_at_unix: i64,
 }
 
+/// Gap between the newest-any-tech cycle and the newest-OFCL cycle beyond
+/// which `latest_cycle` prefers the newest-any cycle instead of waiting on
+/// OFCL. NHC issues a new synoptic cycle every 6 h and typically finishes
+/// that cycle's OFCL about 3 h after the nominal time, so up to about 9 h
+/// of lag is routine. 18 h covers that plus one entire missed cycle without
+/// discarding OFCL over an ordinary few-hour delay, and it also comfortably
+/// exceeds the cycle-age thresholds in `adeck_style` (12 h amber, 24 h dim):
+/// by the time this fallback fires, showing the old OFCL cycle instead would
+/// already read as stale under those thresholds anyway. This same path
+/// handles a storm gone post-tropical while still listed in
+/// `CurrentStorms.json`: OFCL stops appearing, so the gap only grows, and
+/// once it passes 18 h the newest model-only cycle takes over instead of
+/// staying pinned to the last OFCL forever (review S8).
+pub const OFCL_LAG_FALLBACK_SECS: i64 = 18 * 60 * 60;
+
 /// The cycle to show: the newest init with an OFCL forecast (the newest cycle
 /// fills in over several hours, so it may have models but no OFCL yet), else
-/// the newest init of any row (invests).
+/// the newest init of any row (invests). When OFCL is stuck on an older
+/// cycle than the newest-any-tech cycle by more than `OFCL_LAG_FALLBACK_SECS`
+/// of real elapsed time, the newest-any cycle wins instead — either OFCL is
+/// unusually late, or the storm has gone post-tropical and OFCL has stopped
+/// altogether (review S8). The gap is measured in actual elapsed time via
+/// `cycle_time_unix`, not by counting synoptic cycles, so it still behaves
+/// sensibly if a cycle is ever skipped.
 pub fn latest_cycle(records: &[ADeckRecord]) -> Option<u32> {
-    records
+    let newest_any = records.iter().map(|r| r.init).max()?;
+    let newest_ofcl = records
         .iter()
         .filter(|r| r.tech == "OFCL")
         .map(|r| r.init)
-        .max()
-        .or_else(|| records.iter().map(|r| r.init).max())
+        .max();
+    let Some(ofcl) = newest_ofcl else {
+        return Some(newest_any);
+    };
+    if ofcl == newest_any {
+        return Some(ofcl);
+    }
+    let gap = cycle_time_unix(newest_any).zip(cycle_time_unix(ofcl));
+    if gap.is_some_and(|(any_t, ofcl_t)| any_t - ofcl_t > OFCL_LAG_FALLBACK_SECS) {
+        Some(newest_any)
+    } else {
+        Some(ofcl)
+    }
 }
 
 /// Build the per-storm guidance for one cycle: dedupe the repeated
@@ -386,7 +444,19 @@ pub struct GuidanceStore {
 }
 
 impl GuidanceStore {
+    /// Replace the stored guidance for `guidance.storm_id`, unless a lagging
+    /// mirror or cache serves a cycle older than the one already stored —
+    /// that insert is a no-op (no replace, no revision bump), so an older
+    /// cycle can never roll the shown guidance backward and reset the
+    /// freshness label to "just now" (review S3). A same-or-newer `init`
+    /// still replaces normally, including a same-cycle re-fetch that only
+    /// updates `fetched_at_unix` or fills in more model data.
     pub fn insert(&mut self, guidance: StormGuidance) {
+        if let Some(existing) = self.by_storm.get(&guidance.storm_id)
+            && guidance.init < existing.init
+        {
+            return;
+        }
         self.by_storm.insert(guidance.storm_id.clone(), guidance);
         self.revision += 1;
     }
@@ -421,6 +491,36 @@ impl GuidanceStore {
     /// legend never claims fresher data than the stalest track on screen.
     pub fn oldest(&self) -> Option<&StormGuidance> {
         self.by_storm.values().min_by_key(|g| g.fetched_at_unix)
+    }
+
+    /// Storms with at least one default-visible track, i.e. storms whose
+    /// guidance is actually drawn. Both legend helpers below only consider
+    /// these, since a storm with nothing on screen shouldn't drive the
+    /// legend's single cycle line.
+    fn shown(&self) -> impl Iterator<Item = &StormGuidance> {
+        self.by_storm
+            .values()
+            .filter(|g| g.tracks.iter().any(|t| t.default_visible))
+    }
+
+    /// The shown storm with the earliest forecast cycle (`init`), picked by
+    /// cycle order rather than fetch order so the legend's cycle line names
+    /// a real cycle instead of whichever storm happened to be fetched least
+    /// recently (review S5). Callers should show "mixed cycles" instead of
+    /// this storm's cycle when `has_single_cycle()` is false.
+    pub fn earliest_cycle(&self) -> Option<&StormGuidance> {
+        self.shown().min_by_key(|g| g.init)
+    }
+
+    /// True when every shown storm is on the same forecast cycle. The
+    /// legend's one cycle line is misleading otherwise (review S5); an empty
+    /// or single-storm store trivially counts as one cycle.
+    pub fn has_single_cycle(&self) -> bool {
+        let mut inits = self.shown().map(|g| g.init);
+        let Some(first) = inits.next() else {
+            return true;
+        };
+        inits.all(|i| i == first)
     }
 }
 
@@ -501,6 +601,44 @@ mod tests {
         // +190 vertex that wraps a line across the whole map.
         assert_eq!(parse_lon("1900E"), Some(-170.0));
         assert_eq!(parse_lon("3700W"), None);
+    }
+
+    #[test]
+    fn cycle_time_unix_parses_a_valid_cycle() {
+        let got = cycle_time_unix(2026100912).expect("valid cycle");
+        let want = chrono::NaiveDate::from_ymd_opt(2026, 10, 9)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn cycle_time_unix_boundary_hours_and_midnight() {
+        assert!(cycle_time_unix(2026100900).is_some(), "00Z is valid");
+        assert!(cycle_time_unix(2026100923).is_some(), "23Z is valid");
+    }
+
+    #[test]
+    fn cycle_time_unix_rejects_impossible_calendar_values() {
+        for bad in [
+            2026130100u32, // month 13
+            2026023000,    // Feb 30 (2026 isn't even a leap year)
+            2028023000,    // Feb 30, even on a leap year
+            2026100924,    // hour 24
+            2026100199,    // hour 99
+            0,
+        ] {
+            assert_eq!(cycle_time_unix(bad), None, "should reject {bad}");
+        }
+    }
+
+    #[test]
+    fn cycle_time_unix_accepts_leap_day() {
+        assert!(cycle_time_unix(2028022912).is_some(), "2028 is a leap year");
+        assert_eq!(cycle_time_unix(2026022912), None, "2026 is not");
     }
 
     #[test]
@@ -669,6 +807,67 @@ mod tests {
         assert_eq!(latest_cycle(&[]), None);
     }
 
+    fn avni_row(init: u32) -> ADeckRecord {
+        ADeckRecord {
+            init,
+            tech: "AVNI".to_string(),
+            tau_h: 12,
+            position: Some((30.1, -87.0)),
+            vmax_kt: Some(87),
+        }
+    }
+
+    fn ofcl_row(init: u32) -> ADeckRecord {
+        ADeckRecord {
+            tech: "OFCL".to_string(),
+            ..avni_row(init)
+        }
+    }
+
+    #[test]
+    fn latest_cycle_prefers_ofcl_when_lag_is_within_the_threshold() {
+        // OFCL still fills in for a few hours after the nominal cycle time;
+        // that's routine lag, not a stalled feed, so OFCL should still win.
+        let records = [ofcl_row(2026100912), avni_row(2026100918)]; // 6 h gap
+        assert_eq!(latest_cycle(&records), Some(2026100912));
+    }
+
+    #[test]
+    fn latest_cycle_falls_back_to_newest_any_once_ofcl_lag_exceeds_threshold() {
+        // 2026101100 is 36 h after 2026100912: OFCL has either stalled badly
+        // or (review S8's other scenario) the storm went post-tropical and
+        // OFCL has stopped entirely while model-only cycles keep advancing.
+        let records = [ofcl_row(2026100912), avni_row(2026101100)];
+        assert_eq!(latest_cycle(&records), Some(2026101100));
+    }
+
+    #[test]
+    fn latest_cycle_ofcl_lag_threshold_boundary() {
+        // Exactly at the threshold: OFCL still wins ("exceeds", not "at").
+        let at_threshold = [
+            ofcl_row(2026100912),
+            avni_row(2026101006), // +18h0m exactly
+        ];
+        assert_eq!(latest_cycle(&at_threshold), Some(2026100912));
+        let just_over = [
+            ofcl_row(2026100912),
+            avni_row(2026101007), // +19h, just past the boundary
+        ];
+        assert_eq!(latest_cycle(&just_over), Some(2026101007));
+    }
+
+    #[test]
+    fn latest_cycle_pins_to_last_ofcl_cycle_is_no_longer_permanent() {
+        // A storm gone post-tropical: OFCL rows stop appearing for this and
+        // later cycles entirely, but models keep advancing far past it.
+        let records = [
+            ofcl_row(2026100912),
+            avni_row(2026101012),
+            avni_row(2026101112), // another day of model-only cycles
+        ];
+        assert_eq!(latest_cycle(&records), Some(2026101112));
+    }
+
     #[test]
     fn build_guidance_keeps_plottable_tracks_only() {
         let g = fixture_guidance();
@@ -752,13 +951,49 @@ mod tests {
     }
 
     fn guidance(id: &str, fetched_at_unix: i64) -> StormGuidance {
+        guidance_with_init(id, 2026100912, fetched_at_unix)
+    }
+
+    fn guidance_with_init(id: &str, init: u32, fetched_at_unix: i64) -> StormGuidance {
         StormGuidance {
             storm_id: id.to_string(),
-            init: 2026100912,
+            init,
             has_official: true,
             tracks: Vec::new(),
             intensity: Vec::new(),
             fetched_at_unix,
+        }
+    }
+
+    /// A single default-visible, two-point track, for tests that need a
+    /// storm to count as "shown" (`GuidanceStore::earliest_cycle`,
+    /// `has_single_cycle`).
+    fn visible_track() -> AidTrack {
+        AidTrack {
+            tech: "AVNI".to_string(),
+            group: ModelGroup::Global,
+            default_visible: true,
+            points: vec![
+                TrackPoint {
+                    tau_h: 0,
+                    lat: 20.0,
+                    lon: -80.0,
+                    vmax_kt: Some(50),
+                },
+                TrackPoint {
+                    tau_h: 12,
+                    lat: 21.0,
+                    lon: -81.0,
+                    vmax_kt: Some(55),
+                },
+            ],
+        }
+    }
+
+    fn shown_guidance(id: &str, init: u32) -> StormGuidance {
+        StormGuidance {
+            tracks: vec![visible_track()],
+            ..guidance_with_init(id, init, 0)
         }
     }
 
@@ -796,5 +1031,98 @@ mod tests {
         store.insert(guidance("al092026", 50));
         store.insert(guidance("ep182026", 30));
         assert_eq!(store.oldest().unwrap().storm_id, "ep182026");
+    }
+
+    #[test]
+    fn insert_rejects_a_cycle_older_than_the_one_stored() {
+        let mut store = GuidanceStore::default();
+        store.insert(guidance_with_init("al092026", 2026100912, 10));
+        let r1 = store.revision();
+        // A lagging mirror serves the previous cycle: must not replace, and
+        // must not reset the freshness label by bumping fetched_at_unix.
+        store.insert(guidance_with_init("al092026", 2026100906, 20));
+        assert_eq!(store.revision(), r1, "older init is a no-op");
+        let kept = store.get("al092026").unwrap();
+        assert_eq!(kept.init, 2026100912, "newer cycle is kept");
+        assert_eq!(kept.fetched_at_unix, 10, "fetch time is not bumped either");
+    }
+
+    #[test]
+    fn insert_accepts_the_same_cycle_refetched() {
+        let mut store = GuidanceStore::default();
+        store.insert(guidance_with_init("al092026", 2026100912, 10));
+        let r1 = store.revision();
+        store.insert(guidance_with_init("al092026", 2026100912, 20));
+        assert!(
+            store.revision() > r1,
+            "same cycle still replaces (refresh path)"
+        );
+        assert_eq!(store.get("al092026").unwrap().fetched_at_unix, 20);
+    }
+
+    #[test]
+    fn insert_accepts_a_newer_cycle() {
+        let mut store = GuidanceStore::default();
+        store.insert(guidance_with_init("al092026", 2026100912, 10));
+        let r1 = store.revision();
+        store.insert(guidance_with_init("al092026", 2026100918, 20));
+        assert!(store.revision() > r1);
+        assert_eq!(store.get("al092026").unwrap().init, 2026100918);
+    }
+
+    #[test]
+    fn insert_of_a_brand_new_storm_is_unaffected_by_the_guard() {
+        let mut store = GuidanceStore::default();
+        store.insert(guidance_with_init("al092026", 2026100912, 10));
+        let r1 = store.revision();
+        store.insert(guidance_with_init("ep182026", 2026090100, 5));
+        assert!(store.revision() > r1);
+        assert!(store.get("ep182026").is_some());
+    }
+
+    #[test]
+    fn earliest_cycle_picks_by_init_not_fetch_order() {
+        let mut store = GuidanceStore::default();
+        // al is fetched most recently but is on the older cycle; ep is
+        // stale by fetch time but on the newer cycle. oldest() (fetch
+        // order) and earliest_cycle() (cycle order) must disagree here.
+        store.insert(shown_guidance("al092026", 2026100918));
+        store.insert({
+            let mut g = shown_guidance("ep182026", 2026100906);
+            g.fetched_at_unix = 5;
+            g
+        });
+        assert_eq!(store.earliest_cycle().unwrap().storm_id, "ep182026");
+    }
+
+    #[test]
+    fn earliest_cycle_ignores_storms_with_nothing_shown() {
+        let mut store = GuidanceStore::default();
+        // Older cycle, but nothing default-visible: must not win.
+        store.insert(guidance_with_init("al092026", 2026100900, 0));
+        store.insert(shown_guidance("ep182026", 2026100912));
+        assert_eq!(store.earliest_cycle().unwrap().storm_id, "ep182026");
+    }
+
+    #[test]
+    fn has_single_cycle_true_for_empty_or_matching_storms() {
+        let store = GuidanceStore::default();
+        assert!(
+            store.has_single_cycle(),
+            "empty store is trivially one cycle"
+        );
+
+        let mut store = GuidanceStore::default();
+        store.insert(shown_guidance("al092026", 2026100912));
+        store.insert(shown_guidance("ep182026", 2026100912));
+        assert!(store.has_single_cycle());
+    }
+
+    #[test]
+    fn has_single_cycle_false_when_shown_storms_differ() {
+        let mut store = GuidanceStore::default();
+        store.insert(shown_guidance("al092026", 2026100912));
+        store.insert(shown_guidance("ep182026", 2026100906));
+        assert!(!store.has_single_cycle());
     }
 }

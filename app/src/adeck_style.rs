@@ -160,17 +160,36 @@ pub const DISCLAIMER_LINES: [&str; 6] = [
 pub const MODEL_SUMMARY_URL: &str = "https://www.nhc.noaa.gov/modelsummary.shtml";
 
 /// Data older than this is labelled "(stale)": two missed 15-min refreshes.
+/// This is a *fetch*-time threshold, for the secondary "checked N min ago"
+/// line — it flags a fetcher that has stopped succeeding. The primary
+/// freshness signal is the forecast cycle's own age; see
+/// `CYCLE_STALE_AFTER_SECS` below (review S1).
 pub const STALE_AFTER_SECS: i64 = 30 * 60;
 
-/// `2026100912` -> `"12Z Oct 9"`. Arithmetic on the integer, no string
-/// slicing, so malformed values just print `???`.
+/// Cycle age past which the cycle readout is flagged "(stale)". NHC issues
+/// a new synoptic cycle every 6 h, and OFCL typically lands about 3 h after
+/// the nominal time, so a cycle in normal, healthy operation sits at
+/// roughly 0-9 h old. 12 h gives headroom above that before warning, while
+/// still catching a stalled feed (review S1's "stuck re-fetching the same
+/// old cycle") well before the 24 h dim threshold below.
+pub const CYCLE_STALE_AFTER_SECS: i64 = 12 * 60 * 60;
+
+/// Cycle age past which model tracks are visually dimmed on the map, so
+/// stale guidance can't look current even to someone who never reads the
+/// legend or card text. 24 h is two full missed synoptic cycles —
+/// comfortably past any routine OFCL lag, but still well short of the
+/// multi-day staleness review S3 describes for a storm the fetcher can no
+/// longer reach.
+pub const CYCLE_DIM_AFTER_SECS: i64 = 24 * 60 * 60;
+
+/// `2026100912` -> `"12Z Oct 9"`. Arithmetic on the integer (shared with
+/// `adeck::cycle_time_unix` via `adeck::cycle_digits`), no string slicing,
+/// so malformed values just print `???`.
 pub fn format_cycle(init: u32) -> String {
     const MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
-    let hour = init % 100;
-    let day = (init / 100) % 100;
-    let month = (init / 10_000) % 100;
+    let (_year, month, day, hour) = crate::adeck::cycle_digits(init);
     let name = (month as usize)
         .checked_sub(1)
         .and_then(|i| MONTHS.get(i))
@@ -179,7 +198,9 @@ pub fn format_cycle(init: u32) -> String {
     format!("{hour:02}Z {name} {day}")
 }
 
-/// Human age of a fetch: "just now", "7 min ago", "2 h 5 min ago".
+/// Human age of a timestamp: "just now", "7 min ago", "2 h 5 min ago". Used
+/// both for fetch age (the secondary "checked" line) and cycle age (the
+/// primary freshness line, review S1) — just feed it the right timestamp.
 pub fn format_age(fetched_at_unix: i64, now_unix: i64) -> String {
     let secs = (now_unix - fetched_at_unix).max(0);
     if secs < 60 {
@@ -191,8 +212,31 @@ pub fn format_age(fetched_at_unix: i64, now_unix: i64) -> String {
     }
 }
 
+/// Fetch-time staleness, for the secondary "checked N min ago" line.
 pub fn is_stale(fetched_at_unix: i64, now_unix: i64) -> bool {
     now_unix - fetched_at_unix > STALE_AFTER_SECS
+}
+
+/// Cycle-age staleness, for the primary cycle line and the legend/card
+/// "(stale)" marker (review S1) — this is the one that should drive the
+/// user-facing "is this current?" signal, not fetch time.
+pub fn is_stale_cycle(cycle_unix: i64, now_unix: i64) -> bool {
+    now_unix - cycle_unix > CYCLE_STALE_AFTER_SECS
+}
+
+/// Alpha multiplier for map-drawn tracks, from a track's cycle age: full
+/// strength (`1.0`) under `CYCLE_DIM_AFTER_SECS`, then fading linearly to a
+/// `0.35` floor by twice that age. Never reaches 0 — a legitimate backoff
+/// window shouldn't erase the last known guidance from the map, only make
+/// it visually recede so it can't be mistaken for current (review S1).
+pub fn cycle_alpha_mult(age_secs: i64) -> f32 {
+    if age_secs <= CYCLE_DIM_AFTER_SECS {
+        1.0
+    } else {
+        let extra = (age_secs - CYCLE_DIM_AFTER_SECS) as f32;
+        let span = CYCLE_DIM_AFTER_SECS as f32;
+        (1.0 - 0.65 * (extra / span).min(1.0)).max(0.35)
+    }
 }
 
 /// A visible track pre-projected to km offsets from the radar site.
@@ -209,20 +253,35 @@ pub struct ProjectedTrack {
     pub vmax_kt: Vec<Option<u32>>,
     pub min_km: Vec2,
     pub max_km: Vec2,
+    /// Alpha multiplier from this track's forecast-cycle age
+    /// (`cycle_alpha_mult`), applied by the renderer so clearly-stale
+    /// guidance visually recedes on the map itself, not just in text labels
+    /// (review S1). `1.0` when the cycle is fresh or its age can't be
+    /// determined.
+    pub alpha_mult: f32,
 }
 
 /// Project every default-visible track, ordered by draw rank (models, then
-/// CARQ, then OFCL on top).
+/// CARQ, then OFCL on top). `now_unix` drives each storm's `alpha_mult` via
+/// its cycle age; the caller only needs to recompute this when its own
+/// cache (keyed on site + store revision) is invalidated, since cycle age
+/// changes on an hours-long timescale.
 pub fn project_tracks(
     store: &GuidanceStore,
     origin_lat: f64,
     origin_lon: f64,
+    now_unix: i64,
 ) -> Vec<ProjectedTrack> {
     let mut out: Vec<ProjectedTrack> = store
         .iter()
-        .flat_map(|g| g.tracks.iter())
-        .filter(|t| t.default_visible && t.points.len() >= 2)
-        .map(|t| {
+        .flat_map(|g| {
+            let alpha_mult = crate::adeck::cycle_time_unix(g.init)
+                .map(|cycle_unix| cycle_alpha_mult((now_unix - cycle_unix).max(0)))
+                .unwrap_or(1.0);
+            g.tracks.iter().map(move |t| (t, alpha_mult))
+        })
+        .filter(|(t, _)| t.default_visible && t.points.len() >= 2)
+        .map(|(t, alpha_mult)| {
             let km: Vec<Vec2> = t
                 .points
                 .iter()
@@ -237,6 +296,7 @@ pub fn project_tracks(
                 km,
                 min_km,
                 max_km,
+                alpha_mult,
             }
         })
         .collect();
@@ -300,15 +360,22 @@ mod tests {
         store
     }
 
+    /// `now` right at the fixture's cycle time: age 0, so `alpha_mult` is
+    /// 1.0 and tests that aren't about dimming aren't affected by it.
+    fn fresh_now() -> i64 {
+        crate::adeck::cycle_time_unix(2026100912).unwrap()
+    }
+
     #[test]
     fn project_tracks_orders_official_last() {
-        let tracks = project_tracks(&fixture_store(), 27.0, -87.6);
+        let tracks = project_tracks(&fixture_store(), 27.0, -87.6, fresh_now());
         let techs: Vec<&str> = tracks.iter().map(|t| t.tech.as_str()).collect();
         assert_eq!(techs, ["AVNI", "HWFI", "TVCN", "CARQ", "OFCL"]);
         let ofcl = tracks.last().unwrap();
         assert!(ofcl.km[0].length() < 0.01, "OFCL tau 0 is at the origin");
         for t in &tracks {
             assert_eq!(t.km.len(), t.vmax_kt.len());
+            assert_eq!(t.alpha_mult, 1.0, "fresh cycle is not dimmed");
             for p in &t.km {
                 assert!(p.x >= t.min_km.x && p.x <= t.max_km.x);
                 assert!(p.y >= t.min_km.y && p.y <= t.max_km.y);
@@ -328,9 +395,20 @@ mod tests {
         });
         store.insert(g);
         assert!(
-            project_tracks(&store, 27.0, -87.6)
+            project_tracks(&store, 27.0, -87.6, fresh_now())
                 .iter()
                 .all(|t| t.tech != "TABS")
+        );
+    }
+
+    #[test]
+    fn project_tracks_dims_a_track_past_the_cycle_age_threshold() {
+        let store = fixture_store();
+        let stale_now = fresh_now() + CYCLE_DIM_AFTER_SECS + 1;
+        let tracks = project_tracks(&store, 27.0, -87.6, stale_now);
+        assert!(
+            tracks.iter().all(|t| t.alpha_mult < 1.0),
+            "every track for this storm shares its one cycle age"
         );
     }
 
@@ -356,7 +434,7 @@ mod tests {
             intensity: Vec::new(),
             fetched_at_unix: 0,
         });
-        let tracks = project_tracks(&store, 20.0, 179.0);
+        let tracks = project_tracks(&store, 20.0, 179.0, fresh_now());
         let gap = (tracks[0].km[1] - tracks[0].km[0]).length();
         assert!(
             gap < 200.0,
@@ -462,6 +540,35 @@ mod tests {
     fn is_stale_boundary() {
         assert!(!is_stale(0, STALE_AFTER_SECS));
         assert!(is_stale(0, STALE_AFTER_SECS + 1));
+    }
+
+    #[test]
+    fn is_stale_cycle_boundary() {
+        assert!(!is_stale_cycle(0, CYCLE_STALE_AFTER_SECS));
+        assert!(is_stale_cycle(0, CYCLE_STALE_AFTER_SECS + 1));
+        // A fresh-ish cycle (well under 12 h) must not read as stale, unlike
+        // feeding the same age into the 30-min fetch threshold.
+        assert!(!is_stale_cycle(0, 6 * 60 * 60));
+    }
+
+    #[test]
+    fn cycle_alpha_mult_is_full_strength_under_the_dim_threshold() {
+        assert_eq!(cycle_alpha_mult(0), 1.0);
+        assert_eq!(cycle_alpha_mult(CYCLE_DIM_AFTER_SECS), 1.0);
+        assert_eq!(cycle_alpha_mult(-10), 1.0, "clock skew doesn't dim");
+    }
+
+    #[test]
+    fn cycle_alpha_mult_fades_past_the_dim_threshold_without_hiding() {
+        let just_over = cycle_alpha_mult(CYCLE_DIM_AFTER_SECS + 1);
+        assert!(just_over < 1.0 && just_over > 0.35);
+        let at_double = cycle_alpha_mult(CYCLE_DIM_AFTER_SECS * 2);
+        assert!((at_double - 0.35).abs() < 1e-6);
+        let way_past = cycle_alpha_mult(CYCLE_DIM_AFTER_SECS * 10);
+        assert!(
+            (way_past - 0.35).abs() < 1e-6,
+            "floor, never fully hidden: {way_past}"
+        );
     }
 
     use crate::adeck::IntensitySeries;

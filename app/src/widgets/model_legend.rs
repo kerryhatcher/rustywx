@@ -15,13 +15,15 @@ const TEXT: u32 = 0xE8E0DC;
 const MUTED: u32 = 0x9E9590;
 const WARN: u32 = 0xFFC140;
 
+#[allow(clippy::too_many_arguments)]
 pub fn draw(
     ui: &mut Ui<'_, ChartWidget>,
     x: f32,
     y: f32,
     cycle_line: &str,
+    cycle_stale: bool,
     age_line: &str,
-    stale: bool,
+    fetch_stale: bool,
 ) {
     glass_panel::glass(
         ui.element()
@@ -47,9 +49,13 @@ pub fn draw(
         }
         swatch_row(ui, 0xFFFFFF, 4.0, "OFCL  NHC official");
         swatch_row(ui, 0xB0B0B0, 2.0, "CARQ  past track");
-        ui.text(cycle_line, |t| t.font_size(10).color(MUTED));
+        ui.text(cycle_line, |t| {
+            t.font_size(10)
+                .color(if cycle_stale { WARN } else { MUTED })
+        });
         ui.text(age_line, |t| {
-            t.font_size(10).color(if stale { WARN } else { MUTED })
+            t.font_size(10)
+                .color(if fetch_stale { WARN } else { MUTED })
         });
         ui.text("Guidance only.", |t| t.font_size(10).color(WARN));
         ui.text("Not an official forecast.", |t| t.font_size(10).color(WARN));

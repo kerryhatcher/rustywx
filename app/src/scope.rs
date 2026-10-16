@@ -2036,7 +2036,9 @@ fn draw_model_tracks(tracks: &[ProjectedTrack], center_x: f32, center_y: f32, px
     let sh = screen_height();
     let margin = 50.0;
     let to_px = |km: Vec2| (center_x + km.x * px_per_km, center_y + km.y * px_per_km);
-    let mut labels: Vec<(&str, f32, f32)> = Vec::new();
+    // Alpha multiplier travels with each label so a dimmed (cycle-stale)
+    // track's tech id fades along with its line (review S1).
+    let mut labels: Vec<(&str, f32, f32, f32)> = Vec::new();
 
     for track in tracks {
         let (x0, y0) = to_px(track.min_km);
@@ -2046,8 +2048,13 @@ fn draw_model_tracks(tracks: &[ProjectedTrack], center_x: f32, center_y: f32, px
         }
         let style = adeck_style::track_style(track.group);
         let pts: Vec<(f32, f32)> = track.km.iter().map(|&k| to_px(k)).collect();
+        let dim = |a: u8| {
+            ((f32::from(a)) * track.alpha_mult)
+                .round()
+                .clamp(0.0, 255.0) as u8
+        };
         if let Some(under) = style.underlay_px {
-            let outline = MacroquadColor::from_rgba(0xff, 0xff, 0xff, 230);
+            let outline = MacroquadColor::from_rgba(0xff, 0xff, 0xff, dim(230));
             for w in pts.windows(2) {
                 draw_line(w[0].0, w[0].1, w[1].0, w[1].1, under, outline);
             }
@@ -2062,22 +2069,21 @@ fn draw_model_tracks(tracks: &[ProjectedTrack], center_x: f32, center_y: f32, px
                 w[1].0,
                 w[1].1,
                 style.width_px,
-                MacroquadColor::from_rgba(r, g, b, a),
+                MacroquadColor::from_rgba(r, g, b, dim(a)),
             );
         }
         if style.label
             && let Some(&(lx, ly)) = pts.last()
         {
-            labels.push((track.tech.as_str(), lx, ly));
+            labels.push((track.tech.as_str(), lx, ly, track.alpha_mult));
         }
     }
 
     // OFCL is last in draw order; reversing gives it first pick of space.
     let label_font = 12.0;
     let pad = 3.0;
-    let label_color = MacroquadColor::from_rgba(0xe8, 0xe0, 0xdc, 230);
     let mut placed: Vec<(f32, f32, f32, f32)> = Vec::new();
-    for &(text, x, y) in labels.iter().rev() {
+    for &(text, x, y, alpha_mult) in labels.iter().rev() {
         if x < 0.0 || x > sw || y < 0.0 || y > sh {
             continue;
         }
@@ -2092,6 +2098,8 @@ fn draw_model_tracks(tracks: &[ProjectedTrack], center_x: f32, center_y: f32, px
         if collides {
             continue;
         }
+        let label_alpha = (230.0 * alpha_mult).round().clamp(0.0, 255.0) as u8;
+        let label_color = MacroquadColor::from_rgba(0xe8, 0xe0, 0xdc, label_alpha);
         draw_text(text, x + 4.0, y - 4.0, label_font, label_color);
         placed.push((bx, by, bx + bw, by + bh));
     }

@@ -1798,6 +1798,7 @@ async fn main() {
                         &state.model_guidance,
                         site.lat,
                         site.lon,
+                        chrono::Utc::now().timestamp(),
                     );
                     state.model_projection = Some((key.0, key.1, tracks));
                 }
@@ -2859,28 +2860,58 @@ async fn main() {
                                                 t.font_size(12).color(0xE8E0DC)
                                             });
                                             if let Some(g) = guidance {
-                                                let stale = rustywx::adeck_style::is_stale(
+                                                // Primary freshness signal: the forecast
+                                                // cycle's own age, not when it was last
+                                                // fetched (review S1) — a stalled feed can
+                                                // keep re-fetching the same old cycle and
+                                                // this is what still catches it.
+                                                let cycle_unix =
+                                                    rustywx::adeck::cycle_time_unix(g.init);
+                                                let cycle_stale = cycle_unix.is_some_and(|c| {
+                                                    rustywx::adeck_style::is_stale_cycle(
+                                                        c, now_unix,
+                                                    )
+                                                });
+                                                let cycle_text = match cycle_unix {
+                                                    Some(c) => format!(
+                                                        "{} cycle, {}{}",
+                                                        rustywx::adeck_style::format_cycle(
+                                                            g.init
+                                                        ),
+                                                        rustywx::adeck_style::format_age(
+                                                            c, now_unix
+                                                        ),
+                                                        if cycle_stale { " (stale)" } else { "" }
+                                                    ),
+                                                    None => format!(
+                                                        "{} cycle",
+                                                        rustywx::adeck_style::format_cycle(g.init)
+                                                    ),
+                                                };
+                                                ui.text(&cycle_text, |t| {
+                                                    t.font_size(11).color(if cycle_stale {
+                                                        0xFFC140
+                                                    } else {
+                                                        0x9E9590
+                                                    })
+                                                });
+                                                // Secondary line: when the overlay last
+                                                // heard from the network at all, regardless
+                                                // of which cycle that was.
+                                                let fetch_stale = rustywx::adeck_style::is_stale(
                                                     g.fetched_at_unix,
                                                     now_unix,
                                                 );
                                                 ui.text(
                                                     &format!(
-                                                        "{} cycle",
-                                                        rustywx::adeck_style::format_cycle(g.init)
-                                                    ),
-                                                    |t| t.font_size(11).color(0x9E9590),
-                                                );
-                                                ui.text(
-                                                    &format!(
-                                                        "Updated {}{}",
+                                                        "Checked {}",
                                                         rustywx::adeck_style::format_age(
                                                             g.fetched_at_unix,
                                                             now_unix
                                                         ),
-                                                        if stale { " (stale)" } else { "" }
                                                     ),
                                                     |t| {
-                                                        t.font_size(11).color(if stale {
+                                                        t.font_size(11).color(if fetch_stale {
                                                             0xFFC140
                                                         } else {
                                                             0x9E9590
@@ -3087,20 +3118,54 @@ async fn main() {
                     && state.show_nhc_data
                     && state.settings.show_model_tracks
                     && let Some(oldest) = state.model_guidance.oldest()
+                    && let Some(cycle_storm) = state.model_guidance.earliest_cycle()
                 {
                     let now_unix = chrono::Utc::now().timestamp();
+                    // Cycle line: picked by init (cycle order), not fetch
+                    // order, so it never names a cycle that belongs to a
+                    // different storm than the one it's shown for (review
+                    // S5). When the shown storms are genuinely on different
+                    // cycles, say so instead of picking one and misleading
+                    // about the rest.
+                    let mixed = !state.model_guidance.has_single_cycle();
+                    let cycle_unix = rustywx::adeck::cycle_time_unix(cycle_storm.init);
+                    let cycle_stale = !mixed
+                        && cycle_unix
+                            .is_some_and(|c| rustywx::adeck_style::is_stale_cycle(c, now_unix));
+                    let cycle_line = if mixed {
+                        "Mixed cycles".to_string()
+                    } else {
+                        match cycle_unix {
+                            Some(c) => format!(
+                                "{} cycle, {}",
+                                rustywx::adeck_style::format_cycle(cycle_storm.init),
+                                rustywx::adeck_style::format_age(c, now_unix)
+                            ),
+                            None => format!(
+                                "{} cycle",
+                                rustywx::adeck_style::format_cycle(cycle_storm.init)
+                            ),
+                        }
+                    };
+                    // Fetch line: unchanged from before (review S5 keeps
+                    // this one as-is) — the least-recently-fetched storm, so
+                    // the legend never claims fresher data than the
+                    // stalest track on screen.
+                    let fetch_stale =
+                        rustywx::adeck_style::is_stale(oldest.fetched_at_unix, now_unix);
                     // 46 px bottom status bar + 8 px gap.
                     let y = screen_height() - 54.0 - rustywx::widgets::model_legend::HEIGHT;
                     rustywx::widgets::model_legend::draw(
                         ui,
                         8.0,
                         y,
-                        &format!("{} cycle", rustywx::adeck_style::format_cycle(oldest.init)),
+                        &cycle_line,
+                        cycle_stale,
                         &format!(
-                            "updated {}",
+                            "checked {}",
                             rustywx::adeck_style::format_age(oldest.fetched_at_unix, now_unix)
                         ),
-                        rustywx::adeck_style::is_stale(oldest.fetched_at_unix, now_unix),
+                        fetch_stale,
                     );
                 }
 
