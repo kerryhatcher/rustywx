@@ -3212,12 +3212,37 @@ async fn main() {
                     );
                     let ofcl_state =
                         rustywx::adeck_style::official_legend_state(any_drawn, any_suppressed);
-                    // 46 px bottom status bar + 8 px gap.
-                    let y = screen_height() - 54.0 - rustywx::widgets::model_legend::HEIGHT;
+                    // Review S10: height is content-sized (`fit!()` inside
+                    // `model_legend::draw`), so the fixed `HEIGHT` constant
+                    // this `y` calc used to depend on is gone — `legend_y`
+                    // only needs a rough per-mode estimate to anchor the
+                    // panel above the bottom bar, and clamps so it can never
+                    // go above the top bar (36 px) or off-screen on a short
+                    // or mobile window.
+                    let legend_mode = rustywx::widgets::model_legend::legend_mode(
+                        screen_height(),
+                        is_mobile,
+                    );
+                    let height_estimate = match legend_mode {
+                        rustywx::widgets::model_legend::LegendMode::Full => {
+                            rustywx::widgets::model_legend::FULL_HEIGHT_ESTIMATE
+                        }
+                        rustywx::widgets::model_legend::LegendMode::Compact => {
+                            rustywx::widgets::model_legend::COMPACT_HEIGHT_ESTIMATE
+                        }
+                    };
+                    // 46 px bottom status bar + 8 px gap; 36 px top bar.
+                    let y = rustywx::widgets::model_legend::legend_y(
+                        screen_height(),
+                        36.0,
+                        54.0,
+                        height_estimate,
+                    );
                     rustywx::widgets::model_legend::draw(
                         ui,
                         8.0,
                         y,
+                        legend_mode,
                         &cycle_line,
                         cycle_stale,
                         &age_line,

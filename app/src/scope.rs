@@ -2116,18 +2116,40 @@ fn draw_model_tracks(
                 draw_line(w[0].0, w[0].1, w[1].0, w[1].1, under, outline);
             }
         }
+        // Dash phase accumulates across this track's whole polyline, in
+        // screen-space pixels, so the pattern doesn't visibly reset at
+        // every forecast point (review S11) — it's reset to 0.0 only once
+        // per track, here, not inside the loop below.
+        let mut dash_phase = 0.0_f32;
         for (i, w) in pts.windows(2).enumerate() {
             let start = track.vmax_kt.get(i).copied().flatten();
             let end = track.vmax_kt.get(i + 1).copied().flatten();
             let [r, g, b, a] = adeck_style::segment_rgba(track.group, start, end);
-            draw_line(
-                w[0].0,
-                w[0].1,
-                w[1].0,
-                w[1].1,
-                style.width_px,
-                MacroquadColor::from_rgba(r, g, b, dim(a)),
-            );
+            let color = MacroquadColor::from_rgba(r, g, b, dim(a));
+            match style.dash {
+                None => {
+                    draw_line(w[0].0, w[0].1, w[1].0, w[1].1, style.width_px, color);
+                }
+                Some(pattern) => {
+                    let seg_len = ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt();
+                    let (spans, next_phase) = adeck_style::dash_steps(pattern, dash_phase, seg_len);
+                    dash_phase = next_phase;
+                    if seg_len > 0.0 {
+                        let dx = (w[1].0 - w[0].0) / seg_len;
+                        let dy = (w[1].1 - w[0].1) / seg_len;
+                        for span in spans {
+                            draw_line(
+                                w[0].0 + dx * span.start,
+                                w[0].1 + dy * span.start,
+                                w[0].0 + dx * span.end,
+                                w[0].1 + dy * span.end,
+                                style.width_px,
+                                color,
+                            );
+                        }
+                    }
+                }
+            }
         }
         if style.label
             && let Some(&(lx, ly)) = pts.last()

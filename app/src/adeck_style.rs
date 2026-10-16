@@ -118,6 +118,93 @@ pub fn segment_rgba(group: ModelGroup, start_kt: Option<u32>, end_kt: Option<u32
     [r, g, b, a]
 }
 
+/// A repeating screen-space dash pattern for a track line (review S11):
+/// draw `on_px`, skip `off_px`, repeat. Both lengths are constant SCREEN
+/// pixels, never scaled by zoom or `px_per_km` — that's what keeps the
+/// pattern from "exploding into tiny segments at high zoom" (the review's
+/// own wording): a world-space dash length would shrink to a handful of
+/// screen pixels at low zoom and need thousands of sub-segments at high
+/// zoom, where a screen-space one always draws the same handful of marks
+/// per visible pixel run regardless of how far the camera is zoomed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DashPattern {
+    pub on_px: f32,
+    pub off_px: f32,
+}
+
+impl DashPattern {
+    /// Total length of one on+off repeat.
+    pub fn cycle_px(self) -> f32 {
+        self.on_px + self.off_px
+    }
+}
+
+/// One drawn ("on") sub-span of a dashed segment, in distance along that
+/// segment: `0.0` is the segment's start point, `end` <= the segment's full
+/// screen-space length. Gaps are simply omitted from the list that
+/// `dash_steps` returns — nothing needs to be drawn for them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DashSpan {
+    pub start: f32,
+    pub end: f32,
+}
+
+/// Steps a `pattern` across one screen-space segment of `length_px` pixels,
+/// starting `phase_px` pixels into the pattern's repeating on/off cycle, and
+/// returns the "on" sub-spans to draw plus the phase to carry into the next
+/// segment of the same track (review S11: the phase must accumulate
+/// continuously along a track's whole polyline, not reset to 0 at every
+/// vertex, or the pattern visibly jumps at each forecast point).
+///
+/// Pure and allocation-light; no macroquad calls, so it's unit-testable
+/// headless — unlike the `draw_line` calls that consume its output.
+///
+/// Degenerate inputs never loop forever or divide by zero: a non-positive
+/// `length_px` draws nothing and passes `phase_px` through unchanged (nothing
+/// moved, so there's nothing to re-phase); a pattern with no "on" length (or
+/// a non-positive cycle) also draws nothing, and its returned phase is
+/// irrelevant to any future draw, so it's reported as `0.0` rather than
+/// carrying forward a value that could otherwise grow without bound across
+/// a long polyline of all-degenerate segments.
+pub fn dash_steps(pattern: DashPattern, phase_px: f32, length_px: f32) -> (Vec<DashSpan>, f32) {
+    if length_px <= 0.0 {
+        return (Vec::new(), phase_px);
+    }
+    let cycle = pattern.cycle_px();
+    if cycle <= 0.0 || pattern.on_px <= 0.0 {
+        return (Vec::new(), 0.0);
+    }
+    let mut phase = phase_px.rem_euclid(cycle);
+    let mut pos = 0.0_f32;
+    let mut spans = Vec::new();
+    while pos < length_px {
+        let in_on = phase < pattern.on_px;
+        let remaining_in_state = if in_on {
+            pattern.on_px - phase
+        } else {
+            cycle - phase
+        };
+        let step = remaining_in_state.min(length_px - pos);
+        if step <= 0.0 {
+            // Unreachable given the guards above (cycle > 0 and on_px > 0
+            // mean remaining_in_state is always > 0), but never spin.
+            break;
+        }
+        if in_on {
+            spans.push(DashSpan {
+                start: pos,
+                end: pos + step,
+            });
+        }
+        pos += step;
+        phase += step;
+        if phase >= cycle {
+            phase -= cycle;
+        }
+    }
+    (spans, phase)
+}
+
 /// Line style per model group.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TrackStyle {
@@ -128,8 +215,41 @@ pub struct TrackStyle {
     pub label: bool,
     /// Higher draws later (on top).
     pub draw_rank: u8,
+    /// Screen-space dash/gap pattern (review S11); `None` is a solid line.
+    pub dash: Option<DashPattern>,
 }
 
+/// Per-`ModelGroup` line style, including the dash pattern (review S11).
+/// Patterns are assigned only to the groups that `classify_tech`
+/// (`adeck.rs`) can actually mark `default_visible` — the ones realistically
+/// on screen together: Official, Observed, Consensus, Hurricane, Global,
+/// Ensemble, Ai. Every other group (Statistical, Baseline, Trajectory,
+/// EnsembleMember, Late, Other) is never default-visible, so it falls to the
+/// `_` arm; its dash choice is moot today but still has to be *something*,
+/// and reusing the plain default (no dash) is the least surprising choice if
+/// one is ever toggled visible later.
+///
+/// Scheme (all screen-space px, review S11's "fixed screen-space pattern"
+/// constraint — see `dash_steps`):
+/// - **Official**: solid. It already has its own dedicated 2.5px width and a
+///   5px dark outline underlay (`underlay_px`), so a dash would be redundant
+///   camouflage against the one track that must never be ambiguous.
+/// - **Observed (CARQ)**: solid. This is the storm's own recorded past
+///   track, not a forecast model — a dash pattern implies "one model's
+///   extrapolation among several," which doesn't describe observed fixes.
+///   It's already visually distinct (plain grey, unlabeled, thin).
+/// - **Consensus**: long dash (12 on / 6 off) — the biggest, clearest marks
+///   of the five model dash styles, fitting for the multi-model averages
+///   that are usually the most-trusted non-official guidance.
+/// - **Hurricane**: medium dash (8 on / 4 off) — the specialized hurricane
+///   models, one size down from Consensus.
+/// - **Ensemble**: short dash (5 on / 5 off), an even 1:1 mark:space ratio —
+///   visually reads as "busier" than the two longer dashes above it.
+/// - **Ai**: fine dash (3 on / 3 off) — same 1:1 ratio as Ensemble but at
+///   half the scale, so the two are told apart by mark *size*, the same way
+///   Consensus and Hurricane are.
+/// - **Global**: dotted (1.5 on / 4 off) — short marks, wide gaps; the
+///   lowest duty cycle of the set, reading as "dots" rather than "dashes".
 pub fn track_style(group: ModelGroup) -> TrackStyle {
     match group {
         ModelGroup::Official => TrackStyle {
@@ -137,20 +257,140 @@ pub fn track_style(group: ModelGroup) -> TrackStyle {
             underlay_px: Some(5.0),
             label: true,
             draw_rank: 2,
+            dash: None,
         },
         ModelGroup::Observed => TrackStyle {
             width_px: 1.5,
             underlay_px: None,
             label: false,
             draw_rank: 1,
+            dash: None,
+        },
+        ModelGroup::Consensus => TrackStyle {
+            width_px: 1.5,
+            underlay_px: None,
+            label: true,
+            draw_rank: 0,
+            dash: Some(DashPattern {
+                on_px: 12.0,
+                off_px: 6.0,
+            }),
+        },
+        ModelGroup::Hurricane => TrackStyle {
+            width_px: 1.5,
+            underlay_px: None,
+            label: true,
+            draw_rank: 0,
+            dash: Some(DashPattern {
+                on_px: 8.0,
+                off_px: 4.0,
+            }),
+        },
+        ModelGroup::Ensemble => TrackStyle {
+            width_px: 1.5,
+            underlay_px: None,
+            label: true,
+            draw_rank: 0,
+            dash: Some(DashPattern {
+                on_px: 5.0,
+                off_px: 5.0,
+            }),
+        },
+        ModelGroup::Ai => TrackStyle {
+            width_px: 1.5,
+            underlay_px: None,
+            label: true,
+            draw_rank: 0,
+            dash: Some(DashPattern {
+                on_px: 3.0,
+                off_px: 3.0,
+            }),
+        },
+        ModelGroup::Global => TrackStyle {
+            width_px: 1.5,
+            underlay_px: None,
+            label: true,
+            draw_rank: 0,
+            dash: Some(DashPattern {
+                on_px: 1.5,
+                off_px: 4.0,
+            }),
         },
         _ => TrackStyle {
             width_px: 1.5,
             underlay_px: None,
             label: true,
             draw_rank: 0,
+            dash: None,
         },
     }
+}
+
+/// Legend label for a model group's own dash-pattern swatch row (review
+/// S11's item 3). Only the groups with a *distinct* dash pattern in
+/// `track_style` get one here — Official and Observed are solid and already
+/// have their own dedicated legend rows elsewhere (the OFCL swatch and the
+/// "CARQ past track" row), so repeating them here would be redundant.
+pub fn model_group_legend_label(group: ModelGroup) -> Option<&'static str> {
+    match group {
+        ModelGroup::Consensus => Some("Consensus models"),
+        ModelGroup::Hurricane => Some("Hurricane models"),
+        ModelGroup::Ensemble => Some("Ensemble means"),
+        ModelGroup::Ai => Some("AI models"),
+        ModelGroup::Global => Some("Global models"),
+        _ => None,
+    }
+}
+
+/// The five dash-styled model groups, in the order the legend lists them —
+/// longest dash (most "trusted"/aggregated) to dotted, mirroring the
+/// `track_style` doc comment's own size ordering.
+pub const MODEL_GROUP_LEGEND_ORDER: [ModelGroup; 5] = [
+    ModelGroup::Consensus,
+    ModelGroup::Hurricane,
+    ModelGroup::Ensemble,
+    ModelGroup::Ai,
+    ModelGroup::Global,
+];
+
+/// Tiles `pattern` across a `total_px`-wide legend swatch preview as
+/// alternating (length, is_on) segments, starting "on" — used by
+/// `model_legend.rs` to draw a miniature preview of each model group's real
+/// dash pattern (review S11 item 3), rather than a plain solid colour bar
+/// that no longer matches what's drawn on the map. `None` (solid) and any
+/// degenerate pattern (non-positive cycle or "on" length) both fall back to
+/// one single "on" segment spanning the whole preview width, so the legend
+/// never renders a blank swatch.
+///
+/// This is deliberately a different, simpler shape than `dash_steps`:
+/// `dash_steps` clips a pattern to *one real polyline segment* and carries a
+/// phase across segment boundaries, which this preview has no use for (it's
+/// one fixed-width swatch, always starting fresh at phase 0); this instead
+/// needs the "off" gaps as their own explicit segments too, so the caller
+/// can lay out alternating coloured/transparent elements in sequence.
+pub fn dash_preview_segments(pattern: Option<DashPattern>, total_px: f32) -> Vec<(f32, bool)> {
+    let solid = || vec![(total_px.max(0.0), true)];
+    let Some(p) = pattern else {
+        return solid();
+    };
+    if total_px <= 0.0 {
+        return Vec::new();
+    }
+    let cycle = p.cycle_px();
+    if cycle <= 0.0 || p.on_px <= 0.0 {
+        return solid();
+    }
+    let mut segs = Vec::new();
+    let mut pos = 0.0_f32;
+    let mut on = true;
+    while pos < total_px {
+        let want = if on { p.on_px } else { p.off_px };
+        let seg = want.min(total_px - pos);
+        segs.push((seg, on));
+        pos += seg;
+        on = !on;
+    }
+    segs
 }
 
 /// OFCL's outline colour, drawn under its own wind-coloured line
@@ -883,6 +1123,300 @@ mod tests {
         assert!(ofcl.width_px > model.width_px);
         assert!(ofcl.underlay_px.is_some() && model.underlay_px.is_none());
         assert!(!carq.label && model.label && ofcl.label);
+    }
+
+    // ── S11: per-model-group dash patterns ──────────────────────────────
+
+    #[test]
+    fn official_and_observed_are_solid() {
+        assert_eq!(track_style(ModelGroup::Official).dash, None);
+        assert_eq!(track_style(ModelGroup::Observed).dash, None);
+    }
+
+    #[test]
+    fn default_visible_model_groups_have_distinct_dash_patterns() {
+        let groups = [
+            ModelGroup::Consensus,
+            ModelGroup::Hurricane,
+            ModelGroup::Global,
+            ModelGroup::Ensemble,
+            ModelGroup::Ai,
+        ];
+        let patterns: Vec<DashPattern> = groups
+            .iter()
+            .map(|&g| {
+                track_style(g)
+                    .dash
+                    .expect("every default-visible model group has a dash")
+            })
+            .collect();
+        let mut dedup = patterns.clone();
+        dedup.dedup();
+        // No exact duplicate, and sorting shouldn't collapse any pair either
+        // (dedup() only removes *adjacent* equal elements).
+        let mut sorted: Vec<(u32, u32)> = patterns
+            .iter()
+            .map(|p| (p.on_px.to_bits(), p.off_px.to_bits()))
+            .collect();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            groups.len(),
+            "every group's pattern must differ"
+        );
+    }
+
+    #[test]
+    fn model_group_legend_order_matches_the_groups_with_labels() {
+        for group in MODEL_GROUP_LEGEND_ORDER {
+            assert!(
+                model_group_legend_label(group).is_some(),
+                "{group:?} is in the legend order but has no label"
+            );
+            assert!(track_style(group).dash.is_some());
+        }
+        assert_eq!(model_group_legend_label(ModelGroup::Official), None);
+        assert_eq!(model_group_legend_label(ModelGroup::Observed), None);
+    }
+
+    // `dash_steps`: the core screen-space dash-stepping math (review S11
+    // item 2). TDD per the task's instructions — written before wiring the
+    // real draw calls in `scope.rs`.
+
+    fn pattern() -> DashPattern {
+        DashPattern {
+            on_px: 10.0,
+            off_px: 5.0,
+        }
+    }
+
+    #[test]
+    fn dash_steps_zero_length_segment_draws_nothing_and_keeps_phase() {
+        let (spans, phase) = dash_steps(pattern(), 3.0, 0.0);
+        assert!(spans.is_empty());
+        assert_eq!(phase, 3.0, "nothing moved, so phase must not change");
+    }
+
+    #[test]
+    fn dash_steps_negative_length_segment_draws_nothing_and_keeps_phase() {
+        let (spans, phase) = dash_steps(pattern(), 3.0, -5.0);
+        assert!(spans.is_empty());
+        assert_eq!(phase, 3.0);
+    }
+
+    #[test]
+    fn dash_steps_segment_shorter_than_one_dash_stays_entirely_on() {
+        // Starting at phase 0 (mid-dash), a 4px segment never reaches the
+        // 10px on/off boundary.
+        let (spans, phase) = dash_steps(pattern(), 0.0, 4.0);
+        assert_eq!(
+            spans,
+            vec![DashSpan {
+                start: 0.0,
+                end: 4.0
+            }]
+        );
+        assert_eq!(phase, 4.0);
+    }
+
+    #[test]
+    fn dash_steps_segment_shorter_than_one_gap_stays_entirely_off() {
+        // Starting at phase 10 (exactly at the on/off boundary, i.e. the
+        // start of a gap), a short segment never re-enters "on".
+        let (spans, phase) = dash_steps(pattern(), 10.0, 3.0);
+        assert!(spans.is_empty(), "entirely inside the gap");
+        assert_eq!(phase, 13.0);
+    }
+
+    #[test]
+    fn dash_steps_segment_spanning_many_cycles_produces_one_span_per_dash() {
+        // cycle = 15px; a 47px segment starting fresh covers 3 full cycles
+        // (30px) plus a 17px remainder: on(10) off(5) on(10) off(5)
+        // on(10) off(5) on(2) -- i.e. 4 "on" spans, the last one partial.
+        let (spans, phase) = dash_steps(pattern(), 0.0, 47.0);
+        assert_eq!(
+            spans,
+            vec![
+                DashSpan {
+                    start: 0.0,
+                    end: 10.0
+                },
+                DashSpan {
+                    start: 15.0,
+                    end: 25.0
+                },
+                DashSpan {
+                    start: 30.0,
+                    end: 40.0
+                },
+                DashSpan {
+                    start: 45.0,
+                    end: 47.0
+                },
+            ]
+        );
+        // 47 % 15 = 2, i.e. 2px into the next "on" run.
+        assert_eq!(phase, 2.0);
+    }
+
+    #[test]
+    fn dash_steps_phase_continues_across_segment_boundaries() {
+        // Two consecutive 8px segments of the same track, fed through in
+        // sequence, must behave exactly like one 16px segment: the ending
+        // phase of segment N is segment N+1's starting phase (review S11:
+        // "the pattern doesn't visibly reset at each vertex").
+        let (first_spans, phase_after_first) = dash_steps(pattern(), 0.0, 8.0);
+        let (second_spans, phase_after_second) = dash_steps(pattern(), phase_after_first, 8.0);
+        let (whole_spans, phase_whole) = dash_steps(pattern(), 0.0, 16.0);
+
+        assert_eq!(
+            first_spans,
+            vec![DashSpan {
+                start: 0.0,
+                end: 8.0
+            }]
+        );
+        assert_eq!(phase_after_first, 8.0);
+        // Second segment: phase starts at 8 (still "on", on_px=10): 2px
+        // finishes the dash, then the 5px gap, then 1px re-enters the next
+        // dash -- all within this one 8px segment.
+        assert_eq!(
+            second_spans,
+            vec![
+                DashSpan {
+                    start: 0.0,
+                    end: 2.0
+                },
+                DashSpan {
+                    start: 7.0,
+                    end: 8.0
+                },
+            ]
+        );
+        assert_eq!(phase_after_second, phase_whole, "matches one 16px segment");
+        assert_eq!(
+            whole_spans,
+            vec![
+                DashSpan {
+                    start: 0.0,
+                    end: 10.0
+                },
+                DashSpan {
+                    start: 15.0,
+                    end: 16.0
+                },
+            ],
+            "one continuous dash/gap/dash spanning both segments, as a single 16px segment sees it"
+        );
+        // The total drawn ("on") length must match regardless of how the
+        // 16px is split into segments -- that's the real continuity
+        // guarantee, independent of either side's local coordinate frames.
+        let on_len = |spans: &[DashSpan]| -> f32 { spans.iter().map(|s| s.end - s.start).sum() };
+        assert_eq!(
+            on_len(&first_spans) + on_len(&second_spans),
+            on_len(&whole_spans)
+        );
+    }
+
+    #[test]
+    fn dash_steps_wraps_an_out_of_range_starting_phase() {
+        // A starting phase larger than one cycle (15px) must behave as if
+        // it had been wrapped first -- callers should never need to
+        // pre-normalize.
+        let (spans, phase) = dash_steps(pattern(), 15.0 + 0.0, 4.0);
+        let (spans_zero, phase_zero) = dash_steps(pattern(), 0.0, 4.0);
+        assert_eq!(spans, spans_zero);
+        assert_eq!(phase, phase_zero);
+    }
+
+    #[test]
+    fn dash_steps_degenerate_pattern_draws_nothing() {
+        let zero_on = DashPattern {
+            on_px: 0.0,
+            off_px: 5.0,
+        };
+        let (spans, phase) = dash_steps(zero_on, 2.0, 20.0);
+        assert!(spans.is_empty());
+        assert_eq!(phase, 0.0);
+
+        let negative_cycle = DashPattern {
+            on_px: -1.0,
+            off_px: -1.0,
+        };
+        let (spans2, phase2) = dash_steps(negative_cycle, 2.0, 20.0);
+        assert!(spans2.is_empty());
+        assert_eq!(phase2, 0.0);
+    }
+
+    #[test]
+    fn dash_steps_many_short_segments_sum_to_one_long_segment() {
+        // Simulates a real polyline: several short legs back-to-back must
+        // produce the same total "on" length as one long leg of the same
+        // overall distance, with phase carried through every step.
+        let total = 123.0_f32;
+        let leg = 7.0_f32;
+        let mut phase = 0.0_f32;
+        let mut on_total = 0.0_f32;
+        let mut walked = 0.0_f32;
+        while walked < total {
+            let len = leg.min(total - walked);
+            let (spans, next_phase) = dash_steps(pattern(), phase, len);
+            on_total += spans.iter().map(|s| s.end - s.start).sum::<f32>();
+            phase = next_phase;
+            walked += len;
+        }
+        let (whole_spans, _) = dash_steps(pattern(), 0.0, total);
+        let whole_on: f32 = whole_spans.iter().map(|s| s.end - s.start).sum();
+        assert!(
+            (on_total - whole_on).abs() < 1e-3,
+            "segmented total {on_total} vs whole-track total {whole_on}"
+        );
+    }
+
+    // `dash_preview_segments`: the legend swatch preview tiling (review S11
+    // item 3).
+
+    #[test]
+    fn dash_preview_segments_solid_is_one_on_segment() {
+        assert_eq!(dash_preview_segments(None, 24.0), vec![(24.0, true)]);
+    }
+
+    #[test]
+    fn dash_preview_segments_degenerate_pattern_falls_back_to_solid() {
+        let zero_on = DashPattern {
+            on_px: 0.0,
+            off_px: 5.0,
+        };
+        assert_eq!(
+            dash_preview_segments(Some(zero_on), 24.0),
+            vec![(24.0, true)]
+        );
+    }
+
+    #[test]
+    fn dash_preview_segments_tiles_and_clips_the_last_segment() {
+        let p = DashPattern {
+            on_px: 10.0,
+            off_px: 5.0,
+        };
+        // 24px total: on(10) off(5) on(9, clipped from 10).
+        assert_eq!(
+            dash_preview_segments(Some(p), 24.0),
+            vec![(10.0, true), (5.0, false), (9.0, true)]
+        );
+    }
+
+    #[test]
+    fn dash_preview_segments_zero_width_is_empty() {
+        let p = DashPattern {
+            on_px: 10.0,
+            off_px: 5.0,
+        };
+        assert_eq!(
+            dash_preview_segments(Some(p), 0.0),
+            Vec::<(f32, bool)>::new()
+        );
     }
 
     // ── S4: OFCL outline / GIS advisory colour / legend text ────────────
