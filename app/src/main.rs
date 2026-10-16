@@ -1216,9 +1216,7 @@ async fn main() {
                 Ok(ParsedData::ADeck(mut guidance))
                     if state.adeck_fetch.owns_generation(parsed.generation) =>
                 {
-                    let _ = state
-                        .adeck_fetch
-                        .parse_finished(parsed.generation, true, now);
+                    let _ = state.adeck_fetch.parse_finished(parsed.generation, true);
                     let fetched_at_unix = chrono::Utc::now().timestamp();
                     guidance.fetched_at_unix = fetched_at_unix;
                     let (storm_id, init, n_tracks, n_intensity) = (
@@ -1258,7 +1256,7 @@ async fn main() {
                     );
                     if state
                         .adeck_fetch
-                        .parse_finished(parsed.generation, false, now)
+                        .parse_finished(parsed.generation, false)
                         .is_some_and(|o| o.show_toast)
                     {
                         show_toast(&mut state, now, toast_widget::ErrorKind::Network);
@@ -1548,11 +1546,7 @@ async fn main() {
                 .map(|b| b.metas.iter().map(|m| m.id.clone()).collect())
                 .unwrap_or_default();
             state.model_guidance.retain_active(&active);
-            if state
-                .adeck_fetch
-                .tick(now, &active, &mut ply_net)
-                .show_toast
-            {
+            if state.adeck_fetch.tick(&active, &mut ply_net).show_toast {
                 show_toast(&mut state, now, toast_widget::ErrorKind::Network);
             }
             // At most one a-deck parse job in flight at a time: the shared
@@ -1579,7 +1573,7 @@ async fn main() {
                         );
                     } else if state
                         .adeck_fetch
-                        .parse_finished(generation, false, now)
+                        .parse_finished(generation, false)
                         .is_some_and(|o| o.show_toast)
                     {
                         show_toast(&mut state, now, toast_widget::ErrorKind::Network);
@@ -2866,7 +2860,7 @@ async fn main() {
                                 if state.settings.show_model_tracks {
                                     let now_unix = chrono::Utc::now().timestamp();
                                     let guidance = state.model_guidance.get(&meta.id);
-                                    let status = state.adeck_fetch.status(&meta.id, now);
+                                    let status = state.adeck_fetch.status(&meta.id);
                                     ui.element()
                                         .width(grow!())
                                         .height(fit!())

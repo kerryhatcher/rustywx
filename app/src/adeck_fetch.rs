@@ -10,22 +10,24 @@
 //! slot, so a hung download never blocks another storm or any other NHC
 //! data.
 //!
-//! The 60s per-attempt deadline is measured against a monotonic clock
-//! (`std::time::Instant`), not the wall-clock `now: f64` passed into
-//! `tick`. `now` is still used for backoff/`next_due` scheduling, where a
-//! wrong value is self-correcting and low-stakes; but a wall clock that can
-//! jump (sleep/resume, NTP) must never be trusted to measure "how long has
-//! this request been in flight" (review S6). `tick` also polls the
-//! transport before checking that deadline, so a response that finished
-//! this frame is always processed, never thrown away because the deadline
-//! also elapsed this frame.
+//! All of this scheduler's own notion of time — the 60s per-attempt
+//! deadline, backoff/`next_due` scheduling, and the retry countdown shown in
+//! the UI — is driven by a monotonic clock (`std::time::Instant`), never by
+//! a wall clock (review S6). A wall clock can jump on sleep/resume or an
+//! NTP/manual clock step: forward, every in-flight slot would time out at
+//! once and a persistent backward step would stall every storm's refresh
+//! for the size of the step. Neither can happen here, because the scheduler
+//! never reads wall-clock time at all. `tick` also polls the transport
+//! before checking the deadline, so a response that finished this frame is
+//! always processed, never thrown away because the deadline also elapsed
+//! this frame.
 //!
 //! `NetPort` is the transport boundary: the planned app-owned HTTP module
 //! can replace `PlyNet` without touching the parser, renderer, or scheduler.
 
 use crate::adeck::adeck_url;
 use std::collections::BTreeMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Refresh period while the overlay is on. A-decks fill in over hours; the
 /// research asks for no faster than every 10-15 min.
@@ -59,6 +61,23 @@ pub fn backoff_secs(failures: u32) -> f64 {
 /// Stable per-storm request id. Reusable because every result is cancelled.
 pub fn adeck_net_id(storm_id: &str) -> String {
     format!("nhc-adeck-{storm_id}")
+}
+
+/// Detects an HTTP 404 from ply-engine's ureq-backed error text. ureq 3.x
+/// formats a 4xx/5xx response as exactly `"http status: {code}"` — matching
+/// that precise format, rather than a loose substring, means a URL or body
+/// snippet that happens to contain "404" elsewhere in an error string can't
+/// be misread as this storm having no a-deck published. Getting the actual
+/// typed status code out of ply-engine instead of parsing its error string
+/// isn't possible without patching that dependency: ureq treats a 4xx/5xx
+/// response as an `Err` before `PlyNet` ever sees a `Response`, and
+/// ply-engine's own request thread collapses it to a plain `String` before
+/// the status code crosses into our `Result<Vec<u8>, String>` (review L4).
+fn is_not_found(error: &str) -> bool {
+    error
+        .strip_prefix("http status: ")
+        .and_then(|s| s.parse::<u16>().ok())
+        == Some(404)
 }
 
 /// Result of polling one request id.
@@ -114,11 +133,11 @@ impl NetPort for PlyNet {
     }
 }
 
-/// Monotonic time source behind the attempt deadline (review S6). The wall
-/// clock `now: f64` passed into `tick` can jump (sleep/resume, an NTP or
-/// manual clock step), so it can't safely measure elapsed time for a single
-/// in-flight request. `SystemClock` is the real source; tests substitute a
-/// fake to control elapsed time deterministically, without a real sleep.
+/// Monotonic time source for every timing decision this scheduler makes
+/// (review S6): the attempt deadline, backoff/`next_due` scheduling, and the
+/// retry countdown shown in the UI. `SystemClock` is the real source; tests
+/// substitute a fake to control elapsed time deterministically, without a
+/// real sleep.
 trait Clock {
     fn now(&self) -> Instant;
 }
@@ -185,7 +204,9 @@ struct Slot {
     url: String,
     net_id: String,
     phase: Phase,
-    next_due: f64,
+    /// Monotonic instant at which this slot becomes due again. Always
+    /// derived from the scheduler's `Clock`, never a wall clock (S6).
+    next_due: Instant,
     failures: u32,
     /// Per-storm toast streak (review S7): only the first failure of THIS
     /// storm's own streak toasts. A different storm's success or failure
@@ -202,15 +223,16 @@ struct Slot {
 /// failure) never toast and never arm the streak, so they can't suppress a
 /// later genuine failure's toast. `not_found` additionally switches this
 /// slot to the flat retry cadence and the `WaitingForGuidance` status.
-fn record_failure(slot: &mut Slot, now: f64, quiet: bool, not_found: bool) -> bool {
+/// `now` is the scheduler's current monotonic instant (never a wall clock).
+fn record_failure(slot: &mut Slot, now: Instant, quiet: bool, not_found: bool) -> bool {
     slot.failures = slot.failures.saturating_add(1);
     slot.not_found = not_found;
     slot.next_due = now
-        + if not_found {
+        + Duration::from_secs_f64(if not_found {
             NOT_FOUND_RETRY_SECS
         } else {
             backoff_secs(slot.failures)
-        };
+        });
     slot.phase = Phase::Idle;
     if quiet || slot.toast_shown_in_streak {
         return false;
@@ -239,7 +261,7 @@ impl AdeckFetcher {
     }
 
     /// Test-only seam for the monotonic clock (review S6): lets tests
-    /// control elapsed time for the attempt deadline deterministically,
+    /// control elapsed time for every timing decision deterministically,
     /// without a real sleep.
     #[cfg(test)]
     fn with_clock(clock: impl Clock + 'static) -> Self {
@@ -251,8 +273,9 @@ impl AdeckFetcher {
 
     /// Per-frame driver. `active` are `CurrentStorms.json` ids; unsupported
     /// ids are ignored. Never blocks: it only fires, polls, and cancels.
-    pub fn tick(&mut self, now: f64, active: &[String], net: &mut impl NetPort) -> TickReport {
+    pub fn tick(&mut self, active: &[String], net: &mut impl NetPort) -> TickReport {
         let mut report = TickReport::default();
+        let now = self.clock.now();
         let wanted: Vec<(String, String)> = active
             .iter()
             .filter_map(|id| {
@@ -292,9 +315,7 @@ impl AdeckFetcher {
             match slot.phase {
                 Phase::Idle if now >= slot.next_due => {
                     net.get(&slot.net_id, &slot.url);
-                    slot.phase = Phase::InFlight {
-                        started_at: self.clock.now(),
-                    };
+                    slot.phase = Phase::InFlight { started_at: now };
                 }
                 Phase::InFlight { started_at } => {
                     // Poll the transport FIRST (review S6): a response that
@@ -305,7 +326,7 @@ impl AdeckFetcher {
                     // re-read (review C2).
                     let outcome = match net.poll(&slot.net_id) {
                         NetPoll::Pending => {
-                            let elapsed = self.clock.now().saturating_duration_since(started_at);
+                            let elapsed = now.saturating_duration_since(started_at);
                             if elapsed.as_secs_f64() >= ATTEMPT_TIMEOUT_SECS {
                                 net.cancel(&slot.net_id);
                                 Some(Err(format!("timed out after {ATTEMPT_TIMEOUT_SECS} s")))
@@ -324,7 +345,7 @@ impl AdeckFetcher {
                         Some(Ok(bytes)) => slot.phase = Phase::Downloaded(bytes),
                         Some(Err(e)) => {
                             eprintln!("Warning: a-deck download failed storm={storm_id}: {e}");
-                            let not_found = e.contains("404");
+                            let not_found = is_not_found(&e);
                             if record_failure(slot, now, not_found, not_found) {
                                 report.show_toast = true;
                             }
@@ -371,14 +392,15 @@ impl AdeckFetcher {
 
     /// Record a parse result. `None` when the generation isn't ours (storm
     /// removed or overlay disabled meanwhile): the caller drops the result.
-    pub fn parse_finished(&mut self, generation: u64, ok: bool, now: f64) -> Option<ParseOutcome> {
+    pub fn parse_finished(&mut self, generation: u64, ok: bool) -> Option<ParseOutcome> {
+        let now = self.clock.now();
         let (storm_id, slot) = self.slots.iter_mut().find(
             |(_, s)| matches!(s.phase, Phase::Parsing { generation: g } if g == generation),
         )?;
         let show_toast = if ok {
             slot.failures = 0;
             slot.not_found = false;
-            slot.next_due = now + REFRESH_SECS;
+            slot.next_due = now + Duration::from_secs_f64(REFRESH_SECS);
             slot.phase = Phase::Idle;
             slot.toast_shown_in_streak = false;
             false
@@ -411,18 +433,27 @@ impl AdeckFetcher {
         !self.slots.is_empty()
     }
 
-    pub fn status(&self, storm_id: &str, now: f64) -> SlotStatus {
+    pub fn status(&self, storm_id: &str) -> SlotStatus {
         let Some(slot) = self.slots.get(&storm_id.to_ascii_lowercase()) else {
             return SlotStatus::Idle;
         };
+        let now = self.clock.now();
         match slot.phase {
             Phase::InFlight { .. } => SlotStatus::Downloading,
             Phase::Downloaded(_) | Phase::Parsing { .. } => SlotStatus::Parsing,
             Phase::Idle if slot.not_found => SlotStatus::WaitingForGuidance {
-                in_secs: (slot.next_due - now).max(0.0).ceil() as u32,
+                in_secs: slot
+                    .next_due
+                    .saturating_duration_since(now)
+                    .as_secs_f64()
+                    .ceil() as u32,
             },
             Phase::Idle if slot.failures > 0 => SlotStatus::Retrying {
-                in_secs: (slot.next_due - now).max(0.0).ceil() as u32,
+                in_secs: slot
+                    .next_due
+                    .saturating_duration_since(now)
+                    .as_secs_f64()
+                    .ceil() as u32,
             },
             Phase::Idle => SlotStatus::Idle,
         }
@@ -435,7 +466,6 @@ mod tests {
     use std::cell::Cell;
     use std::collections::{HashMap, HashSet};
     use std::rc::Rc;
-    use std::time::Duration;
 
     /// Scripted stand-in for Ply net with its real id semantics.
     #[derive(Default)]
@@ -480,7 +510,9 @@ mod tests {
 
     /// Fake monotonic clock (review S6): shares one `Instant` cell with the
     /// test via `Rc`, so the test can advance it directly to make elapsed
-    /// time deterministic, instead of sleeping for real.
+    /// time deterministic, instead of sleeping for real. Every scheduler
+    /// test uses this: backoff, refresh, and the 404 cadence are all driven
+    /// by the clock now, not by a wall-clock `now` argument.
     #[derive(Clone)]
     struct FakeClock(Rc<Cell<Instant>>);
 
@@ -508,9 +540,10 @@ mod tests {
 
     #[test]
     fn fires_once_per_active_storm_with_stable_ids() {
-        let mut f = AdeckFetcher::new();
+        let clock = FakeClock::new();
+        let mut f = AdeckFetcher::with_clock(clock.clone());
         let mut net = FakeNet::default();
-        f.tick(0.0, &ids(&["al092026", "EP182026"]), &mut net);
+        f.tick(&ids(&["al092026", "EP182026"]), &mut net);
         assert_eq!(
             net.fired,
             [
@@ -524,29 +557,32 @@ mod tests {
                 ),
             ]
         );
-        f.tick(1.0, &ids(&["al092026", "ep182026"]), &mut net);
+        clock.advance(Duration::from_secs(1));
+        f.tick(&ids(&["al092026", "ep182026"]), &mut net);
         assert_eq!(net.fired.len(), 2, "no re-fire while in flight");
         assert!(net.ignored.is_empty());
-        assert_eq!(f.status("al092026", 1.0), SlotStatus::Downloading);
+        assert_eq!(f.status("al092026"), SlotStatus::Downloading);
     }
 
     #[test]
     fn ignores_unsupported_storm_ids() {
         let mut f = AdeckFetcher::new();
         let mut net = FakeNet::default();
-        f.tick(0.0, &ids(&["wp012026", "al852026", ""]), &mut net);
+        f.tick(&ids(&["wp012026", "al852026", ""]), &mut net);
         assert!(net.fired.is_empty());
         assert!(!f.is_active());
     }
 
     #[test]
     fn success_cancels_handle_then_refreshes_same_id_later() {
-        let mut f = AdeckFetcher::new();
+        let clock = FakeClock::new();
+        let mut f = AdeckFetcher::with_clock(clock.clone());
         let mut net = FakeNet::default();
         let active = ids(&["al092026"]);
-        f.tick(0.0, &active, &mut net);
+        f.tick(&active, &mut net);
         net.respond(AL, NetPoll::Done(Ok(vec![1, 2, 3])));
-        assert!(!f.tick(1.0, &active, &mut net).show_toast);
+        clock.advance(Duration::from_secs(1));
+        assert!(!f.tick(&active, &mut net).show_toast);
         assert_eq!(net.cancelled, [AL], "finished entry is released");
         assert_eq!(
             f.take_parse_job(7),
@@ -554,14 +590,16 @@ mod tests {
         );
         assert_eq!(f.take_parse_job(8), None);
         assert!(f.owns_generation(7));
-        assert_eq!(f.status("al092026", 1.0), SlotStatus::Parsing);
-        let outcome = f.parse_finished(7, true, 2.0).unwrap();
+        assert_eq!(f.status("al092026"), SlotStatus::Parsing);
+        let outcome = f.parse_finished(7, true).unwrap();
         assert_eq!(outcome.storm_id, "al092026");
         assert!(!outcome.show_toast);
         assert!(!f.owns_generation(7));
-        f.tick(901.0, &active, &mut net);
+        clock.advance(Duration::from_secs_f64(REFRESH_SECS - 1.0));
+        f.tick(&active, &mut net);
         assert_eq!(net.fired.len(), 1, "not due before REFRESH_SECS");
-        f.tick(902.0, &active, &mut net);
+        clock.advance(Duration::from_secs(2));
+        f.tick(&active, &mut net);
         assert_eq!(net.fired.len(), 2);
         assert_eq!(net.fired[1].0, AL, "same stable id, re-fired after cancel");
         assert!(net.ignored.is_empty());
@@ -569,85 +607,87 @@ mod tests {
 
     #[test]
     fn has_parsing_true_only_while_a_slot_is_in_the_parsing_phase() {
-        let mut f = AdeckFetcher::new();
+        let clock = FakeClock::new();
+        let mut f = AdeckFetcher::with_clock(clock.clone());
         let mut net = FakeNet::default();
         let active = ids(&["al092026"]);
-        f.tick(0.0, &active, &mut net);
+        f.tick(&active, &mut net);
         assert!(!f.has_parsing(), "idle/in-flight slot is not parsing");
         net.respond(AL, NetPoll::Done(Ok(vec![1, 2, 3])));
-        f.tick(1.0, &active, &mut net);
+        clock.advance(Duration::from_secs(1));
+        f.tick(&active, &mut net);
         assert!(!f.has_parsing(), "downloaded-but-not-taken is not parsing");
         assert_eq!(
             f.take_parse_job(7),
             Some(("al092026".to_owned(), vec![1, 2, 3]))
         );
         assert!(f.has_parsing(), "take_parse_job moved the slot to Parsing");
-        f.parse_finished(7, true, 2.0);
+        f.parse_finished(7, true);
         assert!(!f.has_parsing(), "parse_finished cleared the Parsing slot");
     }
 
     #[test]
     fn network_error_cancels_then_retries_with_backoff() {
-        let mut f = AdeckFetcher::new();
+        let clock = FakeClock::new();
+        let mut f = AdeckFetcher::with_clock(clock.clone());
         let mut net = FakeNet::default();
         let active = ids(&["al092026"]);
-        f.tick(0.0, &active, &mut net);
+        f.tick(&active, &mut net);
         net.respond(AL, NetPoll::Done(Err("http status: 503".into())));
-        assert!(
-            f.tick(1.0, &active, &mut net).show_toast,
-            "first failure toasts"
-        );
+        clock.advance(Duration::from_secs(1));
+        assert!(f.tick(&active, &mut net).show_toast, "first failure toasts");
         assert_eq!(net.cancelled, [AL], "failed entry is released, not re-read");
-        assert_eq!(
-            f.status("al092026", 1.0),
-            SlotStatus::Retrying { in_secs: 30 }
-        );
-        f.tick(30.0, &active, &mut net);
+        assert_eq!(f.status("al092026"), SlotStatus::Retrying { in_secs: 30 });
+        clock.advance(Duration::from_secs(29));
+        f.tick(&active, &mut net);
         assert_eq!(net.fired.len(), 1);
-        f.tick(31.0, &active, &mut net);
+        clock.advance(Duration::from_secs(2));
+        f.tick(&active, &mut net);
         assert_eq!(net.fired.len(), 2, "retry fires after backoff");
         assert!(
             net.ignored.is_empty(),
             "retry was not swallowed by a stale entry"
         );
         net.respond(AL, NetPoll::Done(Err("http status: 503".into())));
+        clock.advance(Duration::from_secs(1));
         assert!(
-            !f.tick(32.0, &active, &mut net).show_toast,
+            !f.tick(&active, &mut net).show_toast,
             "one toast per streak"
         );
-        assert_eq!(
-            f.status("al092026", 32.0),
-            SlotStatus::Retrying { in_secs: 60 }
-        );
+        assert_eq!(f.status("al092026"), SlotStatus::Retrying { in_secs: 60 });
     }
 
     #[test]
     fn not_found_retries_quietly_on_its_own_flat_cadence() {
-        let mut f = AdeckFetcher::new();
+        let clock = FakeClock::new();
+        let mut f = AdeckFetcher::with_clock(clock.clone());
         let mut net = FakeNet::default();
         let active = ids(&["al942026"]);
-        f.tick(0.0, &active, &mut net);
+        f.tick(&active, &mut net);
         net.respond(
             "nhc-adeck-al942026",
             NetPoll::Done(Err("http status: 404".into())),
         );
-        assert!(!f.tick(1.0, &active, &mut net).show_toast);
+        clock.advance(Duration::from_secs(1));
+        assert!(!f.tick(&active, &mut net).show_toast);
         assert_eq!(
-            f.status("al942026", 1.0),
+            f.status("al942026"),
             SlotStatus::WaitingForGuidance {
                 in_secs: NOT_FOUND_RETRY_SECS as u32,
             }
         );
         // The flat cadence does not grow with repeated 404s.
-        f.tick(1.0 + NOT_FOUND_RETRY_SECS, &active, &mut net);
+        clock.advance(Duration::from_secs_f64(NOT_FOUND_RETRY_SECS));
+        f.tick(&active, &mut net);
         assert_eq!(net.fired.len(), 2);
         net.respond(
             "nhc-adeck-al942026",
             NetPoll::Done(Err("http status: 404".into())),
         );
-        f.tick(2.0 + NOT_FOUND_RETRY_SECS, &active, &mut net);
+        clock.advance(Duration::from_secs(1));
+        f.tick(&active, &mut net);
         assert_eq!(
-            f.status("al942026", 2.0 + NOT_FOUND_RETRY_SECS),
+            f.status("al942026"),
             SlotStatus::WaitingForGuidance {
                 in_secs: NOT_FOUND_RETRY_SECS as u32,
             }
@@ -660,43 +700,37 @@ mod tests {
         let mut f = AdeckFetcher::with_clock(clock.clone());
         let mut net = FakeNet::default();
         let active = ids(&["al092026"]);
-        f.tick(0.0, &active, &mut net);
+        f.tick(&active, &mut net);
         clock.advance(Duration::from_millis(59_900));
-        f.tick(59.9, &active, &mut net);
+        f.tick(&active, &mut net);
         assert!(net.cancelled.is_empty());
         clock.advance(Duration::from_millis(100));
-        assert!(f.tick(60.0, &active, &mut net).show_toast);
+        assert!(f.tick(&active, &mut net).show_toast);
         assert_eq!(net.cancelled, [AL]);
-        f.tick(90.0, &active, &mut net);
+        clock.advance(Duration::from_secs(30));
+        f.tick(&active, &mut net);
         assert_eq!(net.fired.len(), 2);
         assert!(net.ignored.is_empty());
     }
 
     #[test]
-    fn deadline_is_measured_by_a_monotonic_clock_not_wall_clock() {
+    fn deadline_requires_real_elapsed_time_not_just_more_ticks() {
         let clock = FakeClock::new();
         let mut f = AdeckFetcher::with_clock(clock.clone());
         let mut net = FakeNet::default();
         let active = ids(&["al092026"]);
-        f.tick(0.0, &active, &mut net);
-        // Wall clock jumps far ahead (NTP step, laptop sleep/resume, or a
-        // long frame stall), but the monotonic clock the deadline is
-        // measured against has barely moved.
-        clock.advance(Duration::from_millis(100));
-        f.tick(10_000.0, &active, &mut net);
-        assert!(
-            net.cancelled.is_empty(),
-            "a huge wall-clock jump alone must not trip the deadline"
-        );
-        assert_eq!(
-            f.status("al092026", 10_000.0),
-            SlotStatus::Downloading,
-            "the request is still genuinely in flight"
-        );
-        // Now the monotonic clock actually reaches the deadline.
+        f.tick(&active, &mut net);
+        // Many ticks (e.g. many UI frames) with no clock advance must not
+        // trip the deadline on their own — only real elapsed monotonic time
+        // can (review S6: the scheduler has no wall-clock input left to
+        // fool).
+        for _ in 0..1000 {
+            f.tick(&active, &mut net);
+        }
+        assert!(net.cancelled.is_empty());
+        assert_eq!(f.status("al092026"), SlotStatus::Downloading);
         clock.advance(Duration::from_secs_f64(ATTEMPT_TIMEOUT_SECS));
-        assert!(f.tick(10_000.1, &active, &mut net).show_toast);
-        assert_eq!(net.cancelled, [AL]);
+        assert!(f.tick(&active, &mut net).show_toast);
     }
 
     #[test]
@@ -705,13 +739,13 @@ mod tests {
         let mut f = AdeckFetcher::with_clock(clock.clone());
         let mut net = FakeNet::default();
         let active = ids(&["al092026"]);
-        f.tick(0.0, &active, &mut net);
+        f.tick(&active, &mut net);
         // The deadline has technically elapsed by this tick...
         clock.advance(Duration::from_secs_f64(ATTEMPT_TIMEOUT_SECS));
         // ...but a real response is sitting ready in the same tick.
         net.respond(AL, NetPoll::Done(Ok(vec![7])));
         assert!(
-            !f.tick(60.0, &active, &mut net).show_toast,
+            !f.tick(&active, &mut net).show_toast,
             "a response that arrived must win over a deadline that also elapsed this tick"
         );
         assert_eq!(
@@ -731,53 +765,75 @@ mod tests {
         let mut f = AdeckFetcher::new();
         let mut net = FakeNet::default();
         let active = ids(&["al092026"]);
-        f.tick(0.0, &active, &mut net);
+        f.tick(&active, &mut net);
         net.evict(AL);
-        f.tick(1.0, &active, &mut net);
-        assert!(matches!(
-            f.status("al092026", 1.0),
-            SlotStatus::Retrying { .. }
-        ));
+        f.tick(&active, &mut net);
+        assert!(matches!(f.status("al092026"), SlotStatus::Retrying { .. }));
     }
 
     #[test]
     fn parse_failure_is_quiet_and_does_not_spend_the_toast_streak() {
-        let mut f = AdeckFetcher::new();
+        let clock = FakeClock::new();
+        let mut f = AdeckFetcher::with_clock(clock.clone());
         let mut net = FakeNet::default();
         let active = ids(&["al092026"]);
-        f.tick(0.0, &active, &mut net);
+        f.tick(&active, &mut net);
         net.respond(AL, NetPoll::Done(Ok(vec![0])));
-        f.tick(1.0, &active, &mut net);
+        clock.advance(Duration::from_secs(1));
+        f.tick(&active, &mut net);
         f.take_parse_job(1).unwrap();
         // A parse failure (bad gzip, or a valid-but-empty a-deck for a
         // brand-new invest) is not a transport problem and must stay quiet,
         // the same as a 404 (L4) — not toast as "Network error".
-        assert!(!f.parse_finished(1, false, 1.0).unwrap().show_toast);
-        assert!(matches!(
-            f.status("al092026", 1.0),
-            SlotStatus::Retrying { .. }
-        ));
+        assert!(!f.parse_finished(1, false).unwrap().show_toast);
+        assert!(matches!(f.status("al092026"), SlotStatus::Retrying { .. }));
 
-        // The quiet parse failure must not have "spent" this storm's toast
+        // The quiet parse failure must not have armed this storm's toast
         // streak: a later genuine network failure of the SAME storm still
         // toasts.
-        f.tick(31.0, &active, &mut net);
+        clock.advance(Duration::from_secs(31));
+        f.tick(&active, &mut net);
         net.respond(AL, NetPoll::Done(Err("http status: 500".into())));
-        assert!(f.tick(32.0, &active, &mut net).show_toast);
+        clock.advance(Duration::from_secs(1));
+        assert!(
+            f.tick(&active, &mut net).show_toast,
+            "a quiet parse failure must not suppress a later real failure's toast"
+        );
 
-        // ...and a success afterward resets the streak as usual.
-        f.tick(32.0 + BACKOFF_CAP_SECS.min(60.0), &active, &mut net);
+        // A success afterward resets the streak, so this storm's NEXT
+        // failure toasts again too — this must hold for the per-slot streak
+        // just as it held for the old fetcher-wide one (fix-round-1
+        // follow-up: this was claimed in a comment but never actually
+        // checked in the first version of this test).
+        clock.advance(Duration::from_secs(60));
+        f.tick(&active, &mut net);
+        net.respond(AL, NetPoll::Done(Ok(vec![0])));
+        clock.advance(Duration::from_secs(1));
+        f.tick(&active, &mut net);
+        f.take_parse_job(2).unwrap();
+        assert!(!f.parse_finished(2, true).unwrap().show_toast);
+
+        clock.advance(Duration::from_secs_f64(REFRESH_SECS + 1.0));
+        f.tick(&active, &mut net);
+        net.respond(AL, NetPoll::Done(Err("http status: 500".into())));
+        clock.advance(Duration::from_secs(1));
+        assert!(
+            f.tick(&active, &mut net).show_toast,
+            "a success resets the streak, so the storm's next failure toasts again"
+        );
     }
 
     #[test]
     fn one_storms_success_does_not_reset_another_storms_toast_streak() {
-        let mut f = AdeckFetcher::new();
+        let clock = FakeClock::new();
+        let mut f = AdeckFetcher::with_clock(clock.clone());
         let mut net = FakeNet::default();
         let both = ids(&["al092026", "ep182026"]);
-        f.tick(0.0, &both, &mut net);
+        f.tick(&both, &mut net);
         net.respond(AL, NetPoll::Done(Err("http status: 500".into())));
+        clock.advance(Duration::from_secs(1));
         assert!(
-            f.tick(1.0, &both, &mut net).show_toast,
+            f.tick(&both, &mut net).show_toast,
             "A's first failure toasts"
         );
 
@@ -785,29 +841,34 @@ mod tests {
         // clear it and let A's next failure toast again even though
         // nothing about A actually changed (review S7).
         net.respond(EP, NetPoll::Done(Ok(vec![1])));
-        f.tick(2.0, &both, &mut net);
+        clock.advance(Duration::from_secs(1));
+        f.tick(&both, &mut net);
         let (storm, _) = f.take_parse_job(1).unwrap();
         assert_eq!(storm, "ep182026");
-        assert!(!f.parse_finished(1, true, 2.0).unwrap().show_toast);
+        assert!(!f.parse_finished(1, true).unwrap().show_toast);
 
         // A retries (same ongoing failure streak) and fails again.
-        f.tick(31.0, &both, &mut net);
+        clock.advance(Duration::from_secs(30));
+        f.tick(&both, &mut net);
         net.respond(AL, NetPoll::Done(Err("http status: 500".into())));
+        clock.advance(Duration::from_secs(1));
         assert!(
-            !f.tick(32.0, &both, &mut net).show_toast,
+            !f.tick(&both, &mut net).show_toast,
             "A's own streak is still active; B's unrelated success must not re-arm it"
         );
     }
 
     #[test]
     fn another_storms_first_failure_still_toasts_during_an_unrelated_ongoing_failure() {
-        let mut f = AdeckFetcher::new();
+        let clock = FakeClock::new();
+        let mut f = AdeckFetcher::with_clock(clock.clone());
         let mut net = FakeNet::default();
         let both = ids(&["al092026", "ep182026"]);
-        f.tick(0.0, &both, &mut net);
+        f.tick(&both, &mut net);
         net.respond(AL, NetPoll::Done(Err("http status: 500".into())));
+        clock.advance(Duration::from_secs(1));
         assert!(
-            f.tick(1.0, &both, &mut net).show_toast,
+            f.tick(&both, &mut net).show_toast,
             "A's first failure toasts"
         );
 
@@ -816,8 +877,9 @@ mod tests {
         // "used up" the one shared toast (review S7): each storm's streak
         // must be independent.
         net.respond(EP, NetPoll::Done(Err("http status: 500".into())));
+        clock.advance(Duration::from_secs(1));
         assert!(
-            f.tick(2.0, &both, &mut net).show_toast,
+            f.tick(&both, &mut net).show_toast,
             "B's own first failure must toast even while A is still failing"
         );
     }
@@ -828,24 +890,24 @@ mod tests {
             BACKOFF_CAP_SECS < REFRESH_SECS,
             "a failing storm must not wait as long between checks as a healthy one"
         );
-        let mut f = AdeckFetcher::new();
+        let clock = FakeClock::new();
+        let mut f = AdeckFetcher::with_clock(clock.clone());
         let mut net = FakeNet::default();
         let active = ids(&["al092026"]);
-        let mut now = 0.0;
-        f.tick(now, &active, &mut net);
+        f.tick(&active, &mut net);
         // Fail enough times in a row to climb past where the old 900s cap
         // would have allowed, and confirm it's capped at BACKOFF_CAP_SECS.
         let mut last_retry_in_secs = 0;
         for _ in 0..6 {
             net.respond(AL, NetPoll::Done(Err("http status: 500".into())));
-            now += 0.1;
-            f.tick(now, &active, &mut net);
-            let SlotStatus::Retrying { in_secs } = f.status("al092026", now) else {
+            clock.advance(Duration::from_millis(100));
+            f.tick(&active, &mut net);
+            let SlotStatus::Retrying { in_secs } = f.status("al092026") else {
                 panic!("expected Retrying after a failure");
             };
             last_retry_in_secs = in_secs;
-            now += f64::from(in_secs) + 0.1;
-            f.tick(now, &active, &mut net);
+            clock.advance(Duration::from_secs(u64::from(in_secs)) + Duration::from_millis(100));
+            f.tick(&active, &mut net);
         }
         assert_eq!(last_retry_in_secs, BACKOFF_CAP_SECS as u32);
     }
@@ -855,16 +917,16 @@ mod tests {
         let mut f = AdeckFetcher::new();
         let mut net = FakeNet::default();
         let both = ids(&["al092026", "ep182026"]);
-        f.tick(0.0, &both, &mut net);
+        f.tick(&both, &mut net);
         net.respond(EP, NetPoll::Done(Ok(vec![9])));
-        f.tick(1.0, &both, &mut net);
+        f.tick(&both, &mut net);
         let (storm, _) = f.take_parse_job(5).unwrap();
         assert_eq!(storm, "ep182026");
-        f.tick(2.0, &[], &mut net);
+        f.tick(&[], &mut net);
         assert!(net.cancelled.contains(&AL.to_owned()));
         assert!(!f.owns_generation(5), "late parse result must be dropped");
-        assert_eq!(f.parse_finished(5, true, 3.0), None);
-        assert_eq!(f.status("al092026", 2.0), SlotStatus::Idle);
+        assert_eq!(f.parse_finished(5, true), None);
+        assert_eq!(f.status("al092026"), SlotStatus::Idle);
     }
 
     #[test]
@@ -872,11 +934,11 @@ mod tests {
         let mut f = AdeckFetcher::new();
         let mut net = FakeNet::default();
         let both = ids(&["al092026", "ep182026"]);
-        f.tick(0.0, &both, &mut net);
+        f.tick(&both, &mut net);
         net.respond(EP, NetPoll::Done(Ok(vec![4])));
-        f.tick(1.0, &both, &mut net);
+        f.tick(&both, &mut net);
         assert_eq!(f.take_parse_job(1), Some(("ep182026".to_owned(), vec![4])));
-        assert_eq!(f.status("al092026", 1.0), SlotStatus::Downloading);
+        assert_eq!(f.status("al092026"), SlotStatus::Downloading);
     }
 
     #[test]
@@ -884,11 +946,11 @@ mod tests {
         let mut f = AdeckFetcher::new();
         let mut net = FakeNet::default();
         let active = ids(&["al092026"]);
-        f.tick(0.0, &active, &mut net);
+        f.tick(&active, &mut net);
         f.disable(&mut net);
         assert_eq!(net.cancelled, [AL]);
         assert!(!f.is_active());
-        f.tick(5.0, &active, &mut net);
+        f.tick(&active, &mut net);
         assert_eq!(net.fired.len(), 2);
         assert!(net.ignored.is_empty());
     }
@@ -914,6 +976,25 @@ mod tests {
         assert_eq!(
             status_message(&SlotStatus::WaitingForGuidance { in_secs: 600 }),
             "Waiting for model guidance, checking again in 600 s"
+        );
+    }
+
+    #[test]
+    fn is_not_found_matches_ureqs_exact_status_format_only() {
+        assert!(is_not_found("http status: 404"));
+        assert!(!is_not_found("http status: 403"), "a different status");
+        assert!(!is_not_found("http status: 500"), "a server error");
+        assert!(
+            !is_not_found("fetching https://example.com/404/a.dat.gz: connection refused"),
+            "a bare substring match elsewhere in the error text must not count"
+        );
+        assert!(
+            !is_not_found("timed out after 60 s"),
+            "the scheduler's own synthetic timeout message"
+        );
+        assert!(
+            !is_not_found("request handle evicted"),
+            "the scheduler's own synthetic eviction message"
         );
     }
 }
