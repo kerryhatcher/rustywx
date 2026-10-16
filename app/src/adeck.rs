@@ -482,6 +482,27 @@ fn guidance_content_eq(a: &StormGuidance, b: &StormGuidance) -> bool {
     a == b
 }
 
+/// What `GuidanceStore::insert` actually did, so a caller can log a real
+/// cycle regression (S3) distinctly from the common, harmless case of an
+/// unchanged refetch (S9) — both leave `revision` unchanged, so a caller
+/// that only compared `revision()` before and after (as the original S3
+/// fix did) can no longer tell them apart (fix-round-1 follow-up).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InsertOutcome {
+    /// The stored cycle was newer (and plausible); the incoming guidance
+    /// was discarded entirely. Worth logging distinctly — a real cycle
+    /// regression (review S3).
+    RejectedOlder,
+    /// Same init, same content as what's stored (ignoring
+    /// `fetched_at_unix`). Only `fetched_at_unix` was updated; `revision`
+    /// did not bump. Routine — most refetches within a ~6 h cycle land
+    /// here (review S9).
+    Unchanged,
+    /// The entry was replaced and `revision` bumped: a brand-new storm, a
+    /// newer cycle, or same-or-newer content that genuinely differs.
+    Replaced,
+}
+
 /// Last good guidance per active storm. Survives fetch failures (offline
 /// keeps the previous tracks on screen). `revision` changes on every
 /// mutation so the projection cache (`adeck_style::project_tracks`) knows
@@ -494,46 +515,52 @@ pub struct GuidanceStore {
 
 impl GuidanceStore {
     /// Replace the stored guidance for `guidance.storm_id`, with two guards
-    /// ahead of the normal replace-and-bump, applied in this order:
+    /// ahead of the normal replace-and-bump, applied in this order. Returns
+    /// which of the three happened (`InsertOutcome`), so a caller can log a
+    /// real cycle regression separately from a routine unchanged refetch —
+    /// both leave `revision` unchanged, so "did `revision` change" alone no
+    /// longer distinguishes them (fix-round-1 follow-up).
     ///
-    /// 1. **Cycle regression (review S3/S8).** If a lagging mirror or cache
-    ///    serves a cycle older than the one already stored, the insert is a
-    ///    no-op: no replace, no revision bump, no `fetched_at_unix` update.
-    ///    This guard only fires when the *stored* cycle is itself plausible
-    ///    (not implausibly future-dated or calendar-invalid per
-    ///    `is_plausible_cycle`), so a bogus stored `init` can't entrench
-    ///    itself forever by rejecting every later legitimate cycle for
-    ///    looking "older."
-    /// 2. **Unchanged content (review S9).** Otherwise, if the incoming
-    ///    guidance is byte-for-byte identical to what's stored — same
-    ///    `init`, same tracks, same intensity, same `has_official` — except
-    ///    for `fetched_at_unix` (which always differs between fetches),
-    ///    only `fetched_at_unix` is updated on the stored entry. The
-    ///    revision does NOT bump, so the km-projection cache (keyed on
-    ///    revision) isn't wastefully rebuilt for a 15-min refetch that
-    ///    brought back exactly what was already on screen; a-decks only
-    ///    change meaningfully every ~6 h. The "checked N min ago" line
-    ///    still advances because `fetched_at_unix` does.
-    /// 3. **Normal replace.** Anything else — a brand-new storm, a newer
-    ///    cycle, or a same-or-newer cycle whose content genuinely differs
-    ///    (e.g. a cycle still filling in as more models arrive, or recovery
-    ///    from a previously stored implausible cycle) — replaces the entry
-    ///    and bumps the revision as before.
-    pub fn insert(&mut self, guidance: StormGuidance, now_unix: i64) {
+    /// 1. **Cycle regression (review S3/S8) → `RejectedOlder`.** If a
+    ///    lagging mirror or cache serves a cycle older than the one already
+    ///    stored, the insert is a no-op: no replace, no revision bump, no
+    ///    `fetched_at_unix` update. This guard only fires when the
+    ///    *stored* cycle is itself plausible (not implausibly future-dated
+    ///    or calendar-invalid per `is_plausible_cycle`), so a bogus stored
+    ///    `init` can't entrench itself forever by rejecting every later
+    ///    legitimate cycle for looking "older."
+    /// 2. **Unchanged content (review S9) → `Unchanged`.** Otherwise, if
+    ///    the incoming guidance is byte-for-byte identical to what's
+    ///    stored — same `init`, same tracks, same intensity, same
+    ///    `has_official` — except for `fetched_at_unix` (which always
+    ///    differs between fetches), only `fetched_at_unix` is updated on
+    ///    the stored entry. The revision does NOT bump, so the
+    ///    km-projection cache (keyed on revision) isn't wastefully rebuilt
+    ///    for a 15-min refetch that brought back exactly what was already
+    ///    on screen; a-decks only change meaningfully every ~6 h. The
+    ///    "checked N min ago" line still advances because `fetched_at_unix`
+    ///    does.
+    /// 3. **Normal replace → `Replaced`.** Anything else — a brand-new
+    ///    storm, a newer cycle, or a same-or-newer cycle whose content
+    ///    genuinely differs (e.g. a cycle still filling in as more models
+    ///    arrive, or recovery from a previously stored implausible cycle)
+    ///    — replaces the entry and bumps the revision as before.
+    pub fn insert(&mut self, guidance: StormGuidance, now_unix: i64) -> InsertOutcome {
         if let Some(existing) = self.by_storm.get(&guidance.storm_id) {
             if is_plausible_cycle(existing.init, now_unix) && guidance.init < existing.init {
-                return;
+                return InsertOutcome::RejectedOlder;
             }
             if guidance_content_eq(&guidance, existing) {
                 let fetched_at_unix = guidance.fetched_at_unix;
                 if let Some(stored) = self.by_storm.get_mut(&guidance.storm_id) {
                     stored.fetched_at_unix = fetched_at_unix;
                 }
-                return;
+                return InsertOutcome::Unchanged;
             }
         }
         self.by_storm.insert(guidance.storm_id.clone(), guidance);
         self.revision += 1;
+        InsertOutcome::Replaced
     }
 
     pub fn get(&self, storm_id: &str) -> Option<&StormGuidance> {
@@ -1253,7 +1280,8 @@ mod tests {
         let r1 = store.revision();
         // A lagging mirror serves the previous cycle: must not replace, and
         // must not reset the freshness label by bumping fetched_at_unix.
-        store.insert(guidance_with_init("al092026", 2026100906, 20), TEST_NOW);
+        let outcome = store.insert(guidance_with_init("al092026", 2026100906, 20), TEST_NOW);
+        assert_eq!(outcome, InsertOutcome::RejectedOlder);
         assert_eq!(store.revision(), r1, "older init is a no-op");
         let kept = store.get("al092026").unwrap();
         assert_eq!(kept.init, 2026100912, "newer cycle is kept");
@@ -1265,7 +1293,8 @@ mod tests {
         let mut store = GuidanceStore::default();
         store.insert(guidance_with_init("al092026", 2026100912, 10), TEST_NOW);
         let r1 = store.revision();
-        store.insert(guidance_with_init("al092026", 2026100912, 20), TEST_NOW);
+        let outcome = store.insert(guidance_with_init("al092026", 2026100912, 20), TEST_NOW);
+        assert_eq!(outcome, InsertOutcome::Unchanged);
         assert_eq!(
             store.revision(),
             r1,
@@ -1285,7 +1314,8 @@ mod tests {
         let r1 = store.revision();
         let mut filled_in = guidance_with_init("al092026", 2026100912, 20);
         filled_in.tracks.push(visible_track());
-        store.insert(filled_in, TEST_NOW);
+        let outcome = store.insert(filled_in, TEST_NOW);
+        assert_eq!(outcome, InsertOutcome::Replaced);
         assert!(
             store.revision() > r1,
             "same cycle but different content still replaces and bumps"
@@ -1293,6 +1323,36 @@ mod tests {
         let stored = store.get("al092026").unwrap();
         assert_eq!(stored.fetched_at_unix, 20);
         assert_eq!(stored.tracks.len(), 1);
+    }
+
+    #[test]
+    fn insert_outcome_distinguishes_rejected_unchanged_and_replaced() {
+        // Fix-round-1 follow-up: a caller that only compared `revision()`
+        // before/after could no longer tell "real cycle regression" (S3)
+        // apart from "routine unchanged refetch" (S9), since both leave
+        // revision unchanged. `InsertOutcome` must let a caller distinguish
+        // all three cases directly from the return value, not by inference.
+        let mut store = GuidanceStore::default();
+        // A brand-new storm always replaces.
+        assert_eq!(
+            store.insert(guidance_with_init("al092026", 2026100912, 10), TEST_NOW),
+            InsertOutcome::Replaced
+        );
+        // Same init, identical content (only fetched_at_unix differs).
+        assert_eq!(
+            store.insert(guidance_with_init("al092026", 2026100912, 20), TEST_NOW),
+            InsertOutcome::Unchanged
+        );
+        // An older cycle than what's stored.
+        assert_eq!(
+            store.insert(guidance_with_init("al092026", 2026100906, 30), TEST_NOW),
+            InsertOutcome::RejectedOlder
+        );
+        // A newer cycle replaces again.
+        assert_eq!(
+            store.insert(guidance_with_init("al092026", 2026100918, 40), TEST_NOW),
+            InsertOutcome::Replaced
+        );
     }
 
     #[test]

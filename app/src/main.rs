@@ -1225,24 +1225,42 @@ async fn main() {
                         guidance.tracks.len(),
                         guidance.intensity.len(),
                     );
-                    let revision_before = state.model_guidance.revision();
-                    state.model_guidance.insert(guidance, fetched_at_unix);
-                    if state.model_guidance.revision() == revision_before {
-                        // Regression guard rejected it (review S3): an
-                        // older/implausible cycle than what's already
-                        // stored. Log distinctly so this never reads as
-                        // "applied" in startup logs.
-                        eprintln!(
-                            "startup phase=adeck_cycle_regression_rejected generation={} storm={storm_id} cycle={init} elapsed_ms={}",
-                            parsed.generation,
-                            parsed.elapsed.as_millis()
-                        );
-                    } else {
-                        eprintln!(
-                            "startup phase=adeck_parse_applied generation={} storm={storm_id} cycle={init} tracks={n_tracks} intensity={n_intensity} elapsed_ms={}",
-                            parsed.generation,
-                            parsed.elapsed.as_millis()
-                        );
+                    // `revision()` alone can no longer distinguish a real
+                    // cycle regression (S3) from a routine unchanged
+                    // refetch (S9) — both leave it unchanged — so the
+                    // outcome is read directly off `insert`'s return value
+                    // instead (fix-round-1 follow-up).
+                    match state.model_guidance.insert(guidance, fetched_at_unix) {
+                        rustywx::adeck::InsertOutcome::RejectedOlder => {
+                            // Regression guard rejected it (review S3): an
+                            // older/implausible cycle than what's already
+                            // stored. Log distinctly so this never reads as
+                            // "applied" in startup logs.
+                            eprintln!(
+                                "startup phase=adeck_cycle_regression_rejected generation={} storm={storm_id} cycle={init} elapsed_ms={}",
+                                parsed.generation,
+                                parsed.elapsed.as_millis()
+                            );
+                        }
+                        rustywx::adeck::InsertOutcome::Unchanged => {
+                            // Routine refetch with byte-identical content
+                            // (review S9): fetched_at_unix was updated, but
+                            // nothing else changed, so this is not a parse
+                            // failure or a regression — just log it as its
+                            // own distinct, expected phase.
+                            eprintln!(
+                                "startup phase=adeck_refetch_unchanged generation={} storm={storm_id} cycle={init} elapsed_ms={}",
+                                parsed.generation,
+                                parsed.elapsed.as_millis()
+                            );
+                        }
+                        rustywx::adeck::InsertOutcome::Replaced => {
+                            eprintln!(
+                                "startup phase=adeck_parse_applied generation={} storm={storm_id} cycle={init} tracks={n_tracks} intensity={n_intensity} elapsed_ms={}",
+                                parsed.generation,
+                                parsed.elapsed.as_millis()
+                            );
+                        }
                     }
                 }
                 Ok(_) => eprintln!(
