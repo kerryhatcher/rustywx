@@ -2862,6 +2862,28 @@ async fn main() {
                     });
                 }
 
+                // ── Spaghetti-models legend (bottom-left, above the bar) ──
+                if state.view_mode == ViewMode::Radar
+                    && state.show_nhc_data
+                    && state.settings.show_model_tracks
+                    && let Some(oldest) = state.model_guidance.oldest()
+                {
+                    let now_unix = chrono::Utc::now().timestamp();
+                    // 46 px bottom status bar + 8 px gap.
+                    let y = screen_height() - 54.0 - rustywx::widgets::model_legend::HEIGHT;
+                    rustywx::widgets::model_legend::draw(
+                        ui,
+                        8.0,
+                        y,
+                        &format!("{} cycle", rustywx::adeck_style::format_cycle(oldest.init)),
+                        &format!(
+                            "updated {}",
+                            rustywx::adeck_style::format_age(oldest.fetched_at_unix, now_unix)
+                        ),
+                        rustywx::adeck_style::is_stale(oldest.fetched_at_unix, now_unix),
+                    );
+                }
+
                 // ── NHC product modal (Stage 5) ────────────────────────────
                 if !matches!(state.nhc_modal, NhcModal::None) {
                     let modal_w = 640.0;
