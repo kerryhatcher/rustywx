@@ -3,6 +3,7 @@
 //! Stage 1: synthetic scope with pan/zoom and keyboard controls.
 
 pub mod adeck;
+pub mod adeck_fetch;
 pub mod adeck_style;
 pub mod alerts;
 pub mod background_work;
