@@ -751,6 +751,8 @@ async fn main() {
         nhc_modal_scroll: 0.0,
         alert_modal: None,
         alert_modal_scroll: 0.0,
+        adeck_fetch: rustywx::adeck_fetch::AdeckFetcher::new(),
+        model_guidance: rustywx::adeck::GuidanceStore::default(),
         last_mouse_pos: None,
         start_time: get_time(),
         nhc_anim_start: 0.0,
@@ -796,6 +798,7 @@ async fn main() {
     let mut nhc_image_generation = 0_u64;
     let mut nhc_image_submit = VecDeque::new();
     let mut nhc_image_results = OrderedImageResults::new(nhc_image_generation);
+    let mut ply_net = rustywx::adeck_fetch::PlyNet;
     let mut logged_initial_radar_response = false;
 
     // Boot-time bookkeeping for applying loaded settings exactly once, and
@@ -1094,10 +1097,41 @@ async fn main() {
                         metadata.gis_ww,
                     );
                 }
+                Ok(ParsedData::ADeck(mut guidance))
+                    if state.adeck_fetch.owns_generation(parsed.generation) =>
+                {
+                    let _ = state
+                        .adeck_fetch
+                        .parse_finished(parsed.generation, true, now);
+                    guidance.fetched_at_unix = chrono::Utc::now().timestamp();
+                    eprintln!(
+                        "startup phase=adeck_parse_applied generation={} storm={} cycle={} tracks={} intensity={} elapsed_ms={}",
+                        parsed.generation,
+                        guidance.storm_id,
+                        guidance.init,
+                        guidance.tracks.len(),
+                        guidance.intensity.len(),
+                        parsed.elapsed.as_millis()
+                    );
+                    state.model_guidance.insert(guidance);
+                }
                 Ok(_) => eprintln!(
                     "startup phase=parse_drop generation={} stale=true result_age_ms={age_ms}",
                     parsed.generation
                 ),
+                Err(error) if state.adeck_fetch.owns_generation(parsed.generation) => {
+                    eprintln!(
+                        "Warning: a-deck parse failed generation={}: {error}",
+                        parsed.generation
+                    );
+                    if state
+                        .adeck_fetch
+                        .parse_finished(parsed.generation, false, now)
+                        .is_some_and(|o| o.show_toast)
+                    {
+                        show_toast(&mut state, now, toast_widget::ErrorKind::Network);
+                    }
+                }
                 Err(error) => {
                     let current = borders_parse_generation == Some(parsed.generation)
                         || alerts_parse_generation == Some(parsed.generation)
@@ -1369,6 +1403,55 @@ async fn main() {
                     decoded.generation, decoded.sequence
                 ),
             }
+        }
+
+        // ── Spaghetti models: per-storm a-deck fetch (opt-in) ─────────
+        // Separate from the NHC state machine, so a hung a-deck can't stall
+        // other tropical data. Cancel-and-retry, deadline, and backoff live in
+        // AdeckFetcher; gunzip+parse run on the background worker.
+        if state.settings.show_model_tracks && state.show_nhc_data {
+            let active: Vec<String> = state
+                .nhc_bundle
+                .as_ref()
+                .map(|b| b.metas.iter().map(|m| m.id.clone()).collect())
+                .unwrap_or_default();
+            state.model_guidance.retain_active(&active);
+            if state
+                .adeck_fetch
+                .tick(now, &active, &mut ply_net)
+                .show_toast
+            {
+                show_toast(&mut state, now, toast_widget::ErrorKind::Network);
+            }
+            while background.parse_queue_has_capacity() {
+                let generation = next_generation;
+                let Some((storm_id, gz)) = state.adeck_fetch.take_parse_job(generation) else {
+                    break;
+                };
+                next_generation += 1;
+                let payload_bytes = gz.len();
+                let request = ParseRequest {
+                    generation,
+                    payload: ParsePayload::ADeck {
+                        storm_id: storm_id.clone(),
+                        gz,
+                    },
+                    submitted_at: std::time::Instant::now(),
+                };
+                if background.submit_parse(request).is_ok() {
+                    eprintln!(
+                        "startup phase=adeck_response generation={generation} storm={storm_id} payload_bytes={payload_bytes}"
+                    );
+                } else if state
+                    .adeck_fetch
+                    .parse_finished(generation, false, now)
+                    .is_some_and(|o| o.show_toast)
+                {
+                    show_toast(&mut state, now, toast_widget::ErrorKind::Network);
+                }
+            }
+        } else if state.adeck_fetch.is_active() {
+            state.adeck_fetch.disable(&mut ply_net);
         }
 
         // ── Poll the location resolver (Detect in progress) ───────

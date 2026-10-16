@@ -188,6 +188,12 @@ pub struct AppState {
     /// Scroll offset (pixels) for alert modal text content.
     pub alert_modal_scroll: f32,
 
+    // ── Spaghetti models (ATCF a-deck guidance, opt-in) ───────────
+    /// Per-storm a-deck download scheduler (stable id + cancel, deadline, backoff).
+    pub adeck_fetch: crate::adeck_fetch::AdeckFetcher,
+    /// Last good model guidance per active storm.
+    pub model_guidance: crate::adeck::GuidanceStore,
+
     /// Last mouse position for manual pan delta calculation.
     pub last_mouse_pos: Option<(f32, f32)>,
 
