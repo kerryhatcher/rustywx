@@ -375,6 +375,55 @@ pub fn guidance_from_gzip(storm_id: &str, gz: &[u8]) -> Result<StormGuidance> {
     Ok(build_guidance(storm_id, &records, init))
 }
 
+/// Last good guidance per active storm. Survives fetch failures (offline
+/// keeps the previous tracks on screen). `revision` changes on every
+/// mutation so the projection cache (`adeck_style::project_tracks`) knows
+/// when to rebuild.
+#[derive(Default, Debug)]
+pub struct GuidanceStore {
+    by_storm: BTreeMap<String, StormGuidance>,
+    revision: u64,
+}
+
+impl GuidanceStore {
+    pub fn insert(&mut self, guidance: StormGuidance) {
+        self.by_storm.insert(guidance.storm_id.clone(), guidance);
+        self.revision += 1;
+    }
+
+    pub fn get(&self, storm_id: &str) -> Option<&StormGuidance> {
+        self.by_storm.get(&storm_id.to_ascii_lowercase())
+    }
+
+    /// Forget storms that are no longer in `CurrentStorms.json`.
+    pub fn retain_active(&mut self, active: &[String]) {
+        let before = self.by_storm.len();
+        self.by_storm
+            .retain(|id, _| active.iter().any(|a| a.eq_ignore_ascii_case(id)));
+        if self.by_storm.len() != before {
+            self.revision += 1;
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &StormGuidance> {
+        self.by_storm.values()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_storm.is_empty()
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// The least recently fetched storm. The legend shows its age, so the
+    /// legend never claims fresher data than the stalest track on screen.
+    pub fn oldest(&self) -> Option<&StormGuidance> {
+        self.by_storm.values().min_by_key(|g| g.fetched_at_unix)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -700,5 +749,52 @@ mod tests {
     fn guidance_from_gzip_rejects_empty_file() {
         let err = guidance_from_gzip("al092026", &gzip(b"")).unwrap_err();
         assert!(format!("{err:#}").contains("no parseable rows"), "{err:#}");
+    }
+
+    fn guidance(id: &str, fetched_at_unix: i64) -> StormGuidance {
+        StormGuidance {
+            storm_id: id.to_string(),
+            init: 2026100912,
+            has_official: true,
+            tracks: Vec::new(),
+            intensity: Vec::new(),
+            fetched_at_unix,
+        }
+    }
+
+    #[test]
+    fn store_insert_replaces_and_bumps_revision() {
+        let mut store = GuidanceStore::default();
+        assert!(store.is_empty());
+        store.insert(guidance("al092026", 10));
+        let r1 = store.revision();
+        store.insert(guidance("al092026", 20));
+        assert!(store.revision() > r1);
+        assert_eq!(store.iter().count(), 1);
+        assert_eq!(store.get("AL092026").unwrap().fetched_at_unix, 20);
+    }
+
+    #[test]
+    fn retain_active_drops_missing_storms() {
+        let mut store = GuidanceStore::default();
+        store.insert(guidance("al092026", 10));
+        store.insert(guidance("ep182026", 10));
+        let r = store.revision();
+        store.retain_active(&["AL092026".to_string()]);
+        assert!(store.get("ep182026").is_none());
+        assert!(store.get("al092026").is_some());
+        assert!(store.revision() > r);
+        let r = store.revision();
+        store.retain_active(&["al092026".to_string()]);
+        assert_eq!(store.revision(), r, "no change, no revision bump");
+    }
+
+    #[test]
+    fn oldest_is_least_recently_fetched() {
+        let mut store = GuidanceStore::default();
+        assert!(store.oldest().is_none());
+        store.insert(guidance("al092026", 50));
+        store.insert(guidance("ep182026", 30));
+        assert_eq!(store.oldest().unwrap().storm_id, "ep182026");
     }
 }
