@@ -157,6 +157,92 @@ pub fn gunzip_limited(gz: &[u8], max_out: u64) -> Result<String> {
     Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
+/// Model family, used for draw order and line style (track colour is by wind).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ModelGroup {
+    /// NHC official forecast (OFCL and its interpolated twins).
+    Official,
+    /// CARQ/WRNG past positions and the current fix.
+    Observed,
+    Consensus,
+    Hurricane,
+    Global,
+    Ensemble,
+    Ai,
+    Statistical,
+    Baseline,
+    Trajectory,
+    /// GEFS members AP01..AP30.
+    EnsembleMember,
+    /// Late (non-interpolated) runs that duplicate their `I` twins.
+    Late,
+    Other,
+}
+
+/// How one tech id is used by the overlay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TechInfo {
+    pub group: ModelGroup,
+    /// Has a plottable track.
+    pub track: bool,
+    /// Drawn without the (follow-up) "more models" toggle.
+    pub default_visible: bool,
+    /// Feeds the intensity chart.
+    pub intensity: bool,
+}
+
+const fn info(group: ModelGroup, track: bool, default_visible: bool, intensity: bool) -> TechInfo {
+    TechInfo {
+        group,
+        track,
+        default_visible,
+        intensity,
+    }
+}
+
+/// Classify an ATCF tech id (upper-case). `None` means skip entirely
+/// (wind-radii and probability products). Catalogue and defaults:
+/// `docs/research/spaghetti-models.md` section 3.
+pub fn classify_tech(tech: &str) -> Option<TechInfo> {
+    use ModelGroup::*;
+    let is_gefs_member = tech.len() == 4
+        && tech.starts_with("AP")
+        && tech
+            .get(2..4)
+            .is_some_and(|d| d.bytes().all(|b| b.is_ascii_digit()));
+    if is_gefs_member {
+        return Some(info(EnsembleMember, true, false, false));
+    }
+    Some(match tech {
+        "OFCL" => info(Official, true, true, true),
+        "OFCI" | "OFC2" => info(Official, true, false, false),
+        "CARQ" => info(Observed, true, true, false),
+        "WRNG" => info(Observed, true, false, false),
+        "TVCN" => info(Consensus, true, true, false),
+        "HCCA" => info(Consensus, true, true, true),
+        "RYOC" => info(Consensus, true, false, true),
+        "IVCN" | "NNIC" => info(Consensus, false, false, true),
+        "NNIB" => info(Consensus, false, false, false),
+        "HWFI" | "HFAI" | "HFBI" | "HMNI" | "CTCI" => info(Hurricane, true, true, true),
+        "HWF2" => info(Hurricane, true, false, false),
+        "AVNI" => info(Global, true, true, true),
+        "NVG2" | "CMC2" | "UKX2" => info(Global, true, true, false),
+        "NVGI" | "CMCI" | "UKXI" => info(Global, true, false, false),
+        "AEMI" | "CEM2" => info(Ensemble, true, true, false),
+        "CEMI" => info(Ensemble, true, false, false),
+        "GDMI" => info(Ai, true, true, false),
+        "SHIP" | "DSHP" | "LGEM" => info(Statistical, false, false, true),
+        "OCD5" | "BCD5" | "SHF5" => info(Baseline, false, false, false),
+        "TCLP" | "CLP5" | "XTRP" => info(Baseline, true, false, false),
+        "TABS" | "TABM" | "TABD" => info(Trajectory, true, false, false),
+        "AVNO" | "HWRF" | "CTCX" | "HMON" | "HFSA" | "HFSB" | "NVGM" | "AEMN" | "CEMN" | "GDMN" => {
+            info(Late, true, false, false)
+        }
+        "RVCN" | "DRCL" | "RI25" => return None,
+        _ => info(Other, true, false, false),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,5 +398,67 @@ mod tests {
         big.resize(MAX_GZIP_BYTES + 1, 0);
         let err = gunzip_limited(&big, MAX_UNCOMPRESSED_BYTES).unwrap_err();
         assert!(format!("{err:#}").contains("cap"), "{err:#}");
+    }
+
+    /// The research "on by default" set plus OFCL and CARQ (always on).
+    const DEFAULT_TRACKS: [&str; 16] = [
+        "OFCL", "CARQ", "AVNI", "HWFI", "HFAI", "HFBI", "HMNI", "CTCI", "NVG2", "CMC2", "UKX2",
+        "AEMI", "CEM2", "GDMI", "TVCN", "HCCA",
+    ];
+
+    #[test]
+    fn default_track_set_matches_research() {
+        for tech in DEFAULT_TRACKS {
+            let info = classify_tech(tech).unwrap_or_else(|| panic!("{tech} must be known"));
+            assert!(
+                info.track && info.default_visible,
+                "{tech} should be a default track"
+            );
+        }
+    }
+
+    #[test]
+    fn extra_models_are_tracks_but_hidden_by_default() {
+        for tech in [
+            "TABS", "TABM", "TABD", "XTRP", "CLP5", "TCLP", "AP01", "AP30", "OFCI", "AVNO", "HWRF",
+            "ZZZZ",
+        ] {
+            let info = classify_tech(tech).unwrap();
+            assert!(info.track, "{tech} is a track");
+            assert!(!info.default_visible, "{tech} hidden by default");
+        }
+        assert_eq!(classify_tech("ZZZZ").unwrap().group, ModelGroup::Other);
+        assert_eq!(
+            classify_tech("AP17").unwrap().group,
+            ModelGroup::EnsembleMember
+        );
+    }
+
+    #[test]
+    fn intensity_only_techs_never_draw_tracks() {
+        for tech in ["IVCN", "NNIC", "SHIP", "DSHP", "LGEM"] {
+            let info = classify_tech(tech).unwrap();
+            assert!(!info.track, "{tech} has no usable track");
+            assert!(info.intensity, "{tech} feeds the intensity chart");
+        }
+    }
+
+    #[test]
+    fn radii_and_probability_products_are_skipped() {
+        for tech in ["RVCN", "DRCL", "RI25"] {
+            assert_eq!(classify_tech(tech), None);
+        }
+    }
+
+    #[test]
+    fn default_visible_implies_track() {
+        for tech in DEFAULT_TRACKS
+            .iter()
+            .chain(["IVCN", "SHIP", "TABS", "AP01", "ZZZZ"].iter())
+        {
+            if let Some(info) = classify_tech(tech) {
+                assert!(!info.default_visible || info.track, "{tech}");
+            }
+        }
     }
 }
