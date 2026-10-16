@@ -1605,12 +1605,23 @@ pub fn draw_scope_to_texture(
 
     // ── NHC overlays (Stage 5) + model tracks (spaghetti) ───────
     if let Some((bundle, overlays)) = nhc {
-        // Models first so the official cone/track sit on top. `bundle` is
-        // passed through so a storm with a live GIS advisory track can have
-        // its a-deck OFCL track suppressed (review S4 "two official
-        // tracks").
+        // Models first so the official cone/track sit on top. `bundle` and
+        // `overlays.show_track` are passed through so a storm with a live,
+        // currently-drawn GIS advisory track can have its a-deck OFCL track
+        // suppressed (review S4 "two official tracks") — the toggle and
+        // `StormGis::track` emptiness are both checked by
+        // `adeck_style::gis_track_shown_for` so suppression never fires for
+        // a track that isn't actually being drawn (fix-round Important 2).
         if let Some(tracks) = model_tracks {
-            draw_model_tracks(tracks, bundle, center_x, center_y, px_per_km, now_unix);
+            draw_model_tracks(
+                tracks,
+                bundle,
+                overlays.show_track,
+                center_x,
+                center_y,
+                px_per_km,
+                now_unix,
+            );
         }
         draw_nhc_overlays(bundle, overlays, site, center_x, center_y, px_per_km);
     }
@@ -2050,16 +2061,20 @@ fn draw_nhc_overlays(
 /// nothing bumps the guidance store's revision and the caller's projection
 /// cache never rebuilds (review S1 fix-round critical fix).
 ///
-/// `bundle` is used only to suppress a storm's OFCL track when that same
-/// storm already has an NHC advisory GIS track/cone shown (review S4 "two
-/// official tracks") — see `adeck_style::gis_track_shown_for`. Doing this
-/// here, at draw time, means the decision is always as fresh as `bundle`
-/// itself: it doesn't wait on the `(site_index, revision)` projection cache
-/// (`main.rs`), which only rebuilds when the a-deck guidance store changes,
-/// not when the independently-polled NHC bundle does.
+/// `bundle` and `show_gis_track` are used only to suppress a storm's OFCL
+/// track when that same storm already has a live, currently-drawn NHC
+/// advisory GIS track (review S4 "two official tracks") — see
+/// `adeck_style::gis_track_shown_for`, which also checks `StormGis::track`
+/// emptiness so this can't suppress OFCL for a track that isn't actually on
+/// screen (fix-round Important 2). Doing this here, at draw time, means the
+/// decision is always as fresh as `bundle` itself: it doesn't wait on the
+/// `(site_index, revision)` projection cache (`main.rs`), which only
+/// rebuilds when the a-deck guidance store changes, not when the
+/// independently-polled NHC bundle does.
 fn draw_model_tracks(
     tracks: &[ProjectedTrack],
     bundle: &NhcBundle,
+    show_gis_track: bool,
     center_x: f32,
     center_y: f32,
     px_per_km: f32,
@@ -2075,7 +2090,12 @@ fn draw_model_tracks(
 
     for track in tracks {
         if track.group == crate::adeck::ModelGroup::Official
-            && adeck_style::gis_track_shown_for(&track.storm_id, &bundle.metas, &bundle.gis_storms)
+            && adeck_style::gis_track_shown_for(
+                &track.storm_id,
+                &bundle.metas,
+                &bundle.gis_storms,
+                show_gis_track,
+            )
         {
             continue; // the advisory GIS track already shows this storm's official forecast
         }
