@@ -3,6 +3,7 @@
 //! drawing). Record format: `docs/research/spaghetti-models.md` section 2.
 
 use anyhow::{Result, anyhow, bail};
+use std::collections::BTreeMap;
 
 /// One a-deck row, reduced to the columns the overlay needs.
 #[derive(Clone, Debug, PartialEq)]
@@ -243,6 +244,137 @@ pub fn classify_tech(tech: &str) -> Option<TechInfo> {
     })
 }
 
+/// One plotted forecast position.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrackPoint {
+    pub tau_h: i32,
+    pub lat: f64,
+    pub lon: f64,
+    pub vmax_kt: Option<u32>,
+}
+
+/// One model's track for the selected cycle, sorted by tau, deduplicated.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AidTrack {
+    pub tech: String,
+    pub group: ModelGroup,
+    pub default_visible: bool,
+    pub points: Vec<TrackPoint>,
+}
+
+/// One model's wind-vs-forecast-hour series for the intensity chart.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IntensitySeries {
+    pub tech: String,
+    pub official: bool,
+    /// (tau_h, vmax_kt), tau >= 0, sorted by tau.
+    pub points: Vec<(i32, u32)>,
+}
+
+/// Everything the overlay shows for one storm.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StormGuidance {
+    /// Lower-case CurrentStorms id, e.g. `"al092026"`.
+    pub storm_id: String,
+    /// Selected cycle, YYYYMMDDHH.
+    pub init: u32,
+    /// Whether the selected cycle has an OFCL forecast (invests often don't).
+    pub has_official: bool,
+    /// Tracks with at least two positioned points.
+    pub tracks: Vec<AidTrack>,
+    /// Intensity series with at least two points.
+    pub intensity: Vec<IntensitySeries>,
+    /// Wall-clock time (unix seconds) the UI accepted this parse. Set by
+    /// `main.rs`, 0 until then. Drives the "updated N min ago" label.
+    pub fetched_at_unix: i64,
+}
+
+/// The cycle to show: the newest init with an OFCL forecast (the newest cycle
+/// fills in over several hours, so it may have models but no OFCL yet), else
+/// the newest init of any row (invests).
+pub fn latest_cycle(records: &[ADeckRecord]) -> Option<u32> {
+    records
+        .iter()
+        .filter(|r| r.tech == "OFCL")
+        .map(|r| r.init)
+        .max()
+        .or_else(|| records.iter().map(|r| r.init).max())
+}
+
+/// Build the per-storm guidance for one cycle: dedupe the repeated
+/// wind-radii rows on (tech, tau), keep the first, split positioned tracks
+/// from intensity-only series, and drop anything with fewer than two points.
+pub fn build_guidance(storm_id: &str, records: &[ADeckRecord], init: u32) -> StormGuidance {
+    let mut by_tech: BTreeMap<&str, BTreeMap<i32, &ADeckRecord>> = BTreeMap::new();
+    for r in records.iter().filter(|r| r.init == init) {
+        by_tech
+            .entry(r.tech.as_str())
+            .or_default()
+            .entry(r.tau_h)
+            .or_insert(r);
+    }
+    let mut tracks = Vec::new();
+    let mut intensity = Vec::new();
+    for (tech, rows) in &by_tech {
+        let Some(info) = classify_tech(tech) else {
+            continue;
+        };
+        if info.track {
+            let points: Vec<TrackPoint> = rows
+                .values()
+                .filter(|r| info.group == ModelGroup::Observed || r.tau_h >= 0)
+                .filter_map(|r| {
+                    r.position.map(|(lat, lon)| TrackPoint {
+                        tau_h: r.tau_h,
+                        lat,
+                        lon,
+                        vmax_kt: r.vmax_kt,
+                    })
+                })
+                .collect();
+            if points.len() >= 2 {
+                tracks.push(AidTrack {
+                    tech: (*tech).to_string(),
+                    group: info.group,
+                    default_visible: info.default_visible,
+                    points,
+                });
+            }
+        }
+        if info.intensity {
+            let points: Vec<(i32, u32)> = rows
+                .values()
+                .filter(|r| r.tau_h >= 0)
+                .filter_map(|r| r.vmax_kt.map(|v| (r.tau_h, v)))
+                .collect();
+            if points.len() >= 2 {
+                intensity.push(IntensitySeries {
+                    tech: (*tech).to_string(),
+                    official: info.group == ModelGroup::Official,
+                    points,
+                });
+            }
+        }
+    }
+    StormGuidance {
+        storm_id: storm_id.to_ascii_lowercase(),
+        init,
+        has_official: by_tech.contains_key("OFCL"),
+        tracks,
+        intensity,
+        fetched_at_unix: 0,
+    }
+}
+
+/// Full background-worker pipeline: inflate, parse, pick a cycle, build.
+pub fn guidance_from_gzip(storm_id: &str, gz: &[u8]) -> Result<StormGuidance> {
+    let text = gunzip_limited(gz, MAX_UNCOMPRESSED_BYTES)?;
+    let records = parse_adeck(&text);
+    let init = latest_cycle(&records)
+        .ok_or_else(|| anyhow!("a-deck for {storm_id} has no parseable rows"))?;
+    Ok(build_guidance(storm_id, &records, init))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,5 +592,113 @@ mod tests {
                 assert!(!info.default_visible || info.track, "{tech}");
             }
         }
+    }
+
+    fn fixture_guidance() -> StormGuidance {
+        build_guidance("AL092026", &parse_adeck(FIXTURE), 2026100912)
+    }
+
+    #[test]
+    fn latest_cycle_is_newest_with_official_forecast() {
+        assert_eq!(latest_cycle(&parse_adeck(FIXTURE)), Some(2026100912));
+        // A newer, still-filling cycle without OFCL must not win.
+        let mut records = parse_adeck(FIXTURE);
+        records.extend(parse_adeck_line(
+            "AL, 09, 2026100918, 03, AVNI,  12, 301N,  870W,  87,    0,   ,  34, NEQ,",
+        ));
+        assert_eq!(latest_cycle(&records), Some(2026100912));
+    }
+
+    #[test]
+    fn latest_cycle_falls_back_when_no_official_forecast() {
+        // Invests often have models but no OFCL.
+        let records: Vec<_> = parse_adeck(FIXTURE)
+            .into_iter()
+            .filter(|r| r.tech != "OFCL")
+            .collect();
+        assert_eq!(latest_cycle(&records), Some(2026100912));
+        assert_eq!(latest_cycle(&[]), None);
+    }
+
+    #[test]
+    fn build_guidance_keeps_plottable_tracks_only() {
+        let g = fixture_guidance();
+        assert_eq!(g.storm_id, "al092026");
+        assert_eq!(g.init, 2026100912);
+        assert!(g.has_official);
+        assert_eq!(g.fetched_at_unix, 0);
+        let techs: Vec<&str> = g.tracks.iter().map(|t| t.tech.as_str()).collect();
+        // HFAI/XTRP have one point; IVCN/SHIP are intensity-only; RVCN is
+        // skipped; AVNO is from an older cycle.
+        assert_eq!(techs, ["AVNI", "CARQ", "HWFI", "OFCL", "TVCN"]);
+        assert!(g.tracks.iter().all(|t| t.default_visible));
+    }
+
+    #[test]
+    fn build_guidance_dedupes_wind_radii_rows() {
+        let g = fixture_guidance();
+        let ofcl = g.tracks.iter().find(|t| t.tech == "OFCL").unwrap();
+        let taus: Vec<i32> = ofcl.points.iter().map(|p| p.tau_h).collect();
+        assert_eq!(taus, [0, 3, 12, 24, 36, 48, 60]);
+        assert_eq!(ofcl.group, ModelGroup::Official);
+        assert_eq!((ofcl.points[0].lat, ofcl.points[0].lon), (27.0, -87.6));
+        assert_eq!(ofcl.points[0].vmax_kt, Some(105));
+    }
+
+    #[test]
+    fn build_guidance_keeps_carq_past_positions() {
+        let g = fixture_guidance();
+        let carq = g.tracks.iter().find(|t| t.tech == "CARQ").unwrap();
+        let taus: Vec<i32> = carq.points.iter().map(|p| p.tau_h).collect();
+        assert_eq!(taus, [-24, -18, -12, -6, 0]);
+        assert_eq!(carq.group, ModelGroup::Observed);
+    }
+
+    #[test]
+    fn build_guidance_keeps_missing_intensity_as_none() {
+        let g = fixture_guidance();
+        let tvcn = g.tracks.iter().find(|t| t.tech == "TVCN").unwrap();
+        assert!(tvcn.points.iter().all(|p| p.vmax_kt.is_none()));
+    }
+
+    #[test]
+    fn build_guidance_collects_intensity_series() {
+        let g = fixture_guidance();
+        let techs: Vec<&str> = g.intensity.iter().map(|s| s.tech.as_str()).collect();
+        assert_eq!(techs, ["AVNI", "HWFI", "IVCN", "OFCL"]);
+        let ivcn = g.intensity.iter().find(|s| s.tech == "IVCN").unwrap();
+        assert_eq!(ivcn.points, [(0, 105), (12, 89), (24, 47)]);
+        assert!(!ivcn.official);
+        assert!(
+            g.intensity
+                .iter()
+                .find(|s| s.tech == "OFCL")
+                .unwrap()
+                .official
+        );
+    }
+
+    #[test]
+    fn invest_without_official_forecast_is_flagged() {
+        let records: Vec<_> = parse_adeck(FIXTURE)
+            .into_iter()
+            .filter(|r| r.tech != "OFCL")
+            .collect();
+        let g = build_guidance("al942026", &records, latest_cycle(&records).unwrap());
+        assert!(!g.has_official);
+        assert!(g.tracks.iter().all(|t| t.tech != "OFCL"));
+    }
+
+    #[test]
+    fn guidance_from_gzip_round_trip() {
+        let g = guidance_from_gzip("al092026", &gzip(FIXTURE.as_bytes())).unwrap();
+        assert_eq!(g.init, 2026100912);
+        assert_eq!(g.tracks.len(), 5);
+    }
+
+    #[test]
+    fn guidance_from_gzip_rejects_empty_file() {
+        let err = guidance_from_gzip("al092026", &gzip(b"")).unwrap_err();
+        assert!(format!("{err:#}").contains("no parseable rows"), "{err:#}");
     }
 }
