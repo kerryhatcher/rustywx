@@ -1219,17 +1219,33 @@ async fn main() {
                     let _ = state
                         .adeck_fetch
                         .parse_finished(parsed.generation, true, now);
-                    guidance.fetched_at_unix = chrono::Utc::now().timestamp();
-                    eprintln!(
-                        "startup phase=adeck_parse_applied generation={} storm={} cycle={} tracks={} intensity={} elapsed_ms={}",
-                        parsed.generation,
-                        guidance.storm_id,
+                    let fetched_at_unix = chrono::Utc::now().timestamp();
+                    guidance.fetched_at_unix = fetched_at_unix;
+                    let (storm_id, init, n_tracks, n_intensity) = (
+                        guidance.storm_id.clone(),
                         guidance.init,
                         guidance.tracks.len(),
                         guidance.intensity.len(),
-                        parsed.elapsed.as_millis()
                     );
-                    state.model_guidance.insert(guidance);
+                    let revision_before = state.model_guidance.revision();
+                    state.model_guidance.insert(guidance, fetched_at_unix);
+                    if state.model_guidance.revision() == revision_before {
+                        // Regression guard rejected it (review S3): an
+                        // older/implausible cycle than what's already
+                        // stored. Log distinctly so this never reads as
+                        // "applied" in startup logs.
+                        eprintln!(
+                            "startup phase=adeck_cycle_regression_rejected generation={} storm={storm_id} cycle={init} elapsed_ms={}",
+                            parsed.generation,
+                            parsed.elapsed.as_millis()
+                        );
+                    } else {
+                        eprintln!(
+                            "startup phase=adeck_parse_applied generation={} storm={storm_id} cycle={init} tracks={n_tracks} intensity={n_intensity} elapsed_ms={}",
+                            parsed.generation,
+                            parsed.elapsed.as_millis()
+                        );
+                    }
                 }
                 Ok(_) => eprintln!(
                     "startup phase=parse_drop generation={} stale=true result_age_ms={age_ms}",
@@ -1798,7 +1814,6 @@ async fn main() {
                         &state.model_guidance,
                         site.lat,
                         site.lon,
-                        chrono::Utc::now().timestamp(),
                     );
                     state.model_projection = Some((key.0, key.1, tracks));
                 }
@@ -1831,6 +1846,7 @@ async fn main() {
                     None
                 },
                 model_tracks,
+                chrono::Utc::now().timestamp(),
                 if state.show_location {
                     state.user_location
                 } else {
@@ -2864,30 +2880,16 @@ async fn main() {
                                                 // cycle's own age, not when it was last
                                                 // fetched (review S1) — a stalled feed can
                                                 // keep re-fetching the same old cycle and
-                                                // this is what still catches it.
-                                                let cycle_unix =
-                                                    rustywx::adeck::cycle_time_unix(g.init);
-                                                let cycle_stale = cycle_unix.is_some_and(|c| {
-                                                    rustywx::adeck_style::is_stale_cycle(
-                                                        c, now_unix,
-                                                    )
-                                                });
-                                                let cycle_text = match cycle_unix {
-                                                    Some(c) => format!(
-                                                        "{} cycle, {}{}",
-                                                        rustywx::adeck_style::format_cycle(
-                                                            g.init
-                                                        ),
-                                                        rustywx::adeck_style::format_age(
-                                                            c, now_unix
-                                                        ),
-                                                        if cycle_stale { " (stale)" } else { "" }
-                                                    ),
-                                                    None => format!(
-                                                        "{} cycle",
-                                                        rustywx::adeck_style::format_cycle(g.init)
-                                                    ),
-                                                };
+                                                // this is what still catches it. The card is
+                                                // always for one storm, so `mixed` is false.
+                                                let (cycle_base, cycle_stale) =
+                                                    rustywx::adeck_style::cycle_freshness_line(
+                                                        g.init, false, now_unix,
+                                                    );
+                                                let cycle_text = format!(
+                                                    "{cycle_base}{}",
+                                                    if cycle_stale { " (stale)" } else { "" }
+                                                );
                                                 ui.text(&cycle_text, |t| {
                                                     t.font_size(11).color(if cycle_stale {
                                                         0xFFC140
@@ -3125,28 +3127,16 @@ async fn main() {
                     // order, so it never names a cycle that belongs to a
                     // different storm than the one it's shown for (review
                     // S5). When the shown storms are genuinely on different
-                    // cycles, say so instead of picking one and misleading
-                    // about the rest.
+                    // cycles, this still surfaces the oldest shown cycle's
+                    // own age and staleness ("Mixed cycles, oldest ...")
+                    // instead of suppressing freshness information for the
+                    // one case it matters most (fix-round finding).
                     let mixed = !state.model_guidance.has_single_cycle();
-                    let cycle_unix = rustywx::adeck::cycle_time_unix(cycle_storm.init);
-                    let cycle_stale = !mixed
-                        && cycle_unix
-                            .is_some_and(|c| rustywx::adeck_style::is_stale_cycle(c, now_unix));
-                    let cycle_line = if mixed {
-                        "Mixed cycles".to_string()
-                    } else {
-                        match cycle_unix {
-                            Some(c) => format!(
-                                "{} cycle, {}",
-                                rustywx::adeck_style::format_cycle(cycle_storm.init),
-                                rustywx::adeck_style::format_age(c, now_unix)
-                            ),
-                            None => format!(
-                                "{} cycle",
-                                rustywx::adeck_style::format_cycle(cycle_storm.init)
-                            ),
-                        }
-                    };
+                    let (cycle_line, cycle_stale) = rustywx::adeck_style::cycle_freshness_line(
+                        cycle_storm.init,
+                        mixed,
+                        now_unix,
+                    );
                     // Fetch line: unchanged from before (review S5 keeps
                     // this one as-is) — the least-recently-fetched storm, so
                     // the legend never claims fresher data than the

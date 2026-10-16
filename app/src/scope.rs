@@ -1404,6 +1404,9 @@ pub fn draw_scope_to_texture(
     alerts: Option<(&[Alert], bool, bool)>,
     nhc: Option<(&NhcBundle, &NhcOverlayState)>,
     model_tracks: Option<&[ProjectedTrack]>,
+    // Wall-clock unix time, used only to compute model-track cycle-age
+    // dimming (`adeck_style::track_alpha_mult`, review S1).
+    now_unix: i64,
     user: Option<Coords>,
     show_sites: bool,
     show_rings: bool,
@@ -1604,7 +1607,7 @@ pub fn draw_scope_to_texture(
     if let Some((bundle, overlays)) = nhc {
         // Models first so the official cone/track sit on top.
         if let Some(tracks) = model_tracks {
-            draw_model_tracks(tracks, center_x, center_y, px_per_km);
+            draw_model_tracks(tracks, center_x, center_y, px_per_km, now_unix);
         }
         draw_nhc_overlays(bundle, overlays, site, center_x, center_y, px_per_km);
     }
@@ -2031,7 +2034,19 @@ fn draw_nhc_overlays(
 /// by the forecast wind at its start (`adeck_style::segment_rgba`); OFCL gets
 /// a white outline. Tech ids are drawn at track ends with greedy collision
 /// skipping (same idiom as the city labels).
-fn draw_model_tracks(tracks: &[ProjectedTrack], center_x: f32, center_y: f32, px_per_km: f32) {
+///
+/// `now_unix` drives each track's dim level via `adeck_style::track_alpha_mult`,
+/// recomputed fresh every call (not cached on `ProjectedTrack`) so dimming
+/// keeps advancing with real time even across a total fetch outage, when
+/// nothing bumps the guidance store's revision and the caller's projection
+/// cache never rebuilds (review S1 fix-round critical fix).
+fn draw_model_tracks(
+    tracks: &[ProjectedTrack],
+    center_x: f32,
+    center_y: f32,
+    px_per_km: f32,
+    now_unix: i64,
+) {
     let sw = screen_width();
     let sh = screen_height();
     let margin = 50.0;
@@ -2048,11 +2063,8 @@ fn draw_model_tracks(tracks: &[ProjectedTrack], center_x: f32, center_y: f32, px
         }
         let style = adeck_style::track_style(track.group);
         let pts: Vec<(f32, f32)> = track.km.iter().map(|&k| to_px(k)).collect();
-        let dim = |a: u8| {
-            ((f32::from(a)) * track.alpha_mult)
-                .round()
-                .clamp(0.0, 255.0) as u8
-        };
+        let alpha_mult = adeck_style::track_alpha_mult(track, now_unix);
+        let dim = |a: u8| ((f32::from(a)) * alpha_mult).round().clamp(0.0, 255.0) as u8;
         if let Some(under) = style.underlay_px {
             let outline = MacroquadColor::from_rgba(0xff, 0xff, 0xff, dim(230));
             for w in pts.windows(2) {
@@ -2075,7 +2087,7 @@ fn draw_model_tracks(tracks: &[ProjectedTrack], center_x: f32, center_y: f32, px
         if style.label
             && let Some(&(lx, ly)) = pts.last()
         {
-            labels.push((track.tech.as_str(), lx, ly, track.alpha_mult));
+            labels.push((track.tech.as_str(), lx, ly, alpha_mult));
         }
     }
 

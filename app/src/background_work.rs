@@ -391,9 +391,11 @@ fn parse(payload: ParsePayload) -> Result<ParsedData, String> {
                 })
                 .map_err(|e| format!("{e:#}"))
         }
-        ParsePayload::ADeck { storm_id, gz } => crate::adeck::guidance_from_gzip(&storm_id, &gz)
-            .map(ParsedData::ADeck)
-            .map_err(|e| format!("{e:#}")),
+        ParsePayload::ADeck { storm_id, gz } => {
+            crate::adeck::guidance_from_gzip(&storm_id, &gz, chrono::Utc::now().timestamp())
+                .map(ParsedData::ADeck)
+                .map_err(|e| format!("{e:#}"))
+        }
     }
 }
 

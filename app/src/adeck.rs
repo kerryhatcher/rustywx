@@ -326,8 +326,31 @@ pub struct StormGuidance {
 /// handles a storm gone post-tropical while still listed in
 /// `CurrentStorms.json`: OFCL stops appearing, so the gap only grows, and
 /// once it passes 18 h the newest model-only cycle takes over instead of
-/// staying pinned to the last OFCL forever (review S8).
+/// staying pinned to the last OFCL forever (review S8). Cycles land on 6 h
+/// boundaries, so in practice this fires once the gap reaches a full 24 h
+/// (4 cycles): a gap of exactly 18 h (3 cycles) does not exceed the
+/// threshold and still prefers OFCL.
 pub const OFCL_LAG_FALLBACK_SECS: i64 = 18 * 60 * 60;
+
+/// How far into the future a cycle's own timestamp may sit relative to
+/// `now` and still be treated as a real candidate. A few hours covers
+/// ordinary processing delay and modest clock skew between this machine
+/// and NHC's publishing pipeline; `parse_init` only checks "10 ASCII
+/// digits," so a corrupt or typo'd `init` (e.g. a stray digit landing it a
+/// year or a month ahead) could otherwise "win" as the newest cycle. Left
+/// unchecked, that bogus cycle would then latch permanently: it would look
+/// newest forever, and `GuidanceStore::insert`'s regression guard would
+/// reject every later, legitimate cycle for looking "older" (review S8).
+pub const FUTURE_CYCLE_TOLERANCE_SECS: i64 = 3 * 60 * 60;
+
+/// Whether `init` is a real calendar timestamp (not malformed) that isn't
+/// further in the future than `FUTURE_CYCLE_TOLERANCE_SECS` allows. Shared
+/// by `latest_cycle` (excludes implausible rows from cycle selection) and
+/// `GuidanceStore::insert` (lets a valid cycle recover from a previously
+/// stored implausible one).
+fn is_plausible_cycle(init: u32, now_unix: i64) -> bool {
+    cycle_time_unix(init).is_some_and(|t| t <= now_unix + FUTURE_CYCLE_TOLERANCE_SECS)
+}
 
 /// The cycle to show: the newest init with an OFCL forecast (the newest cycle
 /// fills in over several hours, so it may have models but no OFCL yet), else
@@ -337,13 +360,21 @@ pub const OFCL_LAG_FALLBACK_SECS: i64 = 18 * 60 * 60;
 /// unusually late, or the storm has gone post-tropical and OFCL has stopped
 /// altogether (review S8). The gap is measured in actual elapsed time via
 /// `cycle_time_unix`, not by counting synoptic cycles, so it still behaves
-/// sensibly if a cycle is ever skipped.
-pub fn latest_cycle(records: &[ADeckRecord]) -> Option<u32> {
-    let newest_any = records.iter().map(|r| r.init).max()?;
+/// sensibly if a cycle is ever skipped. Rows with a calendar-invalid or
+/// implausibly future-dated `init` (relative to `now_unix`) are excluded
+/// from "newest" entirely, so a single corrupt row can't hijack cycle
+/// selection (review S8/S3 interaction).
+pub fn latest_cycle(records: &[ADeckRecord], now_unix: i64) -> Option<u32> {
+    let newest_any = records
+        .iter()
+        .map(|r| r.init)
+        .filter(|&init| is_plausible_cycle(init, now_unix))
+        .max()?;
     let newest_ofcl = records
         .iter()
         .filter(|r| r.tech == "OFCL")
         .map(|r| r.init)
+        .filter(|&init| is_plausible_cycle(init, now_unix))
         .max();
     let Some(ofcl) = newest_ofcl else {
         return Some(newest_any);
@@ -425,10 +456,11 @@ pub fn build_guidance(storm_id: &str, records: &[ADeckRecord], init: u32) -> Sto
 }
 
 /// Full background-worker pipeline: inflate, parse, pick a cycle, build.
-pub fn guidance_from_gzip(storm_id: &str, gz: &[u8]) -> Result<StormGuidance> {
+/// `now_unix` bounds `latest_cycle`'s future-dated-row check.
+pub fn guidance_from_gzip(storm_id: &str, gz: &[u8], now_unix: i64) -> Result<StormGuidance> {
     let text = gunzip_limited(gz, MAX_UNCOMPRESSED_BYTES)?;
     let records = parse_adeck(&text);
-    let init = latest_cycle(&records)
+    let init = latest_cycle(&records, now_unix)
         .ok_or_else(|| anyhow!("a-deck for {storm_id} has no parseable rows"))?;
     Ok(build_guidance(storm_id, &records, init))
 }
@@ -451,8 +483,18 @@ impl GuidanceStore {
     /// freshness label to "just now" (review S3). A same-or-newer `init`
     /// still replaces normally, including a same-cycle re-fetch that only
     /// updates `fetched_at_unix` or fills in more model data.
-    pub fn insert(&mut self, guidance: StormGuidance) {
+    ///
+    /// The guard only applies when the *stored* cycle is itself plausible
+    /// (a real calendar timestamp, not implausibly future-dated per
+    /// `FUTURE_CYCLE_TOLERANCE_SECS`). `latest_cycle` already keeps a bogus
+    /// `init` from being selected in the first place, but if one ever did
+    /// get stored, this guard must not then entrench it forever by
+    /// rejecting every subsequent legitimate cycle for looking "older" than
+    /// the bogus one — `now_unix` lets a valid new cycle recover from that
+    /// (review S8/S3 interaction).
+    pub fn insert(&mut self, guidance: StormGuidance, now_unix: i64) {
         if let Some(existing) = self.by_storm.get(&guidance.storm_id)
+            && is_plausible_cycle(existing.init, now_unix)
             && guidance.init < existing.init
         {
             return;
@@ -785,15 +827,27 @@ mod tests {
         build_guidance("AL092026", &parse_adeck(FIXTURE), 2026100912)
     }
 
+    /// `now` exactly at `init`'s cycle time, so nothing in a record set
+    /// whose newest row is `init` reads as future-dated.
+    fn now_after(init: u32) -> i64 {
+        cycle_time_unix(init).unwrap()
+    }
+
     #[test]
     fn latest_cycle_is_newest_with_official_forecast() {
-        assert_eq!(latest_cycle(&parse_adeck(FIXTURE)), Some(2026100912));
+        assert_eq!(
+            latest_cycle(&parse_adeck(FIXTURE), now_after(2026100912)),
+            Some(2026100912)
+        );
         // A newer, still-filling cycle without OFCL must not win.
         let mut records = parse_adeck(FIXTURE);
         records.extend(parse_adeck_line(
             "AL, 09, 2026100918, 03, AVNI,  12, 301N,  870W,  87,    0,   ,  34, NEQ,",
         ));
-        assert_eq!(latest_cycle(&records), Some(2026100912));
+        assert_eq!(
+            latest_cycle(&records, now_after(2026100918)),
+            Some(2026100912)
+        );
     }
 
     #[test]
@@ -803,8 +857,11 @@ mod tests {
             .into_iter()
             .filter(|r| r.tech != "OFCL")
             .collect();
-        assert_eq!(latest_cycle(&records), Some(2026100912));
-        assert_eq!(latest_cycle(&[]), None);
+        assert_eq!(
+            latest_cycle(&records, now_after(2026100912)),
+            Some(2026100912)
+        );
+        assert_eq!(latest_cycle(&[], now_after(2026100912)), None);
     }
 
     fn avni_row(init: u32) -> ADeckRecord {
@@ -829,7 +886,10 @@ mod tests {
         // OFCL still fills in for a few hours after the nominal cycle time;
         // that's routine lag, not a stalled feed, so OFCL should still win.
         let records = [ofcl_row(2026100912), avni_row(2026100918)]; // 6 h gap
-        assert_eq!(latest_cycle(&records), Some(2026100912));
+        assert_eq!(
+            latest_cycle(&records, now_after(2026100918)),
+            Some(2026100912)
+        );
     }
 
     #[test]
@@ -838,7 +898,10 @@ mod tests {
         // or (review S8's other scenario) the storm went post-tropical and
         // OFCL has stopped entirely while model-only cycles keep advancing.
         let records = [ofcl_row(2026100912), avni_row(2026101100)];
-        assert_eq!(latest_cycle(&records), Some(2026101100));
+        assert_eq!(
+            latest_cycle(&records, now_after(2026101100)),
+            Some(2026101100)
+        );
     }
 
     #[test]
@@ -848,12 +911,18 @@ mod tests {
             ofcl_row(2026100912),
             avni_row(2026101006), // +18h0m exactly
         ];
-        assert_eq!(latest_cycle(&at_threshold), Some(2026100912));
+        assert_eq!(
+            latest_cycle(&at_threshold, now_after(2026101006)),
+            Some(2026100912)
+        );
         let just_over = [
             ofcl_row(2026100912),
             avni_row(2026101007), // +19h, just past the boundary
         ];
-        assert_eq!(latest_cycle(&just_over), Some(2026101007));
+        assert_eq!(
+            latest_cycle(&just_over, now_after(2026101007)),
+            Some(2026101007)
+        );
     }
 
     #[test]
@@ -865,7 +934,64 @@ mod tests {
             avni_row(2026101012),
             avni_row(2026101112), // another day of model-only cycles
         ];
-        assert_eq!(latest_cycle(&records), Some(2026101112));
+        assert_eq!(
+            latest_cycle(&records, now_after(2026101112)),
+            Some(2026101112)
+        );
+    }
+
+    #[test]
+    fn latest_cycle_excludes_calendar_invalid_rows_from_newest() {
+        // Month 99: passes parse_init (10 ASCII digits) but cycle_time_unix
+        // rejects it. Must not win over a valid, recent OFCL cycle.
+        let bogus = ADeckRecord {
+            tech: "AVNI".to_string(),
+            ..avni_row(2026109912)
+        };
+        let records = [ofcl_row(2026100912), bogus];
+        assert_eq!(
+            latest_cycle(&records, now_after(2026100912)),
+            Some(2026100912)
+        );
+    }
+
+    #[test]
+    fn latest_cycle_excludes_future_dated_rows_from_newest() {
+        // A row dated far beyond FUTURE_CYCLE_TOLERANCE_SECS ahead of `now`
+        // must not win, or hijack cycle selection, over a valid recent
+        // OFCL cycle (review S8/S3 interaction: an unchecked bogus "newest"
+        // cycle would otherwise latch forever via the insert regression
+        // guard).
+        let now = now_after(2026100912);
+        let far_future = avni_row(2026200100); // ~10 months ahead
+        let records = [ofcl_row(2026100912), far_future];
+        assert_eq!(latest_cycle(&records, now), Some(2026100912));
+    }
+
+    #[test]
+    fn latest_cycle_future_tolerance_boundary() {
+        let base = now_after(2026100912);
+        // No OFCL in either case, so newest-any directly decides the
+        // result and the plausibility filter's boundary is what's on test.
+        let base_row = avni_row(2026100912);
+
+        // Exactly at the tolerance (+3h): still a plausible candidate, and
+        // wins as the newest.
+        let at_tolerance = avni_row(2026100915);
+        assert_eq!(
+            latest_cycle(&[base_row.clone(), at_tolerance], base),
+            Some(2026100915),
+            "a row right at the tolerance boundary is still a candidate"
+        );
+
+        // One hour further out (+4h): excluded, so the only remaining
+        // plausible row wins instead.
+        let just_past = avni_row(2026100916);
+        assert_eq!(
+            latest_cycle(&[base_row, just_past], base),
+            Some(2026100912),
+            "a row past the tolerance is excluded from newest"
+        );
     }
 
     #[test]
@@ -932,23 +1058,31 @@ mod tests {
             .into_iter()
             .filter(|r| r.tech != "OFCL")
             .collect();
-        let g = build_guidance("al942026", &records, latest_cycle(&records).unwrap());
+        let init = latest_cycle(&records, now_after(2026100912)).unwrap();
+        let g = build_guidance("al942026", &records, init);
         assert!(!g.has_official);
         assert!(g.tracks.iter().all(|t| t.tech != "OFCL"));
     }
 
     #[test]
     fn guidance_from_gzip_round_trip() {
-        let g = guidance_from_gzip("al092026", &gzip(FIXTURE.as_bytes())).unwrap();
+        let g = guidance_from_gzip("al092026", &gzip(FIXTURE.as_bytes()), now_after(2026100912))
+            .unwrap();
         assert_eq!(g.init, 2026100912);
         assert_eq!(g.tracks.len(), 5);
     }
 
     #[test]
     fn guidance_from_gzip_rejects_empty_file() {
-        let err = guidance_from_gzip("al092026", &gzip(b"")).unwrap_err();
+        let err = guidance_from_gzip("al092026", &gzip(b""), now_after(2026100912)).unwrap_err();
         assert!(format!("{err:#}").contains("no parseable rows"), "{err:#}");
     }
+
+    /// `now` for tests that don't care about the future-cycle guard: far
+    /// enough past every hand-built fixture `init` in this module that
+    /// nothing is ever excluded as "future-dated", so `GuidanceStore`
+    /// behaves exactly as before that guard existed.
+    const TEST_NOW: i64 = 4_102_444_800; // 2100-01-01T00:00:00Z
 
     fn guidance(id: &str, fetched_at_unix: i64) -> StormGuidance {
         guidance_with_init(id, 2026100912, fetched_at_unix)
@@ -1001,9 +1135,9 @@ mod tests {
     fn store_insert_replaces_and_bumps_revision() {
         let mut store = GuidanceStore::default();
         assert!(store.is_empty());
-        store.insert(guidance("al092026", 10));
+        store.insert(guidance("al092026", 10), TEST_NOW);
         let r1 = store.revision();
-        store.insert(guidance("al092026", 20));
+        store.insert(guidance("al092026", 20), TEST_NOW);
         assert!(store.revision() > r1);
         assert_eq!(store.iter().count(), 1);
         assert_eq!(store.get("AL092026").unwrap().fetched_at_unix, 20);
@@ -1012,8 +1146,8 @@ mod tests {
     #[test]
     fn retain_active_drops_missing_storms() {
         let mut store = GuidanceStore::default();
-        store.insert(guidance("al092026", 10));
-        store.insert(guidance("ep182026", 10));
+        store.insert(guidance("al092026", 10), TEST_NOW);
+        store.insert(guidance("ep182026", 10), TEST_NOW);
         let r = store.revision();
         store.retain_active(&["AL092026".to_string()]);
         assert!(store.get("ep182026").is_none());
@@ -1028,19 +1162,19 @@ mod tests {
     fn oldest_is_least_recently_fetched() {
         let mut store = GuidanceStore::default();
         assert!(store.oldest().is_none());
-        store.insert(guidance("al092026", 50));
-        store.insert(guidance("ep182026", 30));
+        store.insert(guidance("al092026", 50), TEST_NOW);
+        store.insert(guidance("ep182026", 30), TEST_NOW);
         assert_eq!(store.oldest().unwrap().storm_id, "ep182026");
     }
 
     #[test]
     fn insert_rejects_a_cycle_older_than_the_one_stored() {
         let mut store = GuidanceStore::default();
-        store.insert(guidance_with_init("al092026", 2026100912, 10));
+        store.insert(guidance_with_init("al092026", 2026100912, 10), TEST_NOW);
         let r1 = store.revision();
         // A lagging mirror serves the previous cycle: must not replace, and
         // must not reset the freshness label by bumping fetched_at_unix.
-        store.insert(guidance_with_init("al092026", 2026100906, 20));
+        store.insert(guidance_with_init("al092026", 2026100906, 20), TEST_NOW);
         assert_eq!(store.revision(), r1, "older init is a no-op");
         let kept = store.get("al092026").unwrap();
         assert_eq!(kept.init, 2026100912, "newer cycle is kept");
@@ -1050,9 +1184,9 @@ mod tests {
     #[test]
     fn insert_accepts_the_same_cycle_refetched() {
         let mut store = GuidanceStore::default();
-        store.insert(guidance_with_init("al092026", 2026100912, 10));
+        store.insert(guidance_with_init("al092026", 2026100912, 10), TEST_NOW);
         let r1 = store.revision();
-        store.insert(guidance_with_init("al092026", 2026100912, 20));
+        store.insert(guidance_with_init("al092026", 2026100912, 20), TEST_NOW);
         assert!(
             store.revision() > r1,
             "same cycle still replaces (refresh path)"
@@ -1063,9 +1197,9 @@ mod tests {
     #[test]
     fn insert_accepts_a_newer_cycle() {
         let mut store = GuidanceStore::default();
-        store.insert(guidance_with_init("al092026", 2026100912, 10));
+        store.insert(guidance_with_init("al092026", 2026100912, 10), TEST_NOW);
         let r1 = store.revision();
-        store.insert(guidance_with_init("al092026", 2026100918, 20));
+        store.insert(guidance_with_init("al092026", 2026100918, 20), TEST_NOW);
         assert!(store.revision() > r1);
         assert_eq!(store.get("al092026").unwrap().init, 2026100918);
     }
@@ -1073,25 +1207,65 @@ mod tests {
     #[test]
     fn insert_of_a_brand_new_storm_is_unaffected_by_the_guard() {
         let mut store = GuidanceStore::default();
-        store.insert(guidance_with_init("al092026", 2026100912, 10));
+        store.insert(guidance_with_init("al092026", 2026100912, 10), TEST_NOW);
         let r1 = store.revision();
-        store.insert(guidance_with_init("ep182026", 2026090100, 5));
+        store.insert(guidance_with_init("ep182026", 2026090100, 5), TEST_NOW);
         assert!(store.revision() > r1);
         assert!(store.get("ep182026").is_some());
     }
 
     #[test]
+    fn insert_recovers_from_a_stored_future_dated_cycle() {
+        let mut store = GuidanceStore::default();
+        let now = now_after(2026100912);
+        // Simulates a corrupt/typo'd init that reached `insert` directly
+        // (the regression guard only applies from the SECOND insert for a
+        // storm onward, so a bogus value can land on the very first one).
+        // Numerically "newer" than any real forthcoming cycle, so a plain
+        // older-init guard would reject every later legitimate cycle
+        // forever without the plausibility check.
+        store.insert(guidance_with_init("al092026", 2027100912, 10), now);
+        let r1 = store.revision();
+        store.insert(guidance_with_init("al092026", 2026101000, 20), now);
+        assert!(
+            store.revision() > r1,
+            "a valid cycle recovers from a stored future-dated one"
+        );
+        assert_eq!(store.get("al092026").unwrap().init, 2026101000);
+    }
+
+    #[test]
+    fn insert_recovers_from_a_stored_calendar_invalid_cycle() {
+        let mut store = GuidanceStore::default();
+        let now = now_after(2026100912);
+        // Month 99: passes `parse_init`'s "10 ASCII digits" check, so it
+        // could reach `insert` directly, but `cycle_time_unix` rejects it.
+        store.insert(guidance_with_init("al092026", 2026109912, 10), now);
+        let r1 = store.revision();
+        store.insert(guidance_with_init("al092026", 2026100912, 20), now);
+        assert!(
+            store.revision() > r1,
+            "a valid cycle recovers from a stored calendar-invalid one"
+        );
+        assert_eq!(store.get("al092026").unwrap().init, 2026100912);
+    }
+
+    #[test]
     fn earliest_cycle_picks_by_init_not_fetch_order() {
         let mut store = GuidanceStore::default();
-        // al is fetched most recently but is on the older cycle; ep is
-        // stale by fetch time but on the newer cycle. oldest() (fetch
-        // order) and earliest_cycle() (cycle order) must disagree here.
-        store.insert(shown_guidance("al092026", 2026100918));
-        store.insert({
-            let mut g = shown_guidance("ep182026", 2026100906);
-            g.fetched_at_unix = 5;
-            g
-        });
+        // ep is fetched most recently (fetched_at_unix=5) but is on the
+        // older cycle; al is stale by fetch time (fetched_at_unix=0) but is
+        // on the newer cycle. oldest() (fetch order) would pick al;
+        // earliest_cycle() (cycle order) must pick ep instead.
+        store.insert(shown_guidance("al092026", 2026100918), TEST_NOW);
+        store.insert(
+            {
+                let mut g = shown_guidance("ep182026", 2026100906);
+                g.fetched_at_unix = 5;
+                g
+            },
+            TEST_NOW,
+        );
         assert_eq!(store.earliest_cycle().unwrap().storm_id, "ep182026");
     }
 
@@ -1099,8 +1273,8 @@ mod tests {
     fn earliest_cycle_ignores_storms_with_nothing_shown() {
         let mut store = GuidanceStore::default();
         // Older cycle, but nothing default-visible: must not win.
-        store.insert(guidance_with_init("al092026", 2026100900, 0));
-        store.insert(shown_guidance("ep182026", 2026100912));
+        store.insert(guidance_with_init("al092026", 2026100900, 0), TEST_NOW);
+        store.insert(shown_guidance("ep182026", 2026100912), TEST_NOW);
         assert_eq!(store.earliest_cycle().unwrap().storm_id, "ep182026");
     }
 
@@ -1113,16 +1287,16 @@ mod tests {
         );
 
         let mut store = GuidanceStore::default();
-        store.insert(shown_guidance("al092026", 2026100912));
-        store.insert(shown_guidance("ep182026", 2026100912));
+        store.insert(shown_guidance("al092026", 2026100912), TEST_NOW);
+        store.insert(shown_guidance("ep182026", 2026100912), TEST_NOW);
         assert!(store.has_single_cycle());
     }
 
     #[test]
     fn has_single_cycle_false_when_shown_storms_differ() {
         let mut store = GuidanceStore::default();
-        store.insert(shown_guidance("al092026", 2026100912));
-        store.insert(shown_guidance("ep182026", 2026100906));
+        store.insert(shown_guidance("al092026", 2026100912), TEST_NOW);
+        store.insert(shown_guidance("ep182026", 2026100906), TEST_NOW);
         assert!(!store.has_single_cycle());
     }
 }

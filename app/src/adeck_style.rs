@@ -245,6 +245,16 @@ pub fn cycle_alpha_mult(age_secs: i64) -> f32 {
 /// cull plus one multiply-add per vertex (review H5). When the store drains
 /// to empty (e.g. the storm leaves `CurrentStorms.json`), the caller draws
 /// nothing rather than reusing the last cached, now-stale tracks.
+///
+/// `cycle_unix` is a property of the data (the storm's selected forecast
+/// cycle), not of "now", so it's safe to cache here even though the cache
+/// itself only rebuilds on a site or revision change. The *age-to-alpha*
+/// mapping is deliberately NOT baked in here — `track_alpha_mult` below
+/// recomputes it from `cycle_unix` and the current time on every draw, so
+/// map dimming keeps advancing even across a total fetch outage, when
+/// nothing ever bumps the store's revision and this cache never rebuilds
+/// (review S1 critical fix: dimming must not freeze during the exact
+/// outage scenario it exists to catch).
 #[derive(Clone, Debug)]
 pub struct ProjectedTrack {
     pub tech: String,
@@ -253,35 +263,38 @@ pub struct ProjectedTrack {
     pub vmax_kt: Vec<Option<u32>>,
     pub min_km: Vec2,
     pub max_km: Vec2,
-    /// Alpha multiplier from this track's forecast-cycle age
-    /// (`cycle_alpha_mult`), applied by the renderer so clearly-stale
-    /// guidance visually recedes on the map itself, not just in text labels
-    /// (review S1). `1.0` when the cycle is fresh or its age can't be
-    /// determined.
-    pub alpha_mult: f32,
+    /// This track's storm's selected forecast-cycle timestamp
+    /// (`adeck::cycle_time_unix`), or `None` if `init` didn't parse.
+    pub cycle_unix: Option<i64>,
+}
+
+/// This track's current alpha multiplier, from its cycle age evaluated
+/// against `now_unix` — not from anything cached at projection time. Call
+/// this fresh every frame (it's one `Option` map and a scalar multiply, not
+/// a re-projection) so dimming tracks real time even when `ProjectedTrack`s
+/// themselves haven't been rebuilt in a while (review S1).
+pub fn track_alpha_mult(track: &ProjectedTrack, now_unix: i64) -> f32 {
+    track
+        .cycle_unix
+        .map(|c| cycle_alpha_mult((now_unix - c).max(0)))
+        .unwrap_or(1.0)
 }
 
 /// Project every default-visible track, ordered by draw rank (models, then
-/// CARQ, then OFCL on top). `now_unix` drives each storm's `alpha_mult` via
-/// its cycle age; the caller only needs to recompute this when its own
-/// cache (keyed on site + store revision) is invalidated, since cycle age
-/// changes on an hours-long timescale.
+/// CARQ, then OFCL on top).
 pub fn project_tracks(
     store: &GuidanceStore,
     origin_lat: f64,
     origin_lon: f64,
-    now_unix: i64,
 ) -> Vec<ProjectedTrack> {
     let mut out: Vec<ProjectedTrack> = store
         .iter()
         .flat_map(|g| {
-            let alpha_mult = crate::adeck::cycle_time_unix(g.init)
-                .map(|cycle_unix| cycle_alpha_mult((now_unix - cycle_unix).max(0)))
-                .unwrap_or(1.0);
-            g.tracks.iter().map(move |t| (t, alpha_mult))
+            let cycle_unix = crate::adeck::cycle_time_unix(g.init);
+            g.tracks.iter().map(move |t| (t, cycle_unix))
         })
         .filter(|(t, _)| t.default_visible && t.points.len() >= 2)
-        .map(|(t, alpha_mult)| {
+        .map(|(t, cycle_unix)| {
             let km: Vec<Vec2> = t
                 .points
                 .iter()
@@ -296,12 +309,33 @@ pub fn project_tracks(
                 km,
                 min_km,
                 max_km,
-                alpha_mult,
+                cycle_unix,
             }
         })
         .collect();
     out.sort_by_key(|t| track_style(t.group).draw_rank);
     out
+}
+
+/// The cycle-freshness line shared by the model-guidance card and the map
+/// legend, plus whether it should read as stale: `"{cycle} cycle, {age}"`
+/// for a single cycle, or `"Mixed cycles, oldest {cycle}, {age}"` when the
+/// caller's shown storms disagree on `init` (review S5) — the mixed case
+/// still surfaces the oldest shown cycle's own age and staleness instead of
+/// suppressing it (review S5 fix-round finding: "mixed" must not mean "no
+/// freshness information"). `init`'s age and staleness come from
+/// `adeck::cycle_time_unix` + `is_stale_cycle`; an unparseable `init` omits
+/// the age and never reads as stale (nothing to measure against).
+pub fn cycle_freshness_line(init: u32, mixed: bool, now_unix: i64) -> (String, bool) {
+    let cycle = format_cycle(init);
+    let prefix = if mixed { "Mixed cycles, oldest " } else { "" };
+    match crate::adeck::cycle_time_unix(init) {
+        Some(c) => (
+            format!("{prefix}{cycle} cycle, {}", format_age(c, now_unix)),
+            is_stale_cycle(c, now_unix),
+        ),
+        None => (format!("{prefix}{cycle} cycle"), false),
+    }
 }
 
 /// Top of the intensity chart's kt axis.
@@ -351,31 +385,41 @@ mod tests {
 
     const FIXTURE: &str = include_str!("testdata/aal092026_sample.dat");
 
+    /// `now` far enough past every hand-built fixture `init` in this module
+    /// that `GuidanceStore::insert`'s future-cycle guard never rejects a
+    /// test insert as implausible.
+    const TEST_NOW: i64 = 4_102_444_800; // 2100-01-01T00:00:00Z
+
     fn fixture_store() -> GuidanceStore {
         let records = crate::adeck::parse_adeck(FIXTURE);
         let mut store = GuidanceStore::default();
-        store.insert(crate::adeck::build_guidance(
-            "al092026", &records, 2026100912,
-        ));
+        store.insert(
+            crate::adeck::build_guidance("al092026", &records, 2026100912),
+            TEST_NOW,
+        );
         store
     }
 
-    /// `now` right at the fixture's cycle time: age 0, so `alpha_mult` is
-    /// 1.0 and tests that aren't about dimming aren't affected by it.
+    /// `now` right at the fixture's cycle time: age 0, so `track_alpha_mult`
+    /// is 1.0 and tests that aren't about dimming aren't affected by it.
     fn fresh_now() -> i64 {
         crate::adeck::cycle_time_unix(2026100912).unwrap()
     }
 
     #[test]
     fn project_tracks_orders_official_last() {
-        let tracks = project_tracks(&fixture_store(), 27.0, -87.6, fresh_now());
+        let tracks = project_tracks(&fixture_store(), 27.0, -87.6);
         let techs: Vec<&str> = tracks.iter().map(|t| t.tech.as_str()).collect();
         assert_eq!(techs, ["AVNI", "HWFI", "TVCN", "CARQ", "OFCL"]);
         let ofcl = tracks.last().unwrap();
         assert!(ofcl.km[0].length() < 0.01, "OFCL tau 0 is at the origin");
         for t in &tracks {
             assert_eq!(t.km.len(), t.vmax_kt.len());
-            assert_eq!(t.alpha_mult, 1.0, "fresh cycle is not dimmed");
+            assert_eq!(
+                track_alpha_mult(t, fresh_now()),
+                1.0,
+                "fresh cycle is not dimmed"
+            );
             for p in &t.km {
                 assert!(p.x >= t.min_km.x && p.x <= t.max_km.x);
                 assert!(p.y >= t.min_km.y && p.y <= t.max_km.y);
@@ -393,23 +437,52 @@ mod tests {
             default_visible: false,
             points: g.tracks[0].points.clone(),
         });
-        store.insert(g);
+        store.insert(g, TEST_NOW);
         assert!(
-            project_tracks(&store, 27.0, -87.6, fresh_now())
+            project_tracks(&store, 27.0, -87.6)
                 .iter()
                 .all(|t| t.tech != "TABS")
         );
     }
 
     #[test]
-    fn project_tracks_dims_a_track_past_the_cycle_age_threshold() {
+    fn track_alpha_mult_dims_past_the_cycle_age_threshold() {
         let store = fixture_store();
+        let tracks = project_tracks(&store, 27.0, -87.6);
         let stale_now = fresh_now() + CYCLE_DIM_AFTER_SECS + 1;
-        let tracks = project_tracks(&store, 27.0, -87.6, stale_now);
         assert!(
-            tracks.iter().all(|t| t.alpha_mult < 1.0),
+            tracks.iter().all(|t| track_alpha_mult(t, stale_now) < 1.0),
             "every track for this storm shares its one cycle age"
         );
+    }
+
+    #[test]
+    fn track_alpha_mult_changes_with_now_independent_of_any_store_mutation() {
+        // This is the review fix-round regression test: dimming must be
+        // able to change as time advances even though the `ProjectedTrack`
+        // itself (and the `GuidanceStore` it came from) never mutates —
+        // exactly what happens during a total fetch outage, when nothing
+        // ever bumps `GuidanceStore::revision` and the caller's projection
+        // cache never rebuilds.
+        let store = fixture_store();
+        let tracks = project_tracks(&store, 27.0, -87.6);
+        let track = &tracks[0];
+        let cycle_unix = track.cycle_unix.expect("fixture cycle parses");
+
+        assert_eq!(track_alpha_mult(track, cycle_unix), 1.0, "fresh");
+        assert_eq!(
+            track_alpha_mult(track, cycle_unix + CYCLE_DIM_AFTER_SECS),
+            1.0,
+            "right at the dim threshold"
+        );
+        let just_over = track_alpha_mult(track, cycle_unix + CYCLE_DIM_AFTER_SECS + 1);
+        assert!(just_over < 1.0, "just past the dim threshold");
+        let way_over = track_alpha_mult(track, cycle_unix + CYCLE_DIM_AFTER_SECS * 10);
+        assert!(
+            way_over < just_over,
+            "dims further as the outage (or just elapsed time) continues"
+        );
+        assert!(way_over >= 0.35, "never fully hidden");
     }
 
     #[test]
@@ -421,20 +494,23 @@ mod tests {
             vmax_kt: Some(50),
         };
         let mut store = GuidanceStore::default();
-        store.insert(StormGuidance {
-            storm_id: "cp012026".into(),
-            init: 2026100912,
-            has_official: true,
-            tracks: vec![AidTrack {
-                tech: "AVNI".into(),
-                group: ModelGroup::Global,
-                default_visible: true,
-                points: vec![point(179.5), point(-179.5)],
-            }],
-            intensity: Vec::new(),
-            fetched_at_unix: 0,
-        });
-        let tracks = project_tracks(&store, 20.0, 179.0, fresh_now());
+        store.insert(
+            StormGuidance {
+                storm_id: "cp012026".into(),
+                init: 2026100912,
+                has_official: true,
+                tracks: vec![AidTrack {
+                    tech: "AVNI".into(),
+                    group: ModelGroup::Global,
+                    default_visible: true,
+                    points: vec![point(179.5), point(-179.5)],
+                }],
+                intensity: Vec::new(),
+                fetched_at_unix: 0,
+            },
+            TEST_NOW,
+        );
+        let tracks = project_tracks(&store, 20.0, 179.0);
         let gap = (tracks[0].km[1] - tracks[0].km[0]).length();
         assert!(
             gap < 200.0,
@@ -569,6 +645,56 @@ mod tests {
             (way_past - 0.35).abs() < 1e-6,
             "floor, never fully hidden: {way_past}"
         );
+    }
+
+    #[test]
+    fn cycle_freshness_line_single_fresh_cycle() {
+        let now = crate::adeck::cycle_time_unix(2026100912).unwrap();
+        let (text, stale) = cycle_freshness_line(2026100912, false, now);
+        assert_eq!(text, "12Z Oct 9 cycle, just now");
+        assert!(!stale);
+    }
+
+    #[test]
+    fn cycle_freshness_line_single_stale_cycle() {
+        let cycle = crate::adeck::cycle_time_unix(2026100912).unwrap();
+        let now = cycle + CYCLE_STALE_AFTER_SECS + 1;
+        let (text, stale) = cycle_freshness_line(2026100912, false, now);
+        assert!(text.starts_with("12Z Oct 9 cycle, "), "{text:?}");
+        assert!(stale);
+    }
+
+    #[test]
+    fn cycle_freshness_line_invalid_init_has_no_age_and_is_never_stale() {
+        let (text, stale) = cycle_freshness_line(2026130100, false, 0);
+        assert_eq!(text, "00Z ??? 1 cycle");
+        assert!(!stale);
+    }
+
+    #[test]
+    fn cycle_freshness_line_mixed_still_surfaces_the_oldest_shown_cycles_age() {
+        // Fix-round regression: "mixed cycles" must not suppress
+        // staleness. The oldest shown storm's own age and staleness still
+        // come through, just with the "Mixed cycles, oldest" prefix.
+        let cycle = crate::adeck::cycle_time_unix(2026100806).unwrap();
+        let now = cycle + CYCLE_STALE_AFTER_SECS + 1;
+        let (text, stale) = cycle_freshness_line(2026100806, true, now);
+        assert!(
+            text.starts_with("Mixed cycles, oldest 06Z Oct 8 cycle, "),
+            "{text:?}"
+        );
+        assert!(
+            stale,
+            "a genuinely stale oldest cycle must still read stale"
+        );
+    }
+
+    #[test]
+    fn cycle_freshness_line_mixed_fresh_is_not_stale() {
+        let now = crate::adeck::cycle_time_unix(2026100912).unwrap();
+        let (text, stale) = cycle_freshness_line(2026100912, true, now);
+        assert_eq!(text, "Mixed cycles, oldest 12Z Oct 9 cycle, just now");
+        assert!(!stale);
     }
 
     use crate::adeck::IntensitySeries;
