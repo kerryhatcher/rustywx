@@ -157,6 +157,42 @@ pub const DISCLAIMER_LINES: [&str; 6] = [
 /// NHC's model catalogue and guidance disclaimer.
 pub const MODEL_SUMMARY_URL: &str = "https://www.nhc.noaa.gov/modelsummary.shtml";
 
+/// Data older than this is labelled "(stale)": two missed 15-min refreshes.
+pub const STALE_AFTER_SECS: i64 = 30 * 60;
+
+/// `2026100912` -> `"12Z Oct 9"`. Arithmetic on the integer, no string
+/// slicing, so malformed values just print `???`.
+pub fn format_cycle(init: u32) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let hour = init % 100;
+    let day = (init / 100) % 100;
+    let month = (init / 10_000) % 100;
+    let name = (month as usize)
+        .checked_sub(1)
+        .and_then(|i| MONTHS.get(i))
+        .copied()
+        .unwrap_or("???");
+    format!("{hour:02}Z {name} {day}")
+}
+
+/// Human age of a fetch: "just now", "7 min ago", "2 h 5 min ago".
+pub fn format_age(fetched_at_unix: i64, now_unix: i64) -> String {
+    let secs = (now_unix - fetched_at_unix).max(0);
+    if secs < 60 {
+        "just now".to_string()
+    } else if secs < 3600 {
+        format!("{} min ago", secs / 60)
+    } else {
+        format!("{} h {} min ago", secs / 3600, (secs % 3600) / 60)
+    }
+}
+
+pub fn is_stale(fetched_at_unix: i64, now_unix: i64) -> bool {
+    now_unix - fetched_at_unix > STALE_AFTER_SECS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,5 +271,30 @@ mod tests {
                 .iter()
                 .any(|l| l.contains("not official forecasts"))
         );
+    }
+
+    #[test]
+    fn format_cycle_reads_init_digits() {
+        assert_eq!(format_cycle(2026100912), "12Z Oct 9");
+        assert_eq!(format_cycle(2026010100), "00Z Jan 1");
+        // Garbage never panics.
+        assert_eq!(format_cycle(0), "00Z ??? 0");
+        assert_eq!(format_cycle(2026130100), "00Z ??? 1");
+    }
+
+    #[test]
+    fn format_age_buckets() {
+        assert_eq!(format_age(1000, 1000), "just now");
+        assert_eq!(format_age(1000, 1059), "just now");
+        assert_eq!(format_age(1000, 1060), "1 min ago");
+        assert_eq!(format_age(1000, 4599), "59 min ago");
+        assert_eq!(format_age(1000, 4600), "1 h 0 min ago");
+        assert_eq!(format_age(1000, 900), "just now", "clock skew clamps to 0");
+    }
+
+    #[test]
+    fn is_stale_boundary() {
+        assert!(!is_stale(0, STALE_AFTER_SECS));
+        assert!(is_stale(0, STALE_AFTER_SECS + 1));
     }
 }
