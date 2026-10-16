@@ -94,6 +94,33 @@ pub fn parse_lon(s: &str) -> Option<f64> {
     (-180.0..=180.0).contains(&lon).then_some(lon)
 }
 
+/// Public ATCF guidance directory (HTTPS, public domain).
+pub const ADECK_BASE_URL: &str = "https://ftp.nhc.noaa.gov/atcf/aid_public/";
+
+/// Map a `CurrentStorms.json` storm id (`"al092026"`) to its a-deck URL.
+/// `None` for basins outside NHC (al/ep/cp), training storms 80-89, and
+/// anything malformed. Uses `str::get`, never panicking slices.
+pub fn adeck_url(storm_id: &str) -> Option<String> {
+    let id = storm_id.trim().to_ascii_lowercase();
+    if !id.is_ascii() || id.len() != 8 {
+        return None;
+    }
+    let basin = id.get(0..2)?;
+    let number = id.get(2..4)?;
+    let year = id.get(4..8)?;
+    if !matches!(basin, "al" | "ep" | "cp") {
+        return None;
+    }
+    if !number.bytes().all(|b| b.is_ascii_digit()) || !year.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let n: u32 = number.parse().ok()?;
+    if n == 0 || (80..=89).contains(&n) {
+        return None;
+    }
+    Some(format!("{ADECK_BASE_URL}a{id}.dat.gz"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,5 +204,36 @@ mod tests {
     fn parse_adeck_reads_every_fixture_line() {
         assert_eq!(FIXTURE.lines().count(), 48);
         assert_eq!(parse_adeck(FIXTURE).len(), 48);
+    }
+
+    #[test]
+    fn adeck_url_maps_current_storms_ids() {
+        assert_eq!(
+            adeck_url("al092026").as_deref(),
+            Some("https://ftp.nhc.noaa.gov/atcf/aid_public/aal092026.dat.gz")
+        );
+        assert_eq!(
+            adeck_url("EP182026").as_deref(),
+            Some("https://ftp.nhc.noaa.gov/atcf/aid_public/aep182026.dat.gz")
+        );
+        assert!(adeck_url("cp012026").is_some());
+        assert!(adeck_url("al942026").is_some(), "invests are supported");
+    }
+
+    #[test]
+    fn adeck_url_rejects_unsupported_ids_without_panicking() {
+        for bad in [
+            "al852026", // training storm (80-89)
+            "al002026",
+            "wp012026", // West Pacific: not in NHC aid_public
+            "al9",
+            "",
+            "alxx2026",
+            "al09202",
+            "al0920\u{e9}6", // non-ASCII, 9 bytes
+            "al092026x",
+        ] {
+            assert_eq!(adeck_url(bad), None, "should reject {bad:?}");
+        }
     }
 }
