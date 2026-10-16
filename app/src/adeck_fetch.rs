@@ -48,6 +48,32 @@ pub const BACKOFF_CAP_SECS: f64 = 300.0;
 /// it wait longer than necessary between checks (L4).
 pub const NOT_FOUND_RETRY_SECS: f64 = 600.0;
 
+/// How far `jitter_secs` may push a storm's refresh away from `REFRESH_SECS`,
+/// as a fraction of it (review S9): every storm succeeding on the same
+/// cadence would otherwise refresh in lockstep, which feeds the S2
+/// parse-queue-contention risk when several storms' downloads land in the
+/// same frame.
+const JITTER_FRACTION: f64 = 0.10;
+
+/// A small, deterministic per-storm offset in
+/// `-JITTER_FRACTION * REFRESH_SECS ..= +JITTER_FRACTION * REFRESH_SECS`
+/// seconds, derived from a cheap FNV-1a hash of `storm_id`. This isn't real
+/// randomness, and it doesn't need to be: the actual goal is only to keep
+/// different storms' refresh times from landing in the same frame, and a
+/// stable per-storm offset staggers them apart just as well as true
+/// randomness would, while staying deterministic (easy to test, no `rand`
+/// dependency — the branch takes on no new crates for this).
+pub fn jitter_secs(storm_id: &str) -> f64 {
+    let mut hash: u64 = 0xcbf29ce484222325; // FNV-1a basis
+    for b in storm_id.as_bytes() {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x100000001b3); // FNV-1a prime
+    }
+    let span = REFRESH_SECS * JITTER_FRACTION * 2.0;
+    let unit = (hash % 1_000_000) as f64 / 1_000_000.0; // [0, 1)
+    unit * span - (span / 2.0)
+}
+
 /// Delay before the next attempt after `failures` consecutive non-404
 /// failures. 404s use `NOT_FOUND_RETRY_SECS` instead; see `record_failure`.
 pub fn backoff_secs(failures: u32) -> f64 {
@@ -400,7 +426,12 @@ impl AdeckFetcher {
         let show_toast = if ok {
             slot.failures = 0;
             slot.not_found = false;
-            slot.next_due = now + Duration::from_secs_f64(REFRESH_SECS);
+            // Jittered, not a flat REFRESH_SECS, so different storms' next
+            // refreshes land in different frames instead of in lockstep
+            // (review S9). Applied once here, on success, not on every
+            // tick — recomputing it each frame would keep the due time
+            // drifting forward.
+            slot.next_due = now + Duration::from_secs_f64(REFRESH_SECS + jitter_secs(storm_id));
             slot.phase = Phase::Idle;
             slot.toast_shown_in_streak = false;
             false
@@ -595,9 +626,16 @@ mod tests {
         assert_eq!(outcome.storm_id, "al092026");
         assert!(!outcome.show_toast);
         assert!(!f.owns_generation(7));
-        clock.advance(Duration::from_secs_f64(REFRESH_SECS - 1.0));
+        // The next refresh is REFRESH_SECS plus this storm's (deterministic)
+        // jitter, not a flat REFRESH_SECS (review S9).
+        let due_delta = REFRESH_SECS + jitter_secs("al092026");
+        clock.advance(Duration::from_secs_f64(due_delta - 1.0));
         f.tick(&active, &mut net);
-        assert_eq!(net.fired.len(), 1, "not due before REFRESH_SECS");
+        assert_eq!(
+            net.fired.len(),
+            1,
+            "not due before the jittered refresh delay"
+        );
         clock.advance(Duration::from_secs(2));
         f.tick(&active, &mut net);
         assert_eq!(net.fired.len(), 2);
@@ -813,7 +851,10 @@ mod tests {
         f.take_parse_job(2).unwrap();
         assert!(!f.parse_finished(2, true).unwrap().show_toast);
 
-        clock.advance(Duration::from_secs_f64(REFRESH_SECS + 1.0));
+        // Jittered, not a flat REFRESH_SECS (review S9): advance past this
+        // storm's actual due delta regardless of jitter's sign.
+        let due_delta = REFRESH_SECS + jitter_secs("al092026");
+        clock.advance(Duration::from_secs_f64(due_delta + 1.0));
         f.tick(&active, &mut net);
         net.respond(AL, NetPoll::Done(Err("http status: 500".into())));
         clock.advance(Duration::from_secs(1));
@@ -960,6 +1001,44 @@ mod tests {
         let table: Vec<f64> = (0..=7).map(backoff_secs).collect();
         assert_eq!(table, [0.0, 30.0, 60.0, 120.0, 240.0, 300.0, 300.0, 300.0]);
         assert_eq!(backoff_secs(u32::MAX), BACKOFF_CAP_SECS);
+    }
+
+    #[test]
+    fn jitter_secs_is_deterministic_for_the_same_storm_id() {
+        assert_eq!(jitter_secs("al092026"), jitter_secs("al092026"));
+        assert_eq!(jitter_secs("ep182026"), jitter_secs("ep182026"));
+    }
+
+    #[test]
+    fn jitter_secs_differs_across_storm_ids() {
+        // Not a proof of universal uniqueness, just confirming distinct
+        // storms land on distinct offsets in practice, which is the whole
+        // point: staggering different storms' refreshes apart (review S9).
+        let values: Vec<f64> = ["al092026", "ep182026", "cp012026", "al942026", "al012030"]
+            .iter()
+            .map(|id| jitter_secs(id))
+            .collect();
+        let mut distinct = values.clone();
+        distinct.dedup_by(|a, b| a == b);
+        assert_eq!(
+            distinct.len(),
+            values.len(),
+            "expected distinct jitter offsets for distinct storm ids: {values:?}"
+        );
+    }
+
+    #[test]
+    fn jitter_secs_stays_within_ten_percent_of_refresh_secs() {
+        let bound = REFRESH_SECS * JITTER_FRACTION;
+        for id in [
+            "al092026", "ep182026", "cp012026", "al942026", "al012030", "zz999999", "", "a",
+        ] {
+            let j = jitter_secs(id);
+            assert!(
+                (-bound..bound).contains(&j),
+                "{id:?}: jitter {j} is outside +/-{bound}"
+            );
+        }
     }
 
     #[test]

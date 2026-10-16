@@ -465,6 +465,23 @@ pub fn guidance_from_gzip(storm_id: &str, gz: &[u8], now_unix: i64) -> Result<St
     Ok(build_guidance(storm_id, &records, init))
 }
 
+/// Whether `a` and `b` describe the same guidance content, ignoring
+/// `fetched_at_unix` (which always differs between one fetch and the next).
+/// Used by `GuidanceStore::insert` to skip the revision bump — and the
+/// projection-cache rebuild it drives — when a refetch brings back exactly
+/// what's already stored (review S9).
+fn guidance_content_eq(a: &StormGuidance, b: &StormGuidance) -> bool {
+    let a = StormGuidance {
+        fetched_at_unix: 0,
+        ..a.clone()
+    };
+    let b = StormGuidance {
+        fetched_at_unix: 0,
+        ..b.clone()
+    };
+    a == b
+}
+
 /// Last good guidance per active storm. Survives fetch failures (offline
 /// keeps the previous tracks on screen). `revision` changes on every
 /// mutation so the projection cache (`adeck_style::project_tracks`) knows
@@ -476,28 +493,44 @@ pub struct GuidanceStore {
 }
 
 impl GuidanceStore {
-    /// Replace the stored guidance for `guidance.storm_id`, unless a lagging
-    /// mirror or cache serves a cycle older than the one already stored —
-    /// that insert is a no-op (no replace, no revision bump), so an older
-    /// cycle can never roll the shown guidance backward and reset the
-    /// freshness label to "just now" (review S3). A same-or-newer `init`
-    /// still replaces normally, including a same-cycle re-fetch that only
-    /// updates `fetched_at_unix` or fills in more model data.
+    /// Replace the stored guidance for `guidance.storm_id`, with two guards
+    /// ahead of the normal replace-and-bump, applied in this order:
     ///
-    /// The guard only applies when the *stored* cycle is itself plausible
-    /// (a real calendar timestamp, not implausibly future-dated per
-    /// `FUTURE_CYCLE_TOLERANCE_SECS`). `latest_cycle` already keeps a bogus
-    /// `init` from being selected in the first place, but if one ever did
-    /// get stored, this guard must not then entrench it forever by
-    /// rejecting every subsequent legitimate cycle for looking "older" than
-    /// the bogus one — `now_unix` lets a valid new cycle recover from that
-    /// (review S8/S3 interaction).
+    /// 1. **Cycle regression (review S3/S8).** If a lagging mirror or cache
+    ///    serves a cycle older than the one already stored, the insert is a
+    ///    no-op: no replace, no revision bump, no `fetched_at_unix` update.
+    ///    This guard only fires when the *stored* cycle is itself plausible
+    ///    (not implausibly future-dated or calendar-invalid per
+    ///    `is_plausible_cycle`), so a bogus stored `init` can't entrench
+    ///    itself forever by rejecting every later legitimate cycle for
+    ///    looking "older."
+    /// 2. **Unchanged content (review S9).** Otherwise, if the incoming
+    ///    guidance is byte-for-byte identical to what's stored — same
+    ///    `init`, same tracks, same intensity, same `has_official` — except
+    ///    for `fetched_at_unix` (which always differs between fetches),
+    ///    only `fetched_at_unix` is updated on the stored entry. The
+    ///    revision does NOT bump, so the km-projection cache (keyed on
+    ///    revision) isn't wastefully rebuilt for a 15-min refetch that
+    ///    brought back exactly what was already on screen; a-decks only
+    ///    change meaningfully every ~6 h. The "checked N min ago" line
+    ///    still advances because `fetched_at_unix` does.
+    /// 3. **Normal replace.** Anything else — a brand-new storm, a newer
+    ///    cycle, or a same-or-newer cycle whose content genuinely differs
+    ///    (e.g. a cycle still filling in as more models arrive, or recovery
+    ///    from a previously stored implausible cycle) — replaces the entry
+    ///    and bumps the revision as before.
     pub fn insert(&mut self, guidance: StormGuidance, now_unix: i64) {
-        if let Some(existing) = self.by_storm.get(&guidance.storm_id)
-            && is_plausible_cycle(existing.init, now_unix)
-            && guidance.init < existing.init
-        {
-            return;
+        if let Some(existing) = self.by_storm.get(&guidance.storm_id) {
+            if is_plausible_cycle(existing.init, now_unix) && guidance.init < existing.init {
+                return;
+            }
+            if guidance_content_eq(&guidance, existing) {
+                let fetched_at_unix = guidance.fetched_at_unix;
+                if let Some(stored) = self.by_storm.get_mut(&guidance.storm_id) {
+                    stored.fetched_at_unix = fetched_at_unix;
+                }
+                return;
+            }
         }
         self.by_storm.insert(guidance.storm_id.clone(), guidance);
         self.revision += 1;
@@ -1132,13 +1165,59 @@ mod tests {
     }
 
     #[test]
-    fn store_insert_replaces_and_bumps_revision() {
+    fn guidance_content_eq_ignores_fetched_at_unix_only() {
+        let a = shown_guidance("al092026", 2026100912);
+        let mut b = a.clone();
+        b.fetched_at_unix = a.fetched_at_unix + 999;
+        assert!(guidance_content_eq(&a, &b), "fetched_at_unix is excluded");
+    }
+
+    #[test]
+    fn guidance_content_eq_detects_differing_tracks() {
+        let a = shown_guidance("al092026", 2026100912);
+        let mut b = a.clone();
+        b.tracks.push(visible_track());
+        assert!(!guidance_content_eq(&a, &b));
+    }
+
+    #[test]
+    fn guidance_content_eq_detects_differing_intensity() {
+        let a = shown_guidance("al092026", 2026100912);
+        let mut b = a.clone();
+        b.intensity.push(IntensitySeries {
+            tech: "OFCL".to_string(),
+            official: true,
+            points: vec![(0, 50), (12, 55)],
+        });
+        assert!(!guidance_content_eq(&a, &b));
+    }
+
+    #[test]
+    fn guidance_content_eq_detects_differing_has_official() {
+        let a = shown_guidance("al092026", 2026100912);
+        let mut b = a.clone();
+        b.has_official = !a.has_official;
+        assert!(!guidance_content_eq(&a, &b));
+    }
+
+    #[test]
+    fn store_insert_same_content_refetch_keeps_one_entry_and_updates_fetched_at() {
+        // `guidance(id, fetched_at_unix)` builds empty-tracks/empty-intensity
+        // guidance at the same init both times, so the only difference
+        // between the two inserts is `fetched_at_unix` — genuinely unchanged
+        // content (review S9). The revision must NOT bump, but the stored
+        // entry's `fetched_at_unix` must still advance so the "checked N min
+        // ago" line stays accurate.
         let mut store = GuidanceStore::default();
         assert!(store.is_empty());
         store.insert(guidance("al092026", 10), TEST_NOW);
         let r1 = store.revision();
         store.insert(guidance("al092026", 20), TEST_NOW);
-        assert!(store.revision() > r1);
+        assert_eq!(
+            store.revision(),
+            r1,
+            "unchanged content does not bump the revision (S9)"
+        );
         assert_eq!(store.iter().count(), 1);
         assert_eq!(store.get("AL092026").unwrap().fetched_at_unix, 20);
     }
@@ -1182,16 +1261,38 @@ mod tests {
     }
 
     #[test]
-    fn insert_accepts_the_same_cycle_refetched() {
+    fn insert_same_cycle_unchanged_content_does_not_bump_revision() {
         let mut store = GuidanceStore::default();
         store.insert(guidance_with_init("al092026", 2026100912, 10), TEST_NOW);
         let r1 = store.revision();
         store.insert(guidance_with_init("al092026", 2026100912, 20), TEST_NOW);
-        assert!(
-            store.revision() > r1,
-            "same cycle still replaces (refresh path)"
+        assert_eq!(
+            store.revision(),
+            r1,
+            "same cycle, unchanged content: no revision bump (S9)"
         );
         assert_eq!(store.get("al092026").unwrap().fetched_at_unix, 20);
+    }
+
+    #[test]
+    fn insert_same_cycle_with_differing_content_still_bumps_revision() {
+        // A cycle that's still filling in as more models arrive: same
+        // `init`, but the content genuinely differs, so this must NOT be
+        // treated as "unchanged" — it's a normal replace-and-bump, composing
+        // correctly with the S9 unchanged-content guard above.
+        let mut store = GuidanceStore::default();
+        store.insert(guidance_with_init("al092026", 2026100912, 10), TEST_NOW);
+        let r1 = store.revision();
+        let mut filled_in = guidance_with_init("al092026", 2026100912, 20);
+        filled_in.tracks.push(visible_track());
+        store.insert(filled_in, TEST_NOW);
+        assert!(
+            store.revision() > r1,
+            "same cycle but different content still replaces and bumps"
+        );
+        let stored = store.get("al092026").unwrap();
+        assert_eq!(stored.fetched_at_unix, 20);
+        assert_eq!(stored.tracks.len(), 1);
     }
 
     #[test]
