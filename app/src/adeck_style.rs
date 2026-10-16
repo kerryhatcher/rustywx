@@ -2,7 +2,7 @@
 //! per-segment colour, line styles, the km-projection cache, cycle/age text,
 //! the disclaimer, and intensity-chart scaling. Pure: no drawing calls.
 
-use crate::adeck::{GuidanceStore, ModelGroup};
+use crate::adeck::{GuidanceStore, IntensitySeries, ModelGroup};
 use crate::geo;
 use ply_engine::prelude::Vec2;
 
@@ -244,6 +244,45 @@ pub fn project_tracks(
     out
 }
 
+/// Top of the intensity chart's kt axis.
+pub const CHART_MAX_KT: u32 = 160;
+
+/// X-axis extent: the longest series' last tau, rounded up to a whole day,
+/// clamped to 24..=168 h.
+pub fn chart_max_tau(series: &[IntensitySeries]) -> i32 {
+    let max = series
+        .iter()
+        .flat_map(|s| s.points.iter().map(|p| p.0))
+        .max()
+        .unwrap_or(0);
+    (((max + 23) / 24) * 24).clamp(24, 168)
+}
+
+/// Category bands (lo_kt, hi_kt, rgb), TD through Cat 5, capped at CHART_MAX_KT.
+pub fn chart_bands() -> Vec<(u32, u32, [u8; 3])> {
+    let cats = [
+        WindCategory::Depression,
+        WindCategory::Storm,
+        WindCategory::Cat1,
+        WindCategory::Cat2,
+        WindCategory::Cat3,
+        WindCategory::Cat4,
+        WindCategory::Cat5,
+    ];
+    cats.iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let lo = c.min_kt().unwrap_or(0);
+            let hi = cats
+                .get(i + 1)
+                .and_then(|n| n.min_kt())
+                .unwrap_or(CHART_MAX_KT)
+                .min(CHART_MAX_KT);
+            (lo, hi, c.rgb())
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,5 +462,36 @@ mod tests {
     fn is_stale_boundary() {
         assert!(!is_stale(0, STALE_AFTER_SECS));
         assert!(is_stale(0, STALE_AFTER_SECS + 1));
+    }
+
+    use crate::adeck::IntensitySeries;
+
+    fn series(max_tau: i32) -> IntensitySeries {
+        IntensitySeries {
+            tech: "AVNI".into(),
+            official: false,
+            points: vec![(0, 50), (max_tau, 60)],
+        }
+    }
+
+    #[test]
+    fn chart_max_tau_rounds_up_to_a_day_and_clamps() {
+        assert_eq!(chart_max_tau(&[]), 24);
+        assert_eq!(chart_max_tau(&[series(0)]), 24);
+        assert_eq!(chart_max_tau(&[series(60)]), 72);
+        assert_eq!(chart_max_tau(&[series(72)]), 72);
+        assert_eq!(chart_max_tau(&[series(200)]), 168);
+    }
+
+    #[test]
+    fn chart_bands_are_contiguous_and_capped() {
+        let bands = chart_bands();
+        assert_eq!(bands.len(), 7);
+        assert_eq!(bands[0].0, 0);
+        assert_eq!(bands.last().unwrap().1, CHART_MAX_KT);
+        for pair in bands.windows(2) {
+            assert_eq!(pair[0].1, pair[1].0, "no gaps between categories");
+        }
+        assert_eq!(bands[2], (64, 83, WindCategory::Cat1.rgb()));
     }
 }

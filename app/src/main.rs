@@ -357,6 +357,95 @@ fn draw_rain_chart(cmd: &RenderCommand<ChartWidget>) {
     }
 }
 
+/// Ply custom-draw dispatcher: each chart fn returns early on other variants.
+fn draw_custom_widget(cmd: &RenderCommand<ChartWidget>) {
+    draw_rain_chart(cmd);
+    draw_intensity_chart(cmd);
+}
+
+/// Spaghetti-models intensity chart: faint Saffir-Simpson bands, kt labels at
+/// band floors, 24 h ticks, model lines thin blue, NHC official thick white.
+fn draw_intensity_chart(cmd: &RenderCommand<ChartWidget>) {
+    use rustywx::adeck_style::{CHART_MAX_KT, chart_bands, chart_max_tau};
+    let RenderCommandConfig::Custom(c) = &cmd.config else {
+        return;
+    };
+    let ChartWidget::IntensityChart(series) = &c.data else {
+        return;
+    };
+    if series.is_empty() {
+        return;
+    }
+    let bb = cmd.bounding_box;
+    let gray = MacroquadColor::new(0.6, 0.58, 0.56, 1.0);
+    draw_rectangle(
+        bb.x,
+        bb.y,
+        bb.width,
+        bb.height,
+        MacroquadColor::new(0.118, 0.106, 0.106, 1.0),
+    );
+    let left = bb.x + 28.0;
+    let right = bb.x + bb.width - 8.0;
+    let top = bb.y + 8.0;
+    let bottom = bb.y + bb.height - 16.0;
+    let plot_w = (right - left).max(1.0);
+    let plot_h = (bottom - top).max(1.0);
+    let max_tau = chart_max_tau(series);
+    let x_at = |tau: i32| left + (tau.clamp(0, max_tau) as f32 / max_tau as f32) * plot_w;
+    let y_at = |kt: u32| bottom - (kt.min(CHART_MAX_KT) as f32 / CHART_MAX_KT as f32) * plot_h;
+
+    for (lo, hi, [r, g, b]) in chart_bands() {
+        draw_rectangle(
+            left,
+            y_at(hi),
+            plot_w,
+            y_at(lo) - y_at(hi),
+            MacroquadColor::from_rgba(r, g, b, 38),
+        );
+        if lo > 0 {
+            let label = lo.to_string();
+            let d = measure_text(&label, None, 10, 1.0);
+            draw_text(
+                &label,
+                left - 4.0 - d.width,
+                y_at(lo) + d.height / 2.0,
+                10.0,
+                gray,
+            );
+        }
+    }
+    let mut tau = 0;
+    while tau <= max_tau {
+        let x = x_at(tau);
+        draw_line(x, bottom, x, bottom + 3.0, 1.0, gray);
+        let label = format!("{tau}h");
+        let d = measure_text(&label, None, 10, 1.0);
+        draw_text(&label, x - d.width / 2.0, bottom + 13.0, 10.0, gray);
+        tau += 24;
+    }
+
+    let polyline = |points: &[(i32, u32)], width: f32, color: MacroquadColor| {
+        for w in points.windows(2) {
+            draw_line(
+                x_at(w[0].0),
+                y_at(w[0].1),
+                x_at(w[1].0),
+                y_at(w[1].1),
+                width,
+                color,
+            );
+        }
+    };
+    let model_color = MacroquadColor::new(0.62, 0.78, 0.95, 0.75);
+    for s in series.iter().filter(|s| !s.official) {
+        polyline(&s.points, 1.2, model_color);
+    }
+    for s in series.iter().filter(|s| s.official) {
+        polyline(&s.points, 2.5, WHITE);
+    }
+}
+
 /// Draw a subtle dark radial-gradient background behind the scope.
 /// Uses concentric filled circles from a brighter centre to darker edges,
 /// approximating the observatory mockup's radial gradient without a custom
@@ -2827,7 +2916,21 @@ async fn main() {
                                                         |t| t.font_size(10).color(0xFFC140),
                                                     );
                                                 }
-                                                // Intensity chart (Task 16)
+                                                if !g.intensity.is_empty() {
+                                                    ui.element()
+                                                        .width(fixed!(272.0))
+                                                        .height(fixed!(130.0))
+                                                        .custom_element(
+                                                            ChartWidget::IntensityChart(
+                                                                g.intensity.clone(),
+                                                            ),
+                                                        )
+                                                        .empty();
+                                                    ui.text(
+                                                        "Wind (kt) by forecast hour. White = NHC official.",
+                                                        |t| t.font_size(10).color(0x9E9590),
+                                                    );
+                                                }
                                             } else {
                                                 ui.text(
                                                     &rustywx::adeck_fetch::status_message(&status),
@@ -3461,7 +3564,7 @@ async fn main() {
                     });
             });
 
-        ui.show(draw_rain_chart).await;
+        ui.show(draw_custom_widget).await;
 
         // ── Draw NHC modal image ───────────────────────────────────
         // Text products are rendered exclusively by Ply inside the modal.
