@@ -1567,12 +1567,15 @@ async fn main() {
             if state.adeck_fetch.tick(&active, &mut ply_net).show_toast {
                 show_toast(&mut state, now, toast_widget::ErrorKind::Network);
             }
-            // At most one a-deck parse job in flight at a time: the shared
-            // parse queue has only QUEUE_CAPACITY slots, and the NHC
-            // metadata, alerts, and borders jobs that pre-date this feature
-            // also submit to it (S2). Without this cap, a-decks from 4+
-            // active storms could grab every free slot and starve them.
-            if background.parse_queue_has_capacity() && !state.adeck_fetch.has_parsing() {
+            // The shared parse queue has only QUEUE_CAPACITY slots, and the
+            // NHC metadata, alerts, and borders jobs that pre-date this
+            // feature also submit to it (S2), so this still checks capacity
+            // here. The "at most one a-deck parse job in flight" cap itself
+            // now lives inside take_parse_job (review N4) rather than only
+            // here, so a-decks from 4+ active storms can't grab every free
+            // slot and starve those other jobs even if this outer check were
+            // ever removed.
+            if background.parse_queue_has_capacity() {
                 let generation = next_generation;
                 if let Some((storm_id, gz)) = state.adeck_fetch.take_parse_job(generation) {
                     next_generation += 1;

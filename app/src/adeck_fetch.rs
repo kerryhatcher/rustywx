@@ -385,8 +385,18 @@ impl AdeckFetcher {
     }
 
     /// Hand the next downloaded body to the parse worker, tagging it with
-    /// `generation`. Call only when the parse queue has capacity.
+    /// `generation`. Call only when the caller's own shared parse queue
+    /// has capacity (`background::parse_queue_has_capacity()` in
+    /// `main.rs`) — that's a resource this type doesn't know about, so it
+    /// stays the caller's responsibility. The a-deck-internal "at most one
+    /// in flight" cap is enforced here, not by the caller (review N4): a
+    /// slot is never taken while `has_parsing()` is already true, so
+    /// reverting the old `main.rs`-only `!has_parsing()` check can't
+    /// silently regress this — a direct test on this method catches it.
     pub fn take_parse_job(&mut self, generation: u64) -> Option<(String, Vec<u8>)> {
+        if self.has_parsing() {
+            return None;
+        }
         let (storm_id, slot) = self
             .slots
             .iter_mut()
@@ -662,6 +672,50 @@ mod tests {
         assert!(f.has_parsing(), "take_parse_job moved the slot to Parsing");
         f.parse_finished(7, true);
         assert!(!f.has_parsing(), "parse_finished cleared the Parsing slot");
+    }
+
+    #[test]
+    fn take_parse_job_refuses_a_second_job_while_one_is_already_parsing() {
+        // Review N4: this cap used to live only in main.rs's own
+        // `!has_parsing()` check around the call site, so reverting that
+        // one line to the old `while` left every test green. It's now
+        // enforced inside take_parse_job itself, so a caller that takes
+        // every downloaded slot in a loop — the exact old bug shape —
+        // still can't get a second job in flight.
+        let clock = FakeClock::new();
+        let mut f = AdeckFetcher::with_clock(clock.clone());
+        let mut net = FakeNet::default();
+        let active = ids(&["al092026", "ep182026"]);
+        f.tick(&active, &mut net);
+        net.respond(AL, NetPoll::Done(Ok(vec![1])));
+        net.respond(EP, NetPoll::Done(Ok(vec![2])));
+        clock.advance(Duration::from_secs(1));
+        f.tick(&active, &mut net);
+        assert!(
+            !f.has_parsing(),
+            "both slots are Downloaded, not yet Parsing"
+        );
+
+        let first = f.take_parse_job(1);
+        assert!(first.is_some(), "first job is taken normally");
+        assert!(f.has_parsing());
+
+        // A caller that ignores has_parsing() and just loops must still
+        // get nothing for the second storm while the first is in flight.
+        assert_eq!(
+            f.take_parse_job(2),
+            None,
+            "a second job must not be handed out while one is parsing"
+        );
+
+        // Once the first finishes, the second becomes takeable again.
+        f.parse_finished(1, true);
+        assert!(!f.has_parsing());
+        let second = f.take_parse_job(2);
+        assert!(
+            second.is_some(),
+            "the untaken slot wasn't stuck or lost, just deferred"
+        );
     }
 
     #[test]
