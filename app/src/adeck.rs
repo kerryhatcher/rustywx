@@ -698,6 +698,67 @@ mod tests {
     }
 
     #[test]
+    fn parse_line_reads_a_southern_hemisphere_row() {
+        // All other fixtures in this module are northern hemisphere; a
+        // storm south of the equator is a real, common case ATCF covers
+        // via the "S" suffix (review L19 fixture gap).
+        let line = "SH, 09, 2026100912, 03, AVNI,  12, 234S,  1500E,  87,    0,   ,  34, NEQ,";
+        let r = parse_adeck_line(line).expect("valid row");
+        assert_eq!(r.position, Some((-23.4, 150.0)));
+    }
+
+    #[test]
+    fn parse_line_reads_a_wide_row_with_stormname() {
+        // Real OFCL/CARQ rows run up to 46 comma-separated fields,
+        // including STORMNAME at field 28 and several userdefined fields
+        // after it; every fixture elsewhere in this module is cut down to
+        // about 17-36 fields (review L19 fixture gap).
+        let line = "AL, 14, 2026100912, 03, OFCL,  24, 275N,  800W,  95, 970, HU,  34, NEQ,  120,   90,   70,  100,  200,  300,   20,  115,   25, AL1, 10, WW, 300,   12,     MILTON,     D,  10, WW,   8,   9,  10,  11,   S,   M,   W, HRD,   0,   0,   0,   0,   0,   0,";
+        let r = parse_adeck_line(line).expect("wide row with trailing fields parses");
+        assert_eq!(r.tech, "OFCL");
+        assert_eq!(r.tau_h, 24);
+        assert_eq!(r.position, Some((27.5, -80.0)));
+        assert_eq!(r.vmax_kt, Some(95));
+    }
+
+    #[test]
+    fn parse_adeck_handles_crlf_line_endings() {
+        // str::lines() already treats "\r\n" as one line ending, so this
+        // pins that behaviour against a regression rather than fixing a
+        // bug (review L19 fixture gap).
+        let lf = "AL, 09, 2026100912, 03, AVNI,  12, 301N,  870W,  87,    0,   ,  34, NEQ,\nAL, 09, 2026100912, 03, OFCL,  24, 280N,  875W,  90,    0,   ,  34, NEQ,";
+        let crlf = lf.replace('\n', "\r\n");
+        assert_eq!(parse_adeck(crlf.as_str()), parse_adeck(lf));
+        assert_eq!(parse_adeck(crlf.as_str()).len(), 2);
+    }
+
+    #[test]
+    fn build_guidance_keeps_the_first_row_when_technum_differs() {
+        // ATCF files are append-only; a later revision of the same
+        // (tech, tau) can carry a different TECHNUM. build_guidance's
+        // dedupe keys on (tech, tau) only and keeps the first row seen
+        // (`.or_insert`), so a later revision at the same tau is currently
+        // discarded. This pins that documented behaviour (review L9 is the
+        // fix; this is just the L19 coverage gap for it).
+        let lines = [
+            "AL, 09, 2026100912, 01, CARQ,  -6, 260N,  800W,  75,    0,   ,  34, NEQ,",
+            "AL, 09, 2026100912, 01, CARQ,   0, 270N,  800W,  80,    0,   ,  34, NEQ,",
+            // Same tech+tau as the row above, a later TECHNUM revision.
+            "AL, 09, 2026100912, 02, CARQ,   0, 271N,  801W,  85,    0,   ,  34, NEQ,",
+        ];
+        let records = parse_adeck(&lines.join("\n"));
+        assert_eq!(records.len(), 3, "all three rows parse individually");
+        let g = build_guidance("al092026", &records, 2026100912);
+        let carq = g.tracks.iter().find(|t| t.tech == "CARQ").unwrap();
+        let at_tau_0 = carq.points.iter().find(|p| p.tau_h == 0).unwrap();
+        assert_eq!(
+            (at_tau_0.lat, at_tau_0.lon),
+            (27.0, -80.0),
+            "the first TECHNUM's row wins over the later revision"
+        );
+    }
+
+    #[test]
     fn parse_line_maps_zero_position_to_none() {
         let line = "AL, 09, 2026100912, 03, IVCN,  12,   0N,    0W,  89,    0,   ,   0,    ,    0,    0,    0,    0,";
         let r = parse_adeck_line(line).expect("intensity-only rows still parse");
