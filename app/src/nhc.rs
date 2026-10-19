@@ -113,7 +113,21 @@ pub struct StormGis {
     /// "Fourteen-E"), silently corrupting the storm it landed on.
     pub bin_number: String,
     pub advisory_num: String,
+    /// Local-time advisory date/time string as NHC writes it (e.g.
+    /// `"200 PM MST Mon Oct 19 2026"`) — kept for display only. Not
+    /// parseable as a reliable UTC instant (no fixed format, local
+    /// timezone abbreviation), so `idp_filedate_ms` below is what the
+    /// freshness gate actually uses (review R2-1).
     pub advisory_date: String,
+    /// This feature's `idp_filedate` MapServer property: an
+    /// `esriFieldTypeDate` field, epoch milliseconds UTC, read with
+    /// `prop_i64` (not `prop_str`, which would see the JSON number and
+    /// return `""`). `None` when a layer doesn't carry it. Used by
+    /// `adeck_style::gis_advisory_confirmed_fresh` to compare the
+    /// advisory's real issue time against the OFCL cycle it would
+    /// suppress — `advisory_date`'s local, non-fixed-format string can't
+    /// do that safely (review R2-1).
+    pub idp_filedate_ms: Option<i64>,
     /// Forecast cone polygon rings.
     pub cone: Vec<Ring>,
     /// Forecast track line (single ring of points).
@@ -721,6 +735,14 @@ fn prop_str(feature: &Value, key: &str) -> String {
         .to_string()
 }
 
+/// Reads an `esriFieldTypeDate` property (epoch milliseconds, e.g.
+/// `idp_filedate`) as an `i64`. `prop_str` would return `""` for this —
+/// the MapServer layers encode it as a JSON number, not a string (review
+/// R2-1).
+fn prop_i64(feature: &Value, key: &str) -> Option<i64> {
+    feature.get("properties")?.get(key)?.as_i64()
+}
+
 /// Extract rings from a single GeoJSON feature.
 fn extract_rings_for_feature(feature: &Value) -> Vec<Ring> {
     let Some(geometry) = feature.get("geometry") else {
@@ -809,6 +831,7 @@ pub fn parse_gis_storms(
                 bin_number: prop_str(feature, "binnumber"),
                 advisory_num: prop_str(feature, "advisnum"),
                 advisory_date: prop_str(feature, "advdate"),
+                idp_filedate_ms: prop_i64(feature, "idp_filedate"),
                 cone: extract_rings_for_feature(feature),
                 track: Vec::new(),
                 points: Vec::new(),
@@ -817,7 +840,10 @@ pub fn parse_gis_storms(
         }
     }
 
-    // Merge track data.
+    // Merge track data. The track layer's own `idp_filedate` overwrites
+    // the cone's if present: it's the record for the track actually drawn
+    // and checked for staleness (review R2-1), so it takes precedence
+    // over the cone layer's possibly-older copy of the same field.
     if let Some(track) = track_json
         && let Some(features) = track.get("features").and_then(Value::as_array)
     {
@@ -826,6 +852,9 @@ pub fn parse_gis_storms(
             let bin = prop_str(feature, "binnumber");
             if let Some(storm) = find_storm_mut(&mut storms, &bin, &name) {
                 storm.track = extract_rings_for_feature(feature);
+                if let Some(ms) = prop_i64(feature, "idp_filedate") {
+                    storm.idp_filedate_ms = Some(ms);
+                }
             }
         }
     }
