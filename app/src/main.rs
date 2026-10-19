@@ -3222,6 +3222,8 @@ async fn main() {
                     let legend_mode = rustywx::widgets::model_legend::legend_mode(
                         screen_height(),
                         is_mobile,
+                        36.0,
+                        54.0,
                     );
                     let height_estimate = match legend_mode {
                         rustywx::widgets::model_legend::LegendMode::Full => {

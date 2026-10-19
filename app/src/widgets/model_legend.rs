@@ -29,10 +29,16 @@ pub const FULL_HEIGHT_ESTIMATE: f32 = 420.0;
 pub const COMPACT_HEIGHT_ESTIMATE: f32 = 130.0;
 
 /// Below this window height, or on the mobile layout, `legend_mode` returns
-/// `Compact` (review S10 item 3). 400px leaves no realistic room for the
-/// full legend's wind-category swatches, GIS rows, and model-line key
-/// alongside the top and bottom bars.
-pub const COMPACT_HEIGHT_TRIGGER_PX: f32 = 400.0;
+/// `Compact` (review S10 item 3). Derived from the SAME numbers `legend_y`
+/// clamps with (`FULL_HEIGHT_ESTIMATE` plus the top-bar and bottom-margin
+/// pixels), so the mode decision and the y-clamp can never disagree about
+/// whether the Full legend actually fits — a flat, independently-chosen
+/// constant here previously left windows roughly 400-490px tall in Full
+/// mode even though the Full legend didn't fit them (review S10 fix-round
+/// follow-up: the two decisions must share one source of truth).
+pub fn compact_height_trigger_px(top_bar_px: f32, bottom_margin_px: f32) -> f32 {
+    FULL_HEIGHT_ESTIMATE + top_bar_px + bottom_margin_px
+}
 
 const TEXT: u32 = 0xE8E0DC;
 const MUTED: u32 = 0x9E9590;
@@ -55,15 +61,23 @@ pub enum LegendMode {
 }
 
 /// Picks `Full` or `Compact` from two independent window-shape signals
-/// (review S10): a short window (`screen_height_px` under
-/// `COMPACT_HEIGHT_TRIGGER_PX`) can't fit the full legend no matter the
-/// platform, and the app's own mobile breakpoint (`is_mobile`, `main.rs`'s
+/// (review S10): a short window, one where the Full legend genuinely
+/// wouldn't fit between the top and bottom bars
+/// (`compact_height_trigger_px`), can't fit the full legend no matter the
+/// platform; and the app's own mobile breakpoint (`is_mobile`, `main.rs`'s
 /// `screen_width() < 900.0`, which already switches to larger touch
 /// targets elsewhere) implies a layout where full-screen panels cover the
 /// map and the legend has much less room to work with regardless of
-/// height. Either alone is enough to trigger `Compact`.
-pub fn legend_mode(screen_height_px: f32, is_mobile: bool) -> LegendMode {
-    if is_mobile || screen_height_px < COMPACT_HEIGHT_TRIGGER_PX {
+/// height. Either alone is enough to trigger `Compact`. `top_bar_px` and
+/// `bottom_margin_px` must be the same values passed to `legend_y`, so the
+/// two can't disagree about whether Full actually fits.
+pub fn legend_mode(
+    screen_height_px: f32,
+    is_mobile: bool,
+    top_bar_px: f32,
+    bottom_margin_px: f32,
+) -> LegendMode {
+    if is_mobile || screen_height_px < compact_height_trigger_px(top_bar_px, bottom_margin_px) {
         LegendMode::Compact
     } else {
         LegendMode::Full
@@ -314,13 +328,14 @@ mod tests {
 
     #[test]
     fn legend_mode_full_on_a_tall_desktop_window() {
-        assert_eq!(legend_mode(1080.0, false), LegendMode::Full);
+        assert_eq!(legend_mode(1080.0, false, 36.0, 54.0), LegendMode::Full);
     }
 
     #[test]
     fn legend_mode_compact_below_the_height_trigger() {
+        let trigger = compact_height_trigger_px(36.0, 54.0);
         assert_eq!(
-            legend_mode(COMPACT_HEIGHT_TRIGGER_PX - 1.0, false),
+            legend_mode(trigger - 1.0, false, 36.0, 54.0),
             LegendMode::Compact
         );
     }
@@ -330,10 +345,26 @@ mod tests {
         // The trigger is a strict "under", so the boundary itself is still
         // Full — matches `is_stale`/`is_stale_cycle`'s own boundary
         // convention elsewhere in this overlay (`adeck_style.rs`).
-        assert_eq!(
-            legend_mode(COMPACT_HEIGHT_TRIGGER_PX, false),
-            LegendMode::Full
+        let trigger = compact_height_trigger_px(36.0, 54.0);
+        assert_eq!(legend_mode(trigger, false, 36.0, 54.0), LegendMode::Full);
+    }
+
+    #[test]
+    fn legend_mode_trigger_matches_where_legend_y_would_clamp() {
+        // Review S10 fix-round follow-up: the mode decision and the y-clamp
+        // must agree on whether Full actually fits, so a window just above
+        // the trigger must NOT need clamping, and just below it must.
+        // At the trigger itself `from_bottom` lands exactly on `top_bar_px`
+        // (clamped or not, the value's identical), so "just above" needs a
+        // height strictly greater than the trigger to prove no clamping.
+        let trigger = compact_height_trigger_px(36.0, 54.0);
+        let y_above = legend_y(trigger + 1.0, 36.0, 54.0, FULL_HEIGHT_ESTIMATE);
+        assert!(
+            y_above > 36.0,
+            "just above the trigger, Full must not clamp"
         );
+        let y_below = legend_y(trigger - 1.0, 36.0, 54.0, FULL_HEIGHT_ESTIMATE);
+        assert_eq!(y_below, 36.0, "just below the trigger, Full would clamp");
     }
 
     #[test]
@@ -341,12 +372,12 @@ mod tests {
         // Review S10: mobile triggers compact regardless of height — a
         // tall phone in portrait is still the cramped mobile layout, not a
         // roomy desktop one.
-        assert_eq!(legend_mode(1200.0, true), LegendMode::Compact);
+        assert_eq!(legend_mode(1200.0, true, 36.0, 54.0), LegendMode::Compact);
     }
 
     #[test]
     fn legend_mode_compact_when_both_signals_say_compact() {
-        assert_eq!(legend_mode(200.0, true), LegendMode::Compact);
+        assert_eq!(legend_mode(200.0, true, 36.0, 54.0), LegendMode::Compact);
     }
 
     // ── S10: y-position clamping ─────────────────────────────────────────
