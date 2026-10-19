@@ -332,6 +332,36 @@ mod tests {
     }
 
     #[test]
+    fn legend_mode_compact_on_a_400_to_490px_window_with_the_real_top_bar_height() {
+        // Review N5/N6's exact failure scenario: with the controls bar's
+        // real desktop height (40px: 24px control + 8px padding on each
+        // side — main.rs's `controls_bar_height_estimate(false)`) instead
+        // of the too-low 36px this used to hard-code, every window in the
+        // 400-490px band that previously stayed (wrongly) Full must now
+        // read Compact, and legend_y must never overlap the bottom bar
+        // even if it didn't.
+        const REAL_TOP_BAR_PX: f32 = 40.0;
+        const BOTTOM_MARGIN_PX: f32 = 54.0;
+        for height in [400.0, 420.0, 450.0, 470.0, 490.0] {
+            assert_eq!(
+                legend_mode(height, false, REAL_TOP_BAR_PX, BOTTOM_MARGIN_PX),
+                LegendMode::Compact,
+                "window height {height} must be Compact with the real top-bar height"
+            );
+            let y = legend_y(
+                height,
+                REAL_TOP_BAR_PX,
+                BOTTOM_MARGIN_PX,
+                COMPACT_HEIGHT_ESTIMATE,
+            );
+            assert!(
+                y + COMPACT_HEIGHT_ESTIMATE <= height - BOTTOM_MARGIN_PX + 1.0,
+                "legend at y={y} must not overlap the bottom bar on a {height}px window"
+            );
+        }
+    }
+
+    #[test]
     fn legend_mode_compact_below_the_height_trigger() {
         let trigger = compact_height_trigger_px(36.0, 54.0);
         assert_eq!(

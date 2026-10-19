@@ -110,6 +110,38 @@ const STORM_DROPDOWN: DropdownConfig = DropdownConfig {
 const NHC_MODAL_LINE_HEIGHT: f32 = 14.0;
 const NHC_MODAL_TEXT_COLUMNS: usize = 82;
 
+/// Height of one control-bar button/dropdown, before the bar's own 8px
+/// padding (`CONTROLS_BAR_PADDING_PX`). Shared by every button/dropdown in
+/// the controls bar below AND by `controls_bar_height_estimate`, which
+/// feeds the model-legend's `top_bar_px` (`model_legend::legend_mode` /
+/// `legend_y`) — so the two can't silently drift apart again. The legend
+/// previously hard-coded `36.0` against the bar's real ~40px desktop /
+/// ~60px mobile height (review N6).
+const CONTROL_HEIGHT_PX: f32 = 24.0;
+const CONTROL_HEIGHT_MOBILE_PX: f32 = 44.0;
+
+/// Padding inside the controls bar, top and bottom — mirrors the bar's own
+/// `layout.padding(8)` a few hundred lines below. Kept as its own named
+/// constant (rather than inlined into `controls_bar_height_estimate`) so a
+/// change to that `padding(...)` call is a visible prompt to update this
+/// too, instead of a silent mismatch.
+const CONTROLS_BAR_PADDING_PX: f32 = 8.0;
+
+/// Estimated height of the controls bar for a single, unwrapped row: one
+/// control's height plus padding on both sides. The bar's own
+/// `layout.wrap()` lets it grow taller at narrow widths, but that only
+/// matters below the `is_mobile` breakpoint (900px), where the legend
+/// already always uses `LegendMode::Compact` regardless of height (see
+/// `model_legend::legend_mode`) — so a single-row estimate is sufficient
+/// for the desktop `Full`-mode case this feeds (review N6).
+fn controls_bar_height_estimate(is_mobile: bool) -> f32 {
+    (if is_mobile {
+        CONTROL_HEIGHT_MOBILE_PX
+    } else {
+        CONTROL_HEIGHT_PX
+    }) + 2.0 * CONTROLS_BAR_PADDING_PX
+}
+
 /// Build the full alert-detail modal body: headline, full NWS description, and
 /// precautionary instruction, skipping any part the feed left empty.
 fn alert_modal_body(alert: &rustywx::alerts::Alert) -> String {
@@ -1954,7 +1986,7 @@ async fn main() {
                         ui.element()
                             .id("btn-radar")
                             .width(fit!())
-                            .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                            .height(fixed!(if is_mobile { CONTROL_HEIGHT_MOBILE_PX } else { CONTROL_HEIGHT_PX }))
                             .background_color(radar_panel_bg)
                             .corner_radius(4.0)
                             .layout(|layout| {
@@ -1987,7 +2019,7 @@ async fn main() {
                         ui.element()
                             .id("btn-tropical")
                             .width(fit!())
-                            .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                            .height(fixed!(if is_mobile { CONTROL_HEIGHT_MOBILE_PX } else { CONTROL_HEIGHT_PX }))
                             .background_color(tropical_panel_bg)
                             .corner_radius(4.0)
                             .layout(|layout| {
@@ -2023,7 +2055,7 @@ async fn main() {
                         ui.element()
                             .id("btn-forecast")
                             .width(fit!())
-                            .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                            .height(fixed!(if is_mobile { CONTROL_HEIGHT_MOBILE_PX } else { CONTROL_HEIGHT_PX }))
                             .background_color(forecast_bg)
                             .corner_radius(4.0)
                             .layout(|layout| {
@@ -2068,7 +2100,7 @@ async fn main() {
                             ui.element()
                                 .id("btn-radar-data")
                                 .width(fit!())
-                                .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                                .height(fixed!(if is_mobile { CONTROL_HEIGHT_MOBILE_PX } else { CONTROL_HEIGHT_PX }))
                                 .background_color(radar_data_bg)
                                 .corner_radius(4.0)
                                 .layout(|layout| {
@@ -2114,7 +2146,7 @@ async fn main() {
                             ui.element()
                                 .id("btn-tropical-data")
                                 .width(fit!())
-                                .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                                .height(fixed!(if is_mobile { CONTROL_HEIGHT_MOBILE_PX } else { CONTROL_HEIGHT_PX }))
                                 .background_color(tropical_data_bg)
                                 .corner_radius(4.0)
                                 .layout(|layout| {
@@ -2142,7 +2174,7 @@ async fn main() {
                             ui.element()
                                 .id("btn-borders")
                                 .width(fit!())
-                                .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                                .height(fixed!(if is_mobile { CONTROL_HEIGHT_MOBILE_PX } else { CONTROL_HEIGHT_PX }))
                                 .background_color(borders_bg)
                                 .corner_radius(4.0)
                                 .layout(|layout| {
@@ -2192,7 +2224,7 @@ async fn main() {
                             ui.element()
                                 .id("btn-watches")
                                 .width(fit!())
-                                .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                                .height(fixed!(if is_mobile { CONTROL_HEIGHT_MOBILE_PX } else { CONTROL_HEIGHT_PX }))
                                 .background_color(watches_bg)
                                 .corner_radius(4.0)
                                 .layout(|layout| {
@@ -2226,7 +2258,7 @@ async fn main() {
                             ui.element()
                                 .id("btn-warnings")
                                 .width(fit!())
-                                .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                                .height(fixed!(if is_mobile { CONTROL_HEIGHT_MOBILE_PX } else { CONTROL_HEIGHT_PX }))
                                 .background_color(warnings_bg)
                                 .corner_radius(4.0)
                                 .layout(|layout| {
@@ -2261,7 +2293,7 @@ async fn main() {
                             ui.element()
                                 .id("btn-location")
                                 .width(fit!())
-                                .height(fixed!(if is_mobile { 44.0 } else { 24.0 }))
+                                .height(fixed!(if is_mobile { CONTROL_HEIGHT_MOBILE_PX } else { CONTROL_HEIGHT_PX }))
                                 .background_color(loc_bg)
                                 .corner_radius(4.0)
                                 .layout(|layout| {
@@ -2282,7 +2314,7 @@ async fn main() {
                             .children(|_| {});
 
                         // ── Window controls (right side, kept together) ──
-                        let ctrl_h = if is_mobile { 44.0 } else { 24.0 };
+                        let ctrl_h = if is_mobile { CONTROL_HEIGHT_MOBILE_PX } else { CONTROL_HEIGHT_PX };
                         let ctrl_w = fixed!(if is_mobile { 44.0 } else { 30.0 });
                         let (fs_glyph, fs_label) = if state.fullscreen {
                             (nf::COMPRESS, "Exit fullscreen")
@@ -3220,12 +3252,19 @@ async fn main() {
                     // this `y` calc used to depend on is gone — `legend_y`
                     // only needs a rough per-mode estimate to anchor the
                     // panel above the bottom bar, and clamps so it can never
-                    // go above the top bar (36 px) or off-screen on a short
-                    // or mobile window.
+                    // go above the top bar or off-screen on a short or
+                    // mobile window. `top_bar_px` is derived from the same
+                    // constants the controls bar itself is built with
+                    // (`controls_bar_height_estimate`), not a separately
+                    // hard-coded guess — a flat `36.0` here used to
+                    // understate the bar's real ~40px desktop / ~60px
+                    // mobile height, which could leave Full mode's trigger
+                    // too low and overlap the bottom bar (review N5/N6).
+                    let top_bar_px = controls_bar_height_estimate(is_mobile);
                     let legend_mode = rustywx::widgets::model_legend::legend_mode(
                         screen_height(),
                         is_mobile,
-                        36.0,
+                        top_bar_px,
                         54.0,
                     );
                     let height_estimate = match legend_mode {
@@ -3236,10 +3275,10 @@ async fn main() {
                             rustywx::widgets::model_legend::COMPACT_HEIGHT_ESTIMATE
                         }
                     };
-                    // 46 px bottom status bar + 8 px gap; 36 px top bar.
+                    // 46 px bottom status bar + 8 px gap.
                     let y = rustywx::widgets::model_legend::legend_y(
                         screen_height(),
-                        36.0,
+                        top_bar_px,
                         54.0,
                         height_estimate,
                     );
