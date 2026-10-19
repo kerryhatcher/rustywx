@@ -510,13 +510,21 @@ fn format_bin(bin: &str) -> String {
 
 // ── KMZ / KML parsing ──────────────────────────────────────────────────
 
+/// Largest KML entry read out of a KMZ. Real NHC wind-probability and
+/// arrival-time KMLs are well under 1 MB; this leaves generous headroom
+/// while still bounding a crafted or corrupted KMZ's in-memory expansion —
+/// a zip entry's declared size can't be trusted before it's actually
+/// decompressed (review R2-11).
+const MAX_KML_BYTES: u64 = 32 * 1024 * 1024;
+
 /// Decompress a KMZ (ZIP) byte slice and return the KML content.
 pub fn extract_kml_from_kmz(bytes: &[u8]) -> Result<String> {
+    use std::io::Read;
     let cursor = std::io::Cursor::new(bytes);
     let mut archive = zip::ZipArchive::new(cursor).map_err(|e| anyhow!("opening KMZ zip: {e}"))?;
 
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i)?;
+        let file = archive.by_index(i)?;
         // `name()` returns `Result` as of zip 3.0 (previously infallible
         // `&str`), since a raw entry name isn't guaranteed to decode as
         // UTF-8/CP437. An entry whose name can't be read is just skipped,
@@ -525,8 +533,17 @@ pub fn extract_kml_from_kmz(bytes: &[u8]) -> Result<String> {
             continue;
         };
         if name.ends_with(".kml") {
-            let mut kml = String::new();
-            std::io::Read::read_to_string(&mut file, &mut kml)?;
+            let mut buf = Vec::new();
+            file.take(MAX_KML_BYTES + 1)
+                .read_to_end(&mut buf)
+                .map_err(|e| anyhow!("reading KML entry in KMZ: {e}"))?;
+            if buf.len() as u64 > MAX_KML_BYTES {
+                return Err(anyhow!(
+                    "KML entry in KMZ is over the {MAX_KML_BYTES} byte cap"
+                ));
+            }
+            let kml = String::from_utf8(buf)
+                .map_err(|e| anyhow!("KML entry in KMZ is not valid UTF-8: {e}"))?;
             return Ok(kml);
         }
     }
@@ -1449,6 +1466,19 @@ mod tests {
     fn extract_kml_from_kmz_errors_without_a_kml_entry() {
         let kmz = build_kmz("readme.txt", b"not kml");
         assert!(extract_kml_from_kmz(&kmz).is_err());
+    }
+
+    #[test]
+    fn extract_kml_from_kmz_rejects_a_kml_entry_over_the_cap() {
+        // A zip entry's declared/decompressed size can't be trusted before
+        // it's actually read, so the reader itself must be bounded
+        // (review R2-11). A real NHC KML is well under 1 MB; this content
+        // is one byte over the cap and highly compressible, so the KMZ
+        // stays small while the decompressed entry doesn't.
+        let oversized = vec![b'x'; (MAX_KML_BYTES + 1) as usize];
+        let kmz = build_kmz("34kt_wind_probs.kml", &oversized);
+        let err = extract_kml_from_kmz(&kmz).unwrap_err();
+        assert!(format!("{err:#}").contains("cap"), "{err:#}");
     }
 
     #[test]
