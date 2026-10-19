@@ -96,7 +96,7 @@ pub fn legend_mode(
 ///
 /// `content_h_estimate` only needs to be in the right ballpark (see
 /// `FULL_HEIGHT_ESTIMATE` / `COMPACT_HEIGHT_ESTIMATE`): the panel's real
-/// `.height(fit!())` means a mis-estimate shifts the panel's position by a
+/// `.height(fit!())` means a misestimate shifts the panel's position by a
 /// few px, it never truncates or overflows the panel itself.
 pub fn legend_y(
     screen_height_px: f32,

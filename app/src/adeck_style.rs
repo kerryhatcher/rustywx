@@ -674,7 +674,7 @@ fn basin_matches(bin_number: &str, gis_basin: &str) -> bool {
 /// True unless `advisory_date` (`StormGis`, e.g. `"2026-07-19"`) can be
 /// positively shown to predate the OFCL cycle it would suppress. The GIS
 /// layers only carry a date, not a cycle hour, so day-level comparison is
-/// the finest granularity available. Missing or unparseable input — an
+/// the finest granularity available. Missing or unparsable input — an
 /// empty `advisory_date`, or no OFCL cycle to compare against — fails
 /// *open* (treats the advisory as new enough), not closed: this guards a
 /// narrow staleness edge case (a lagging or failed GIS refetch leaving an
@@ -1019,7 +1019,7 @@ pub fn project_tracks(
 /// still surfaces the oldest shown cycle's own age and staleness instead of
 /// suppressing it (review S5 fix-round finding: "mixed" must not mean "no
 /// freshness information"). `init`'s age and staleness come from
-/// `adeck::cycle_time_unix` + `is_stale_cycle`; an unparseable `init` omits
+/// `adeck::cycle_time_unix` + `is_stale_cycle`; an unparsable `init` omits
 /// the age and never reads as stale (nothing to measure against).
 pub fn cycle_freshness_line(init: u32, mixed: bool, now_unix: i64) -> (String, bool) {
     let cycle = format_cycle(init);
@@ -2085,7 +2085,7 @@ mod tests {
     }
 
     #[test]
-    fn gis_track_shown_for_fails_open_on_an_unparseable_advisory_date() {
+    fn gis_track_shown_for_fails_open_on_an_unparsable_advisory_date() {
         // Missing/malformed data must not silently stop today's
         // suppression behaviour (review N7's own doc comment: this guards
         // a narrow staleness case, not the primary S4 contract).

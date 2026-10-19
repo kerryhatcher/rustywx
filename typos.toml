@@ -7,6 +7,8 @@ extend-exclude = [
     "target/",
     "app/target/",
     "docs/research/",
+    "docs/reviews/",
+    "docs/superpowers/plans/",
     "*.png",
     "*.jpg",
     "*.gif",
