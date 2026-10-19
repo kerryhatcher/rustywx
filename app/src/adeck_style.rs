@@ -887,14 +887,18 @@ pub fn cycle_freshness_line(init: u32, mixed: bool, now_unix: i64) -> (String, b
 pub const CHART_MAX_KT: u32 = 160;
 
 /// X-axis extent: the longest series' last tau, rounded up to a whole day,
-/// clamped to 24..=168 h.
+/// clamped to 24..=168 h. `adeck::parse_adeck_line` already rejects a tau
+/// outside a sane range (review L6), but `max + 23` is kept saturating
+/// here too as defense in depth against a near-`i32::MAX` tau built some
+/// other way: plain addition panics on overflow in debug and test builds
+/// (it wraps and still clamps in release, so only debug/test ever crashed).
 pub fn chart_max_tau(series: &[IntensitySeries]) -> i32 {
     let max = series
         .iter()
         .flat_map(|s| s.points.iter().map(|p| p.0))
         .max()
         .unwrap_or(0);
-    (((max + 23) / 24) * 24).clamp(24, 168)
+    (max.saturating_add(23) / 24 * 24).clamp(24, 168)
 }
 
 /// Category bands (lo_kt, hi_kt, rgb), TD through Cat 5, capped at CHART_MAX_KT.
@@ -1901,6 +1905,16 @@ mod tests {
         assert_eq!(chart_max_tau(&[series(60)]), 72);
         assert_eq!(chart_max_tau(&[series(72)]), 72);
         assert_eq!(chart_max_tau(&[series(200)]), 168);
+    }
+
+    #[test]
+    fn chart_max_tau_does_not_panic_on_a_tau_near_i32_max() {
+        // `adeck::parse_adeck_line` rejects this before it ever reaches an
+        // `IntensitySeries`, but `chart_max_tau` is defense in depth for a
+        // series built some other way. Plain `max + 23` panics on overflow
+        // in debug/test builds here (review L6); this test runs under
+        // `cargo test`'s debug profile, so it would catch a regression.
+        assert_eq!(chart_max_tau(&[series(i32::MAX)]), 168);
     }
 
     #[test]

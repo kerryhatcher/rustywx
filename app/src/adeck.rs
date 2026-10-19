@@ -21,6 +21,14 @@ pub struct ADeckRecord {
     pub vmax_kt: Option<u32>,
 }
 
+/// Sane bound on a row's forecast hour. ATCF forecasts run out to 168 h
+/// (7 days) and CARQ past positions go back about 24-36 h; -240..=384
+/// covers that with generous slack either way while rejecting the kind of
+/// garbage tau (e.g. `i32::MAX`) that would otherwise overflow
+/// `adeck_style::chart_max_tau`'s `max + 23` in debug and test builds
+/// (review L6).
+const TAU_RANGE_H: std::ops::RangeInclusive<i32> = -240..=384;
+
 /// Parse one comma-separated a-deck row. Returns `None` for anything
 /// malformed: the caller skips the line, never fails the file. Uses no byte
 /// slicing, so hostile or non-ASCII input can't panic.
@@ -35,6 +43,9 @@ pub fn parse_adeck_line(line: &str) -> Option<ADeckRecord> {
         return None;
     }
     let tau_h: i32 = fields.next()?.parse().ok()?;
+    if !TAU_RANGE_H.contains(&tau_h) {
+        return None;
+    }
     let lat = parse_lat(fields.next()?)?;
     let lon = parse_lon(fields.next()?)?;
     let vmax: u32 = fields.next()?.parse().ok()?;
@@ -52,9 +63,14 @@ pub fn parse_adeck_line(line: &str) -> Option<ADeckRecord> {
     })
 }
 
-/// Parse every well-formed line; malformed lines are skipped.
+/// Parse every well-formed line; malformed lines are skipped. Stops at
+/// `MAX_ADECK_RECORDS` rows regardless of how much more input remains
+/// (review L5).
 pub fn parse_adeck(text: &str) -> Vec<ADeckRecord> {
-    text.lines().filter_map(parse_adeck_line).collect()
+    text.lines()
+        .filter_map(parse_adeck_line)
+        .take(MAX_ADECK_RECORDS)
+        .collect()
 }
 
 fn parse_init(s: &str) -> Option<u32> {
@@ -64,7 +80,14 @@ fn parse_init(s: &str) -> Option<u32> {
     s.parse().ok()
 }
 
+/// All-digit tenths, e.g. `"270"` -> 27.0. Rejects anything `u32::from_str`
+/// would accept but a real ATCF field never contains, such as a leading
+/// `+` (review L7: `parse_init` already requires all-digit input; this
+/// brings `parse_lat`/`parse_lon` in line with it).
 fn parse_tenths(digits: &str) -> Option<f64> {
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
     let v: u32 = digits.parse().ok()?;
     Some(f64::from(v) / 10.0)
 }
@@ -81,19 +104,20 @@ pub fn parse_lat(s: &str) -> Option<f64> {
     (-90.0..=90.0).contains(&lat).then_some(lat)
 }
 
-/// `"876W"` -> -87.6, `"1795E"` -> 179.5. East values past 180 are folded
-/// into -180..180 so a track can't wrap across the whole map.
+/// `"876W"` -> -87.6, `"1795E"` -> 179.5. ATCF stores longitude as 0-1800
+/// tenths (0-180.0°) plus E/W; a value past that is malformed, not an
+/// alternate 0-360° east convention. A previous version folded anything
+/// over 180° by subtracting 360 once, so a corrupt row like `"3700E"`
+/// (370.0° raw) silently became a plausible-looking 10.0°E and could jump
+/// a track across the ocean instead of being rejected (review L7).
 pub fn parse_lon(s: &str) -> Option<f64> {
-    let mut lon = if let Some(d) = s.strip_suffix('W') {
+    let lon = if let Some(d) = s.strip_suffix('W') {
         -parse_tenths(d)?
     } else if let Some(d) = s.strip_suffix('E') {
         parse_tenths(d)?
     } else {
         return None;
     };
-    if lon > 180.0 {
-        lon -= 360.0;
-    }
     (-180.0..=180.0).contains(&lon).then_some(lon)
 }
 
@@ -154,13 +178,30 @@ pub fn adeck_url(storm_id: &str) -> Option<String> {
 /// was 2.7 MB gzipped, so real files never hit this.
 pub const MAX_GZIP_BYTES: usize = 10 * 1024 * 1024;
 
-/// Uncompressed cap. A 350 KB live file inflates to 2.9 MB, so 64 MiB leaves
-/// over 20x headroom while stopping a decompression bomb (review M20).
+/// Uncompressed cap. The largest live a-deck seen is about 2.7 MB gzipped,
+/// about 22 MB inflated at the observed ~8.3x ratio, so 64 MiB leaves about
+/// 3x headroom over that real worst case — not the ">20x" an earlier
+/// version of this comment claimed off a since-superseded 350 KB sample
+/// (review L5). `MAX_ADECK_RECORDS` below additionally bounds the parsed
+/// `Vec`'s memory, since a crafted gzip that actually inflates to this cap
+/// would otherwise still be able to push it far past the text buffer's own
+/// size.
 pub const MAX_UNCOMPRESSED_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Hard cap on parsed rows, independent of `MAX_UNCOMPRESSED_BYTES`. Each
+/// `ADeckRecord` costs roughly 90 bytes against about 30 bytes per source
+/// line, so a crafted gzip that inflates all the way to the 64 MiB text cap
+/// could still push `parse_adeck`'s `Vec` to a couple hundred MB. No real
+/// a-deck comes close to this many rows (review L5).
+pub const MAX_ADECK_RECORDS: usize = 200_000;
 
 /// Inflate a gzip body, refusing non-gzip input and anything that inflates
 /// past `max_out` bytes. Invalid UTF-8 is replaced, not rejected (a-decks
-/// are ASCII). Run on the background worker only, never the UI thread.
+/// are ASCII). Decodes every member of a multi-member stream, not just the
+/// first — NHC has never been observed to concatenate members, but nothing
+/// stops it, and a silently-dropped later member would mean a silently
+/// stale cycle (review L8). Run on the background worker only, never the UI
+/// thread.
 pub fn gunzip_limited(gz: &[u8], max_out: u64) -> Result<String> {
     use std::io::Read;
     if gz.len() > MAX_GZIP_BYTES {
@@ -173,14 +214,18 @@ pub fn gunzip_limited(gz: &[u8], max_out: u64) -> Result<String> {
         bail!("a-deck body is not gzip ({} bytes)", gz.len());
     }
     let mut out = Vec::new();
-    flate2::read::GzDecoder::new(gz)
+    flate2::read::MultiGzDecoder::new(gz)
         .take(max_out + 1)
         .read_to_end(&mut out)
         .map_err(|e| anyhow!("inflating a-deck: {e}"))?;
     if out.len() as u64 > max_out {
         bail!("a-deck inflates past {max_out} bytes");
     }
-    Ok(String::from_utf8_lossy(&out).into_owned())
+    // Valid UTF-8 (every real a-deck) takes this branch, which moves `out`
+    // into the String without copying it; only the invalid-UTF-8 fallback
+    // (never expected in practice) pays for a copy (review L5).
+    Ok(String::from_utf8(out)
+        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()))
 }
 
 /// Model family, used for draw order and line style (track colour is by wind).
@@ -682,9 +727,30 @@ mod tests {
             "AL, 09, 2026100912, 03, , 12, 301N, 870W, 87",
             "\u{65e5}\u{672c},,,,,,,,",
             "AL, 09, 2026100912, 03, AVNI, 12, 950N, 870W, 87",
+            "AL, 09, 2026100912, 03, AVNI, 2147483647, 301N, 870W, 87",
         ] {
             assert_eq!(parse_adeck_line(bad), None, "should reject {bad:?}");
         }
+    }
+
+    #[test]
+    fn parse_line_rejects_tau_outside_the_sane_range() {
+        // A row with tau i32::MAX passes i32's own parse; without a range
+        // check at parse time, `adeck_style::chart_max_tau`'s `max + 23`
+        // would panic on the UI thread in debug and test builds (review
+        // L6). Also covered via parse_adeck_line above; this pins the
+        // boundary directly.
+        let row = |tau: i32| {
+            format!("AL, 09, 2026100912, 03, AVNI, {tau}, 301N, 870W, 87,    0,   ,  34, NEQ,")
+        };
+        assert!(
+            parse_adeck_line(&row(-240)).is_some(),
+            "lower bound is fine"
+        );
+        assert!(parse_adeck_line(&row(-241)).is_none());
+        assert!(parse_adeck_line(&row(384)).is_some(), "upper bound is fine");
+        assert!(parse_adeck_line(&row(385)).is_none());
+        assert!(parse_adeck_line(&row(i32::MAX)).is_none());
     }
 
     #[test]
@@ -698,11 +764,25 @@ mod tests {
     }
 
     #[test]
-    fn parse_lon_normalizes_east_past_180() {
-        // Some feeds write 0..360 east; 190E is 170W. Must not produce a
-        // +190 vertex that wraps a line across the whole map.
-        assert_eq!(parse_lon("1900E"), Some(-170.0));
+    fn parse_lon_rejects_east_past_180_degrees() {
+        // ATCF longitude is 0-1800 tenths (0-180.0°) plus E/W; a value past
+        // that is malformed, not an alternate 0-360° convention. A previous
+        // version folded it by subtracting 360 once, so "3700E" (370.0°
+        // raw) silently became a plausible 10.0°E instead of being
+        // rejected (review L7).
+        assert_eq!(parse_lon("3700E"), None);
+        assert_eq!(parse_lon("1900E"), None);
+        assert_eq!(parse_lon("1800E"), Some(180.0), "exactly at the cap");
         assert_eq!(parse_lon("3700W"), None);
+    }
+
+    #[test]
+    fn parse_tenths_rejects_a_leading_plus_sign() {
+        // u32::from_str accepts a leading '+' that no real ATCF field ever
+        // contains; parse_init already requires all-digit input, and
+        // parse_lat/parse_lon (via parse_tenths) now match it (review L7).
+        assert_eq!(parse_lat("+270N"), None);
+        assert_eq!(parse_lon("+870W"), None);
     }
 
     #[test]
@@ -819,6 +899,35 @@ mod tests {
         big.resize(MAX_GZIP_BYTES + 1, 0);
         let err = gunzip_limited(&big, MAX_UNCOMPRESSED_BYTES).unwrap_err();
         assert!(format!("{err:#}").contains("cap"), "{err:#}");
+    }
+
+    #[test]
+    fn gunzip_decodes_every_member_of_a_multi_member_stream() {
+        // Nothing stops NHC from building the .gz by appending members; a
+        // decoder that only reads the first would silently drop a later
+        // cycle and show an older one as fresh (review L8, S1).
+        let mut multi = gzip(b"first member\n");
+        multi.extend(gzip(b"second member\n"));
+        let text = gunzip_limited(&multi, MAX_UNCOMPRESSED_BYTES).unwrap();
+        assert_eq!(text, "first member\nsecond member\n");
+    }
+
+    #[test]
+    fn gunzip_round_trips_non_ascii_bytes_without_copying_valid_utf8() {
+        // Exercises the String::from_utf8 fast path directly (review L5);
+        // the happy path for every real a-deck, which is pure ASCII.
+        let text = "café — ASCII plus a few UTF-8 bytes\n";
+        let got = gunzip_limited(&gzip(text.as_bytes()), MAX_UNCOMPRESSED_BYTES).unwrap();
+        assert_eq!(got, text);
+    }
+
+    #[test]
+    fn parse_adeck_caps_the_record_count() {
+        // A crafted gzip that inflates to the full text cap must not be
+        // able to push the parsed Vec past a bounded size (review L5).
+        let line = "AL, 09, 2026100912, 03, AVNI,  12, 301N,  870W,  87,    0,   ,  34, NEQ,\n";
+        let text = line.repeat(MAX_ADECK_RECORDS + 10);
+        assert_eq!(parse_adeck(&text).len(), MAX_ADECK_RECORDS);
     }
 
     /// The research "on by default" set plus OFCL and CARQ (always on).
