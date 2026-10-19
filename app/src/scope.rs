@@ -2132,19 +2132,60 @@ fn draw_model_tracks(
                 }
                 Some(pattern) => {
                     let seg_len = ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt();
-                    let (spans, next_phase) = adeck_style::dash_steps(pattern, dash_phase, seg_len);
-                    dash_phase = next_phase;
-                    if seg_len > 0.0 {
-                        let dx = (w[1].0 - w[0].0) / seg_len;
-                        let dy = (w[1].1 - w[0].1) / seg_len;
-                        for span in spans {
-                            draw_line(
-                                w[0].0 + dx * span.start,
-                                w[0].1 + dy * span.start,
-                                w[0].0 + dx * span.end,
-                                w[0].1 + dy * span.end,
-                                style.width_px,
-                                color,
+                    if seg_len <= 0.0 || !seg_len.is_finite() {
+                        continue;
+                    }
+                    let dx = (w[1].0 - w[0].0) / seg_len;
+                    let dy = (w[1].1 - w[0].1) / seg_len;
+                    // Clip to the viewport (plus margin) BEFORE dashing: a
+                    // segment thousands of screen pixels long off-screen
+                    // at high zoom must not cost anything beyond this one
+                    // check (review N1). The invisible lead-in and
+                    // trailing portions still advance the dash phase, via
+                    // O(1) modular math rather than a loop, so the
+                    // pattern stays continuous once the track re-enters
+                    // view.
+                    match adeck_style::clip_segment_to_rect(
+                        w[0].0,
+                        w[0].1,
+                        w[1].0,
+                        w[1].1,
+                        -margin,
+                        -margin,
+                        sw + margin,
+                        sh + margin,
+                    ) {
+                        None => {
+                            dash_phase =
+                                adeck_style::advance_dash_phase(pattern, dash_phase, seg_len);
+                        }
+                        Some((t0, t1)) => {
+                            let clip_start = t0 * seg_len;
+                            let clip_end = t1 * seg_len;
+                            let phase_at_start =
+                                adeck_style::advance_dash_phase(pattern, dash_phase, clip_start);
+                            let (spans, phase_after_visible) = adeck_style::dash_steps(
+                                pattern,
+                                phase_at_start,
+                                clip_end - clip_start,
+                            );
+                            let spans = adeck_style::cap_dash_spans(spans, clip_end - clip_start);
+                            for span in spans {
+                                let s = clip_start + span.start;
+                                let e = clip_start + span.end;
+                                draw_line(
+                                    w[0].0 + dx * s,
+                                    w[0].1 + dy * s,
+                                    w[0].0 + dx * e,
+                                    w[0].1 + dy * e,
+                                    style.width_px,
+                                    color,
+                                );
+                            }
+                            dash_phase = adeck_style::advance_dash_phase(
+                                pattern,
+                                phase_after_visible,
+                                seg_len - clip_end,
                             );
                         }
                     }

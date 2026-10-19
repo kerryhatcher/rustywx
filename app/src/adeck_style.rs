@@ -166,10 +166,19 @@ pub struct DashSpan {
 /// irrelevant to any future draw, so it's reported as `0.0` rather than
 /// carrying forward a value that could otherwise grow without bound across
 /// a long polyline of all-degenerate segments.
+/// Hard ceiling on a single `dash_steps` call's length, in px. Callers that
+/// clip to the viewport first (`scope::draw_model_tracks`, review N1) never
+/// pass anything near this, so it exists purely as defense in depth: an f32
+/// `pos` stops advancing around 2^25 px when the step is small, so a
+/// non-finite or absurdly large `length_px` could otherwise spin the loop
+/// below forever (review N17).
+const MAX_DASH_STEPS_LENGTH_PX: f32 = 1.0e6;
+
 pub fn dash_steps(pattern: DashPattern, phase_px: f32, length_px: f32) -> (Vec<DashSpan>, f32) {
-    if length_px <= 0.0 {
+    if !length_px.is_finite() || length_px <= 0.0 {
         return (Vec::new(), phase_px);
     }
+    let length_px = length_px.min(MAX_DASH_STEPS_LENGTH_PX);
     let cycle = pattern.cycle_px();
     if cycle <= 0.0 || pattern.on_px <= 0.0 {
         return (Vec::new(), 0.0);
@@ -203,6 +212,102 @@ pub fn dash_steps(pattern: DashPattern, phase_px: f32, length_px: f32) -> (Vec<D
         }
     }
     (spans, phase)
+}
+
+/// Advances a dash phase by `distance_px` without enumerating any spans —
+/// an O(1) modular step, matching `dash_steps`'s own degenerate-input
+/// conventions (a non-positive cycle or `on_px`, or a non-finite distance,
+/// reports phase `0.0`). Used to skip over the part of a track segment
+/// that `clip_segment_to_rect` clipped away as off-screen, so the dash
+/// pattern stays continuous once the track re-enters view without ever
+/// running `dash_steps`'s per-dash loop over a distance longer than what's
+/// actually on screen — that loop, not just the resulting `draw_line`
+/// calls, is what explodes at high zoom if it has to walk a whole
+/// multi-thousand-pixel off-screen run (review N1).
+pub fn advance_dash_phase(pattern: DashPattern, phase_px: f32, distance_px: f32) -> f32 {
+    let cycle = pattern.cycle_px();
+    if cycle <= 0.0 || pattern.on_px <= 0.0 || !distance_px.is_finite() {
+        return 0.0;
+    }
+    (phase_px + distance_px.max(0.0)).rem_euclid(cycle)
+}
+
+/// Hard ceiling on spans drawn for one clipped segment. Clipping first
+/// (review N1) already bounds `dash_steps`'s input to roughly the screen
+/// diagonal, so this never bites for any pattern `track_style` actually
+/// assigns — it's a cheap backstop against a pattern with an on/off pair
+/// far smaller than those, which could still produce an excessive span
+/// count even over a screen-bounded length.
+pub const MAX_DASH_SPANS_PER_SEGMENT: usize = 2000;
+
+/// Collapses `spans` to one solid span covering `[0, length_px]` if there
+/// are more than `MAX_DASH_SPANS_PER_SEGMENT` of them, trading dash detail
+/// for a bounded number of `draw_line` calls (review N1).
+pub fn cap_dash_spans(spans: Vec<DashSpan>, length_px: f32) -> Vec<DashSpan> {
+    if spans.len() > MAX_DASH_SPANS_PER_SEGMENT {
+        vec![DashSpan {
+            start: 0.0,
+            end: length_px.max(0.0),
+        }]
+    } else {
+        spans
+    }
+}
+
+/// Liang-Barsky clip of the segment `(x0,y0)-(x1,y1)` against the
+/// axis-aligned rect `[rx0,ry0]-[rx1,ry1]`. Returns the parametric range
+/// `(t0, t1)` (`0.0..=1.0`, `t0 <= t1`) of the segment that lies inside the
+/// rect, or `None` if the segment doesn't intersect it at all. Used to clip
+/// each model-track segment to the viewport (plus a margin) before dashing
+/// it, which is the actual fix for review N1: a track segment that's
+/// thousands of screen pixels long off-screen no longer costs anything
+/// beyond this one check, instead of walking its entire length through
+/// `dash_steps`.
+#[allow(clippy::too_many_arguments)]
+pub fn clip_segment_to_rect(
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    rx0: f32,
+    ry0: f32,
+    rx1: f32,
+    ry1: f32,
+) -> Option<(f32, f32)> {
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let mut t0 = 0.0_f32;
+    let mut t1 = 1.0_f32;
+    for (p, q) in [
+        (-dx, x0 - rx0),
+        (dx, rx1 - x0),
+        (-dy, y0 - ry0),
+        (dy, ry1 - y0),
+    ] {
+        if p == 0.0 {
+            if q < 0.0 {
+                return None; // parallel to this edge and entirely outside it
+            }
+        } else {
+            let r = q / p;
+            if p < 0.0 {
+                if r > t1 {
+                    return None;
+                }
+                if r > t0 {
+                    t0 = r;
+                }
+            } else {
+                if r < t0 {
+                    return None;
+                }
+                if r < t1 {
+                    t1 = r;
+                }
+            }
+        }
+    }
+    (t0 <= t1).then_some((t0, t1))
 }
 
 /// Line style per model group.
@@ -1351,6 +1456,140 @@ mod tests {
         let (spans2, phase2) = dash_steps(negative_cycle, 2.0, 20.0);
         assert!(spans2.is_empty());
         assert_eq!(phase2, 0.0);
+    }
+
+    #[test]
+    fn dash_steps_rejects_non_finite_length_without_hanging() {
+        // Review N17: a non-finite length_px must not spin the loop. Both
+        // NaN and +/-infinity fail `is_finite()`, so both take the early
+        // return — this test completing at all is the assertion.
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let (spans, phase) = dash_steps(pattern(), 3.0, bad);
+            assert!(spans.is_empty());
+            assert_eq!(phase, 3.0, "phase passes through unchanged");
+        }
+    }
+
+    #[test]
+    fn dash_steps_caps_a_huge_finite_length_instead_of_hanging() {
+        // A length well past MAX_DASH_STEPS_LENGTH_PX must still return
+        // promptly with a bounded span count (review N17) — reachable
+        // only as defense in depth, since scope::draw_model_tracks clips
+        // to the viewport before ever calling dash_steps (review N1).
+        let (spans, _) = dash_steps(pattern(), 0.0, 1.0e9);
+        assert!(
+            (spans.len() as f32) < MAX_DASH_STEPS_LENGTH_PX / pattern().cycle_px() + 1.0,
+            "span count must stay bounded by the length cap, got {}",
+            spans.len()
+        );
+    }
+
+    #[test]
+    fn advance_dash_phase_matches_dash_steps_final_phase() {
+        // advance_dash_phase is the O(1) shortcut for skipping a distance
+        // without enumerating spans; it must agree with dash_steps's own
+        // final phase for the same (pattern, start phase, distance).
+        let (_, want) = dash_steps(pattern(), 2.0, 37.0);
+        assert_eq!(advance_dash_phase(pattern(), 2.0, 37.0), want);
+    }
+
+    #[test]
+    fn advance_dash_phase_matches_degenerate_pattern_convention() {
+        let degenerate = DashPattern {
+            on_px: 0.0,
+            off_px: 5.0,
+        };
+        assert_eq!(advance_dash_phase(degenerate, 2.0, 37.0), 0.0);
+        assert_eq!(advance_dash_phase(pattern(), 2.0, f32::NAN), 0.0);
+    }
+
+    #[test]
+    fn cap_dash_spans_passes_through_under_the_limit() {
+        let spans = vec![DashSpan {
+            start: 0.0,
+            end: 1.0,
+        }];
+        assert_eq!(cap_dash_spans(spans.clone(), 100.0), spans);
+    }
+
+    #[test]
+    fn cap_dash_spans_collapses_to_one_solid_span_over_the_limit() {
+        let spans: Vec<DashSpan> = (0..MAX_DASH_SPANS_PER_SEGMENT + 1)
+            .map(|i| DashSpan {
+                start: i as f32,
+                end: i as f32 + 0.5,
+            })
+            .collect();
+        let capped = cap_dash_spans(spans, 250.0);
+        assert_eq!(
+            capped,
+            vec![DashSpan {
+                start: 0.0,
+                end: 250.0
+            }]
+        );
+    }
+
+    #[test]
+    fn clip_segment_to_rect_keeps_a_fully_inside_segment_whole() {
+        assert_eq!(
+            clip_segment_to_rect(10.0, 10.0, 20.0, 10.0, 0.0, 0.0, 100.0, 100.0),
+            Some((0.0, 1.0))
+        );
+    }
+
+    #[test]
+    fn clip_segment_to_rect_rejects_a_fully_outside_segment() {
+        assert_eq!(
+            clip_segment_to_rect(200.0, 200.0, 300.0, 200.0, 0.0, 0.0, 100.0, 100.0),
+            None
+        );
+    }
+
+    #[test]
+    fn clip_segment_to_rect_trims_a_segment_that_exits_the_rect() {
+        // Horizontal segment from x=50 (inside) to x=200 (outside); the
+        // rect's right edge is at x=100, so only the first half is kept.
+        let (t0, t1) =
+            clip_segment_to_rect(50.0, 50.0, 200.0, 50.0, 0.0, 0.0, 100.0, 100.0).unwrap();
+        assert_eq!(t0, 0.0);
+        assert!((t1 - (50.0 / 150.0)).abs() < 1e-5, "t1={t1}");
+    }
+
+    #[test]
+    fn clip_segment_to_rect_trims_a_diagonal_segment_from_both_ends() {
+        // Diagonal from well above-left of the rect to well below-right of
+        // it, passing straight through the middle.
+        let (t0, t1) =
+            clip_segment_to_rect(-100.0, -100.0, 200.0, 200.0, 0.0, 0.0, 100.0, 100.0).unwrap();
+        assert!(t0 > 0.0 && t0 < 0.5, "t0={t0}");
+        assert!(t1 > 0.5 && t1 < 1.0, "t1={t1}");
+    }
+
+    #[test]
+    fn clip_segment_to_rect_bounds_dash_work_for_a_track_far_off_screen_at_high_zoom() {
+        // Review N1's actual failure scenario: a model track segment that,
+        // at high zoom, spans a million screen pixels — almost all of it
+        // off-screen. Clipping first must bound the work regardless of
+        // how long the real segment is.
+        let full_len = 1_000_000.0_f32;
+        let rect = (-50.0, -50.0, 1970.0, 1130.0); // 1920x1080 viewport + 50px margin
+        let (t0, t1) =
+            clip_segment_to_rect(0.0, 0.0, full_len, 0.0, rect.0, rect.1, rect.2, rect.3).unwrap();
+        let clipped_len = (t1 - t0) * full_len;
+        assert!(
+            clipped_len < 2100.0,
+            "clipped length must stay near the viewport size, got {clipped_len}"
+        );
+        // Global's pattern has the smallest cycle (1.5 on / 4 off = 5.5px),
+        // the worst case for span count.
+        let global = track_style(ModelGroup::Global).dash.unwrap();
+        let (spans, _) = dash_steps(global, 0.0, clipped_len);
+        assert!(
+            spans.len() < 1000,
+            "span count for a clipped segment must stay small, got {}",
+            spans.len()
+        );
     }
 
     #[test]
