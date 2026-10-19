@@ -101,6 +101,17 @@ pub struct StormGis {
     pub name: String,
     pub storm_type: String,
     pub basin: String,
+    /// NHC bin number (e.g. `"AT14"`), from each layer's `binnumber`
+    /// property. Empty when a layer doesn't carry it. Matches
+    /// `StormMeta::bin_number` exactly (confirmed live: `ep212026` / `EP1`
+    /// / MapServer `binnumber` "EP1") and is the primary key
+    /// `parse_gis_storms` merges the cone/track/points/watches layers on,
+    /// with the old name-substring rule as a fallback only when it's
+    /// empty on either side (review N2) — a name substring match merged
+    /// one storm's track onto a different, unrelated storm's entry
+    /// whenever one name was a substring of another ("Four" inside
+    /// "Fourteen-E"), silently corrupting the storm it landed on.
+    pub bin_number: String,
     pub advisory_num: String,
     pub advisory_date: String,
     /// Forecast cone polygon rings.
@@ -744,6 +755,29 @@ fn extract_rings_for_feature(feature: &Value) -> Vec<Ring> {
     }
 }
 
+/// Finds the `StormGis` entry a layer feature (`bin_number`, `name`)
+/// belongs to: an exact, non-empty `bin_number` match if one exists,
+/// otherwise the old name-substring rule as a fallback for a layer that
+/// doesn't carry `binnumber` (review N2/N3). Matching on the bin number
+/// first is what stops one storm's track or points from landing on a
+/// different storm's entry just because one name is a substring of the
+/// other (`"Four"` inside `"Fourteen-E"`), which the name-only rule could
+/// do silently.
+fn find_storm_mut<'a>(
+    storms: &'a mut [StormGis],
+    bin_number: &str,
+    name: &str,
+) -> Option<&'a mut StormGis> {
+    if !bin_number.is_empty()
+        && let Some(pos) = storms
+            .iter()
+            .position(|s| !s.bin_number.is_empty() && s.bin_number.eq_ignore_ascii_case(bin_number))
+    {
+        return storms.get_mut(pos);
+    }
+    storms.iter_mut().find(|s| name.contains(&s.name))
+}
+
 /// Parse all GIS storm data from four MapServer layer JSON responses.
 /// Layers: 5 = forecast points, 6 = track, 7 = cone, 8 = watches/warnings.
 pub fn parse_gis_storms(
@@ -766,6 +800,7 @@ pub fn parse_gis_storms(
                 name,
                 storm_type: prop_str(feature, "stormtype"),
                 basin: prop_str(feature, "basin"),
+                bin_number: prop_str(feature, "binnumber"),
                 advisory_num: prop_str(feature, "advisnum"),
                 advisory_date: prop_str(feature, "advdate"),
                 cone: extract_rings_for_feature(feature),
@@ -782,23 +817,24 @@ pub fn parse_gis_storms(
     {
         for feature in features {
             let name = prop_str(feature, "stormname");
-            if let Some(storm) = storms.iter_mut().find(|s| name.contains(&s.name)) {
+            let bin = prop_str(feature, "binnumber");
+            if let Some(storm) = find_storm_mut(&mut storms, &bin, &name) {
                 storm.track = extract_rings_for_feature(feature);
             }
         }
     }
 
-    // Merge forecast points.
-    // The points layer (5) uses a full "Tropical Storm Fausto" style
-    // stormname, while the cone layer (7) uses just "Fausto".  Match by
-    // checking if any existing storm's name is contained in the points
-    // feature's stormname.
+    // Merge forecast points. The points layer (5) uses a full "Tropical
+    // Storm Fausto" style stormname, while the cone layer (7) uses just
+    // "Fausto" — the name-substring fallback above handles that shape
+    // mismatch when binnumber isn't available on this layer.
     if let Some(points) = points_json
         && let Some(features) = points.get("features").and_then(Value::as_array)
     {
         for feature in features {
             let name = prop_str(feature, "stormname");
-            if let Some(storm) = storms.iter_mut().find(|s| name.contains(&s.name))
+            let bin = prop_str(feature, "binnumber");
+            if let Some(storm) = find_storm_mut(&mut storms, &bin, &name)
                 && let Some(geom) = feature.get("geometry")
                 && let Some(coords) = geom.get("coordinates").and_then(Value::as_array)
                 && let (Some(lon), Some(lat)) = (
@@ -818,8 +854,9 @@ pub fn parse_gis_storms(
     {
         for feature in features {
             let name = prop_str(feature, "stormname");
+            let bin = prop_str(feature, "binnumber");
             let ww_type = prop_str(feature, "tcww");
-            if let Some(storm) = storms.iter_mut().find(|s| name.contains(&s.name)) {
+            if let Some(storm) = find_storm_mut(&mut storms, &bin, &name) {
                 for ring in extract_rings_for_feature(feature) {
                     storm.watches_warnings.push((ring, ww_type.clone()));
                 }
@@ -1709,5 +1746,82 @@ mod tests {
         assert_eq!(storms.len(), 1);
         assert_eq!(storms[0].points.len(), 1);
         assert_eq!(storms[0].points[0].2, "8:00 AM Mon");
+    }
+
+    #[test]
+    fn parse_gis_storms_merges_track_by_bin_number_not_name_substring() {
+        // Review N2: "Four" is a substring of "Fourteen-E", so the old
+        // name-substring merge (`find(|s| name.contains(&s.name))`) could
+        // attach Fourteen-E's track to Four's entry instead, since Four's
+        // cone entry comes first and matches the substring test too. With
+        // binnumber present on both sides, the track must land on the
+        // storm it actually belongs to.
+        let cone_json: Value = serde_json::from_str(
+            r#"{
+            "features": [
+                {
+                    "properties": {"stormname": "Four", "stormtype": "TD", "basin": "AT", "binnumber": "AT4", "advisnum": "1", "advdate": "2026-08-01"},
+                    "geometry": {"type": "Polygon", "coordinates": [[[-80.0, 25.0], [-81.0, 26.0], [-80.5, 27.0], [-80.0, 25.0]]]}
+                },
+                {
+                    "properties": {"stormname": "Fourteen-E", "stormtype": "HU", "basin": "EP", "binnumber": "EP14", "advisnum": "9", "advdate": "2026-08-01"},
+                    "geometry": {"type": "Polygon", "coordinates": [[[-120.0, 15.0], [-121.0, 16.0], [-120.5, 17.0], [-120.0, 15.0]]]}
+                }
+            ]
+        }"#,
+        )
+        .unwrap();
+        let track_json: Value = serde_json::from_str(
+            r#"{
+            "features": [{
+                "properties": {"stormname": "Fourteen-E", "binnumber": "EP14"},
+                "geometry": {"type": "LineString", "coordinates": [[-120.0, 15.0], [-121.0, 16.0]]}
+            }]
+        }"#,
+        )
+        .unwrap();
+        let storms = parse_gis_storms(Some(&cone_json), Some(&track_json), None, None);
+        let four = storms.iter().find(|s| s.name == "Four").unwrap();
+        let fourteen_e = storms.iter().find(|s| s.name == "Fourteen-E").unwrap();
+        assert!(
+            four.track.is_empty(),
+            "Four must not inherit Fourteen-E's track"
+        );
+        assert!(
+            !fourteen_e.track.is_empty(),
+            "Fourteen-E must get its own track"
+        );
+    }
+
+    #[test]
+    fn parse_gis_storms_merges_track_by_bin_number_across_a_td_to_named_storm_rename() {
+        // Review N3: MapServer can lag CurrentStorms through a rename (a
+        // depression upgraded and named while the track layer still used
+        // the old TD-style stormname, or vice versa). An exact name match
+        // would miss this entirely; the bin number doesn't change.
+        let cone_json: Value = serde_json::from_str(
+            r#"{
+            "features": [{
+                "properties": {"stormname": "TD Fifteen", "stormtype": "TD", "basin": "AT", "binnumber": "AT15", "advisnum": "2", "advdate": "2026-08-02"},
+                "geometry": {"type": "Polygon", "coordinates": [[[-80.0, 25.0], [-81.0, 26.0], [-80.5, 27.0], [-80.0, 25.0]]]}
+            }]
+        }"#,
+        )
+        .unwrap();
+        let track_json: Value = serde_json::from_str(
+            r#"{
+            "features": [{
+                "properties": {"stormname": "Nadine", "binnumber": "AT15"},
+                "geometry": {"type": "LineString", "coordinates": [[-80.0, 25.0], [-81.0, 26.0]]}
+            }]
+        }"#,
+        )
+        .unwrap();
+        let storms = parse_gis_storms(Some(&cone_json), Some(&track_json), None, None);
+        assert_eq!(storms.len(), 1);
+        assert!(
+            !storms[0].track.is_empty(),
+            "bin number must still merge the track across the rename"
+        );
     }
 }

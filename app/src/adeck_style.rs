@@ -669,35 +669,60 @@ fn basin_matches(bin_number: &str, gis_basin: &str) -> bool {
     canonical_basin(&bin_basin) == canonical_basin(gis_basin)
 }
 
+/// True unless `advisory_date` (`StormGis`, e.g. `"2026-07-19"`) can be
+/// positively shown to predate the OFCL cycle it would suppress. The GIS
+/// layers only carry a date, not a cycle hour, so day-level comparison is
+/// the finest granularity available. Missing or unparseable input — an
+/// empty `advisory_date`, or no OFCL cycle to compare against — fails
+/// *open* (treats the advisory as new enough), not closed: this guards a
+/// narrow staleness edge case (a lagging or failed GIS refetch leaving an
+/// old advisory in place while the a-deck OFCL keeps advancing, review N7),
+/// not the primary S4 suppression contract, so missing data should fall
+/// back to today's behaviour rather than silently stop suppressing.
+fn gis_advisory_not_known_stale(advisory_date: &str, ofcl_cycle_unix: Option<i64>) -> bool {
+    let Some(cycle_unix) = ofcl_cycle_unix else {
+        return true;
+    };
+    let Ok(adv_date) = chrono::NaiveDate::parse_from_str(advisory_date.trim(), "%Y-%m-%d") else {
+        return true;
+    };
+    let Some(cycle_dt) = chrono::DateTime::from_timestamp(cycle_unix, 0) else {
+        return true;
+    };
+    adv_date >= cycle_dt.date_naive()
+}
+
 /// True when `storm_id`'s a-deck OFCL track already has a matching, live,
 /// currently-drawn NHC advisory GIS track, so the OFCL track should be
 /// suppressed rather than drawn as a second, possibly-diverging "official"
 /// track (review S4: a-deck OFCL "can differ from official NHC products"
 /// per the ATCF README, and can lag the live advisory — see review S8).
 ///
-/// This does **not** reuse `nhc.rs`'s own GIS-layer-to-GIS-layer match
-/// (`storms.iter_mut().find(|s| name.contains(&s.name))`, case-sensitive,
-/// one-direction, basin-blind) — that rule exists to merge one storm's own
-/// cone/track/points/watches layers onto each other, and reusing it
-/// directly here would be unsafe: a plain substring match on
-/// `CurrentStorms` names produces real false positives, since depression
-/// names are often plain numbers (`"Four"` is a substring of
-/// `"Fourteen-E"`, `"Nine"` of `"Nine-E"`, `"Seven"` of `"Seventeen-E"`).
-/// Wrongly suppressing a brand-new depression's only official track because
-/// an unrelated storm's GIS name happens to contain its name would be worse
-/// than the bug this fix addresses, exactly in the new-storm window where
-/// it matters most.
+/// **Matching (review N2/N3):** primarily on `meta.bin_number ==
+/// g.bin_number` (both sides' NHC bin number, e.g. `"AT14"`/`"EP1"`,
+/// confirmed to match exactly live) when both are non-empty — this is an
+/// unambiguous per-storm key, unlike a name. Name is used only as a
+/// fallback, for a layer that doesn't carry `binnumber`, and even then
+/// requires an **exact**, case-insensitive, trimmed match plus a basin
+/// match (`basin_matches`): depression names are often plain numbers
+/// (`"Four"` is a substring of `"Fourteen-E"`), so a plain substring rule —
+/// which is what `nhc.rs`'s own layer-to-layer merge used before review N2
+/// — produces real false positives, and a renamed storm (TD -> named
+/// storm) or an EP/CP crossover can break an exact name match outright
+/// (review N3). `storm_id` is looked up in `metas` (`StormMeta::id` is the
+/// same CurrentStorms id `GuidanceStore` keys on) to get its bin number,
+/// bare name, and basin.
 ///
-/// Instead this requires an **exact**, case-insensitive, trimmed name match
-/// *and* a basin match (`basin_matches`), since `StormGis` carries no storm
-/// id (only a bare name — there is no existing id-based accessor to reuse).
-/// `storm_id` is looked up in `metas` (`StormMeta::id` is the same
-/// CurrentStorms id `GuidanceStore` keys on) to get both its bare name and
-/// its basin (`StormMeta::bin_number`).
+/// **Freshness (review N7):** also requires `gis_advisory_not_known_stale`
+/// against `ofcl_cycle_unix` (the candidate OFCL track's own selected
+/// cycle, `ProjectedTrack::cycle_unix` / `cycle_time_unix(StormGuidance::init)`),
+/// so a GIS feed that's stuck on an old advisory while the a-deck OFCL
+/// keeps advancing doesn't suppress the newer official forecast in favour
+/// of stale advisory data.
 ///
-/// `show_gis_track` should be the live `NhcOverlayState::show_track` toggle,
-/// and the match also requires the candidate `StormGis::track` to be
-/// non-empty: `draw_nhc_overlays` only actually draws the advisory track
+/// `show_gis_track` should be the live `NhcOverlayState::show_track`
+/// toggle, and the match also requires the candidate `StormGis::track` to
+/// be non-empty: `draw_nhc_overlays` only actually draws the advisory track
 /// when both hold, so without this check turning the GIS track layer off
 /// (or a storm whose GIS track is still empty) would suppress OFCL while
 /// drawing nothing official at all — worse than the original bug (review
@@ -707,6 +732,7 @@ pub fn gis_track_shown_for(
     metas: &[crate::nhc::StormMeta],
     gis_storms: &[crate::nhc::StormGis],
     show_gis_track: bool,
+    ofcl_cycle_unix: Option<i64>,
 ) -> bool {
     if !show_gis_track {
         return false;
@@ -714,14 +740,19 @@ pub fn gis_track_shown_for(
     let Some(meta) = metas.iter().find(|m| m.id.eq_ignore_ascii_case(storm_id)) else {
         return false;
     };
-    let name = meta.name.trim();
-    if name.is_empty() {
-        return false;
-    }
     gis_storms.iter().any(|g| {
-        !g.track.is_empty()
-            && g.name.trim().eq_ignore_ascii_case(name)
-            && basin_matches(&meta.bin_number, &g.basin)
+        if g.track.is_empty() {
+            return false;
+        }
+        let same_storm = if !meta.bin_number.is_empty() && !g.bin_number.is_empty() {
+            meta.bin_number.eq_ignore_ascii_case(&g.bin_number)
+        } else {
+            let name = meta.name.trim();
+            !name.is_empty()
+                && g.name.trim().eq_ignore_ascii_case(name)
+                && basin_matches(&meta.bin_number, &g.basin)
+        };
+        same_storm && gis_advisory_not_known_stale(&g.advisory_date, ofcl_cycle_unix)
     })
 }
 
@@ -766,7 +797,13 @@ pub fn any_official_track_shown(
 ) -> bool {
     store.iter().any(|g| {
         has_official_candidate(g)
-            && !gis_track_shown_for(&g.storm_id, metas, gis_storms, show_gis_track)
+            && !gis_track_shown_for(
+                &g.storm_id,
+                metas,
+                gis_storms,
+                show_gis_track,
+                crate::adeck::cycle_time_unix(g.init),
+            )
     })
 }
 
@@ -784,7 +821,13 @@ pub fn any_official_suppressed_by_gis(
 ) -> bool {
     store.iter().any(|g| {
         has_official_candidate(g)
-            && gis_track_shown_for(&g.storm_id, metas, gis_storms, show_gis_track)
+            && gis_track_shown_for(
+                &g.storm_id,
+                metas,
+                gis_storms,
+                show_gis_track,
+                crate::adeck::cycle_time_unix(g.init),
+            )
     })
 }
 
@@ -1816,6 +1859,7 @@ mod tests {
             name: name.to_string(),
             storm_type: String::new(),
             basin: basin.to_string(),
+            bin_number: String::new(),
             advisory_num: String::new(),
             advisory_date: String::new(),
             cone: Vec::new(),
@@ -1826,6 +1870,21 @@ mod tests {
             },
             points: Vec::new(),
             watches_warnings: Vec::new(),
+        }
+    }
+
+    /// `test_gis` with `bin_number` and `advisory_date` also set, for the
+    /// bin-number-match and advisory-freshness tests (review N2/N3/N7).
+    fn test_gis_ex(
+        name: &str,
+        basin: &str,
+        bin_number: &str,
+        advisory_date: &str,
+    ) -> crate::nhc::StormGis {
+        crate::nhc::StormGis {
+            bin_number: bin_number.to_string(),
+            advisory_date: advisory_date.to_string(),
+            ..test_gis(name, basin, true)
         }
     }
 
@@ -1840,9 +1899,9 @@ mod tests {
         // below.
         let metas = [test_meta("ep092026", "Fausto", "EP9")];
         let gis = [test_gis("FAUSTO", "EP", true)];
-        assert!(gis_track_shown_for("ep092026", &metas, &gis, true));
+        assert!(gis_track_shown_for("ep092026", &metas, &gis, true, None));
         // Storm id is matched case-insensitively too.
-        assert!(gis_track_shown_for("EP092026", &metas, &gis, true));
+        assert!(gis_track_shown_for("EP092026", &metas, &gis, true, None));
     }
 
     #[test]
@@ -1857,7 +1916,7 @@ mod tests {
         // test that would have caught that.
         let metas = [test_meta("al142026", "Milton", "AT14")];
         let gis = [test_gis("Milton", "AL", true)];
-        assert!(gis_track_shown_for("al142026", &metas, &gis, true));
+        assert!(gis_track_shown_for("al142026", &metas, &gis, true, None));
     }
 
     #[test]
@@ -1869,7 +1928,7 @@ mod tests {
         // above): "AT4" from CurrentStorms, "AL" from the live GIS feed.
         let metas = [test_meta("al042026", "Four", "AT4")];
         let gis = [test_gis("Fourteen-E", "AL", true)];
-        assert!(!gis_track_shown_for("al042026", &metas, &gis, true));
+        assert!(!gis_track_shown_for("al042026", &metas, &gis, true, None));
     }
 
     #[test]
@@ -1880,27 +1939,27 @@ mod tests {
         // even after the AL/AT fix.
         let metas = [test_meta("al142026", "Milton", "AT14")];
         let gis = [test_gis("Milton", "EP", true)];
-        assert!(!gis_track_shown_for("al142026", &metas, &gis, true));
+        assert!(!gis_track_shown_for("al142026", &metas, &gis, true, None));
     }
 
     #[test]
     fn gis_track_shown_for_false_when_storm_unknown() {
         let metas = [test_meta("al142026", "Milton", "AT14")];
         let gis = [test_gis("Milton", "AL", true)];
-        assert!(!gis_track_shown_for("ep092026", &metas, &gis, true));
+        assert!(!gis_track_shown_for("ep092026", &metas, &gis, true, None));
     }
 
     #[test]
     fn gis_track_shown_for_false_when_no_gis_match() {
         let metas = [test_meta("al142026", "Milton", "AT14")];
         let gis = [test_gis("Helene", "AL", true)];
-        assert!(!gis_track_shown_for("al142026", &metas, &gis, true));
+        assert!(!gis_track_shown_for("al142026", &metas, &gis, true, None));
     }
 
     #[test]
     fn gis_track_shown_for_false_with_no_gis_storms() {
         let metas = [test_meta("al142026", "Milton", "AT14")];
-        assert!(!gis_track_shown_for("al142026", &metas, &[], true));
+        assert!(!gis_track_shown_for("al142026", &metas, &[], true, None));
     }
 
     #[test]
@@ -1910,7 +1969,7 @@ mod tests {
         // OFCL here would leave nothing official on screen at all.
         let metas = [test_meta("al142026", "Milton", "AT14")];
         let gis = [test_gis("Milton", "AL", false)];
-        assert!(!gis_track_shown_for("al142026", &metas, &gis, true));
+        assert!(!gis_track_shown_for("al142026", &metas, &gis, true, None));
     }
 
     #[test]
@@ -1919,7 +1978,7 @@ mod tests {
         // track when `overlays.show_track` is on.
         let metas = [test_meta("al142026", "Milton", "AT14")];
         let gis = [test_gis("Milton", "AL", true)];
-        assert!(!gis_track_shown_for("al142026", &metas, &gis, false));
+        assert!(!gis_track_shown_for("al142026", &metas, &gis, false, None));
     }
 
     #[test]
@@ -1934,8 +1993,77 @@ mod tests {
             test_meta("ep082026", "Hector", "EP8"),
         ];
         let gis = [test_gis("Milton", "AL", true)];
-        assert!(gis_track_shown_for("al142026", &metas, &gis, true));
-        assert!(!gis_track_shown_for("ep082026", &metas, &gis, true));
+        assert!(gis_track_shown_for("al142026", &metas, &gis, true, None));
+        assert!(!gis_track_shown_for("ep082026", &metas, &gis, true, None));
+    }
+
+    #[test]
+    fn gis_track_shown_for_matches_by_bin_number_despite_a_name_mismatch() {
+        // Review N3: MapServer can lag through a rename. A storm whose
+        // CurrentStorms name is now "Nadine" but whose GIS entry still
+        // carries the pre-rename "TD Fifteen" must still match, because
+        // the bin number is primary once both sides carry one.
+        let metas = [test_meta("al152026", "Nadine", "AT15")];
+        let gis = [test_gis_ex("TD Fifteen", "AL", "AT15", "")];
+        assert!(gis_track_shown_for("al152026", &metas, &gis, true, None));
+    }
+
+    #[test]
+    fn gis_track_shown_for_bin_number_rejects_a_substring_false_positive() {
+        // Review N2: "Four" is a substring of "Fourteen-E"; the exact-name
+        // fallback already rejects this (see the test above with that
+        // name), and the bin-number path must reject it too once both
+        // entries carry a (different) bin number.
+        let metas = [test_meta("al042026", "Four", "AT4")];
+        let gis = [test_gis_ex("Fourteen-E", "AL", "AT14", "")];
+        assert!(!gis_track_shown_for("al042026", &metas, &gis, true, None));
+    }
+
+    #[test]
+    fn gis_track_shown_for_false_when_the_advisory_predates_the_ofcl_cycle() {
+        // Review N7: a GIS feed stuck on an old advisory while the a-deck
+        // OFCL has moved on must not suppress the newer official forecast.
+        let metas = [test_meta("al142026", "Milton", "AT14")];
+        let gis = [test_gis_ex("Milton", "AL", "AT14", "2026-10-08")];
+        let ofcl_cycle = crate::adeck::cycle_time_unix(2026100912); // Oct 9
+        assert!(!gis_track_shown_for(
+            "al142026", &metas, &gis, true, ofcl_cycle
+        ));
+    }
+
+    #[test]
+    fn gis_track_shown_for_true_when_the_advisory_is_the_same_day_or_newer() {
+        let metas = [test_meta("al142026", "Milton", "AT14")];
+        let same_day = test_gis_ex("Milton", "AL", "AT14", "2026-10-09");
+        let newer = test_gis_ex("Milton", "AL", "AT14", "2026-10-10");
+        let ofcl_cycle = crate::adeck::cycle_time_unix(2026100912);
+        assert!(gis_track_shown_for(
+            "al142026",
+            &metas,
+            &[same_day],
+            true,
+            ofcl_cycle
+        ));
+        assert!(gis_track_shown_for(
+            "al142026",
+            &metas,
+            &[newer],
+            true,
+            ofcl_cycle
+        ));
+    }
+
+    #[test]
+    fn gis_track_shown_for_fails_open_on_an_unparseable_advisory_date() {
+        // Missing/malformed data must not silently stop today's
+        // suppression behaviour (review N7's own doc comment: this guards
+        // a narrow staleness case, not the primary S4 contract).
+        let metas = [test_meta("al142026", "Milton", "AT14")];
+        let gis = [test_gis_ex("Milton", "AL", "AT14", "not-a-date")];
+        let ofcl_cycle = crate::adeck::cycle_time_unix(2026100912);
+        assert!(gis_track_shown_for(
+            "al142026", &metas, &gis, true, ofcl_cycle
+        ));
     }
 
     #[test]

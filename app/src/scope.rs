@@ -2095,6 +2095,7 @@ fn draw_model_tracks(
                 &bundle.metas,
                 &bundle.gis_storms,
                 show_gis_track,
+                track.cycle_unix,
             )
         {
             continue; // the advisory GIS track already shows this storm's official forecast
