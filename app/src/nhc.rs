@@ -503,7 +503,13 @@ pub fn extract_kml_from_kmz(bytes: &[u8]) -> Result<String> {
 
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
-        let name = file.name().to_string();
+        // `name()` returns `Result` as of zip 3.0 (previously infallible
+        // `&str`), since a raw entry name isn't guaranteed to decode as
+        // UTF-8/CP437. An entry whose name can't be read is just skipped,
+        // same as any other non-`.kml` entry.
+        let Ok(name) = file.name().map(|n| n.to_string()) else {
+            continue;
+        };
         if name.ends_with(".kml") {
             let mut kml = String::new();
             std::io::Read::read_to_string(&mut file, &mut kml)?;
@@ -1381,6 +1387,35 @@ pub fn watch_warning_color(ww_type: &str) -> [u8; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn build_kmz(entry_name: &str, content: &[u8]) -> Vec<u8> {
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut w = zip::ZipWriter::new(&mut buf);
+            let opts = zip::write::SimpleFileOptions::default();
+            w.start_file(entry_name, opts).unwrap();
+            std::io::Write::write_all(&mut w, content).unwrap();
+            w.finish().unwrap();
+        }
+        buf.into_inner()
+    }
+
+    #[test]
+    fn extract_kml_from_kmz_finds_the_kml_entry() {
+        // No dedicated test existed before bumping zip 2.4.2 -> 9 for
+        // RUSTSEC advisories; this pins the round trip against the new
+        // major version's API (`ZipArchive`/`ZipWriter` unchanged in
+        // shape, but `ZipFile::name()` became fallible).
+        let kmz = build_kmz("34kt_wind_probs.kml", b"<kml>contents</kml>");
+        let kml = extract_kml_from_kmz(&kmz).unwrap();
+        assert_eq!(kml, "<kml>contents</kml>");
+    }
+
+    #[test]
+    fn extract_kml_from_kmz_errors_without_a_kml_entry() {
+        let kmz = build_kmz("readme.txt", b"not kml");
+        assert!(extract_kml_from_kmz(&kmz).is_err());
+    }
 
     #[test]
     fn iso_to_ddhhmm_parses_iso8601() {

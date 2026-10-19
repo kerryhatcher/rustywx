@@ -14,6 +14,17 @@ ignore = [
     # → macroquad-ply → fontdue. No fix available upstream until ply-engine
     # updates its font rendering backend. Pinned in fontdue 0.9.3.
     "RUSTSEC-2026-0192",
+    # zbus_names, zvariant, and zvariant_derive are unmaintained. All three
+    # are transitive via ply-engine → accesskit_unix → zbus, the Linux
+    # accessibility (AT-SPI) backend — not reachable on the macOS/Windows
+    # builds this app actually ships, and not a direct dependency we can
+    # swap out. Bumped to the latest available versions (zbus_names
+    # 4.3.5, zvariant/zvariant_derive 5.15.1); the advisories are against
+    # the crates' maintenance status, not a specific version, so no bump
+    # clears them.
+    "RUSTSEC-2026-0370",
+    "RUSTSEC-2026-0371",
+    "RUSTSEC-2026-0372",
 ]
 
 [licenses]
