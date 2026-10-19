@@ -784,26 +784,31 @@ fn extract_rings_for_feature(feature: &Value) -> Vec<Ring> {
 }
 
 /// Finds the `StormGis` entry a layer feature (`bin_number`, `name`)
-/// belongs to: an exact, non-empty `bin_number` match if one exists,
-/// otherwise the old name-substring rule as a fallback for a layer that
-/// doesn't carry `binnumber` (review N2/N3). Matching on the bin number
-/// first is what stops one storm's track or points from landing on a
-/// different storm's entry just because one name is a substring of the
-/// other (`"Four"` inside `"Fourteen-E"`), which the name-only rule could
-/// do silently.
+/// belongs to. When the feature carries a non-empty `bin_number`, this
+/// matches **by bin only** — a feature with a bin that matches no known
+/// storm returns `None` rather than falling through to a name match
+/// (review R2-2: NHC's four MapServer layers update independently, so a
+/// feature can show up with a bin that the cone layer hasn't caught up to
+/// yet; falling back to substring matching for it could still attach its
+/// track to a *different*, unrelated storm, exactly the N2 bug this was
+/// meant to fix). The name-substring rule is a fallback only when the
+/// feature has no bin at all, and even then only against storms that
+/// themselves have no bin — a storm with a confirmed bin is never
+/// re-matched by a substring guess.
 fn find_storm_mut<'a>(
     storms: &'a mut [StormGis],
     bin_number: &str,
     name: &str,
 ) -> Option<&'a mut StormGis> {
-    if !bin_number.is_empty()
-        && let Some(pos) = storms
+    if !bin_number.is_empty() {
+        return storms
             .iter()
             .position(|s| !s.bin_number.is_empty() && s.bin_number.eq_ignore_ascii_case(bin_number))
-    {
-        return storms.get_mut(pos);
+            .and_then(|pos| storms.get_mut(pos));
     }
-    storms.iter_mut().find(|s| name.contains(&s.name))
+    storms
+        .iter_mut()
+        .find(|s| s.bin_number.is_empty() && name.contains(&s.name))
 }
 
 /// Parse all GIS storm data from four MapServer layer JSON responses.
@@ -1887,5 +1892,112 @@ mod tests {
             !storms[0].track.is_empty(),
             "bin number must still merge the track across the rename"
         );
+    }
+    #[test]
+    fn parse_gis_storms_rejects_an_unmatched_bin_instead_of_falling_back_to_substring() {
+        // Review R2-2: "Six" is a substring of "Sixteen-E". The old rule
+        // fell back to substring matching whenever a non-empty bin found
+        // no match, so a track feature carrying a bin for a storm the
+        // cone layer hasn't caught up to yet (NHC's 4 layers update
+        // independently) could still attach to a different, unrelated
+        // storm. With both sides carrying a bin, an unmatched bin must
+        // return None, not fall through.
+        let cone_json: Value = serde_json::from_str(
+            r#"{
+            "features": [{
+                "properties": {"stormname": "Six", "stormtype": "TD", "basin": "AT", "binnumber": "AT2", "advisnum": "1", "advdate": "2026-08-01"},
+                "geometry": {"type": "Polygon", "coordinates": [[[-80.0, 25.0], [-81.0, 26.0], [-80.5, 27.0], [-80.0, 25.0]]]}
+            }]
+        }"#,
+        )
+        .unwrap();
+        let track_json: Value = serde_json::from_str(
+            r#"{
+            "features": [{
+                "properties": {"stormname": "Sixteen-E", "binnumber": "EP3"},
+                "geometry": {"type": "LineString", "coordinates": [[-120.0, 15.0], [-121.0, 16.0]]}
+            }]
+        }"#,
+        )
+        .unwrap();
+        let storms = parse_gis_storms(Some(&cone_json), Some(&track_json), None, None);
+        assert_eq!(storms.len(), 1, "Sixteen-E has no cone entry to attach to");
+        assert!(
+            storms[0].track.is_empty(),
+            "Six must not inherit Sixteen-E's track just because its bin went unmatched"
+        );
+    }
+
+    #[test]
+    fn parse_gis_storms_merges_points_by_bin_number_not_name_substring() {
+        // Review R2-2: a bin-merge test for the points layer specifically
+        // — neither this nor the watches layer had one, so reverting the
+        // bin-number change for either failed nothing.
+        let cone_json: Value = serde_json::from_str(
+            r#"{
+            "features": [
+                {
+                    "properties": {"stormname": "Six", "stormtype": "TD", "basin": "AT", "binnumber": "AT2", "advisnum": "1", "advdate": "2026-08-01"},
+                    "geometry": {"type": "Polygon", "coordinates": [[[-80.0, 25.0], [-81.0, 26.0], [-80.5, 27.0], [-80.0, 25.0]]]}
+                },
+                {
+                    "properties": {"stormname": "Sixteen-E", "stormtype": "HU", "basin": "EP", "binnumber": "EP3", "advisnum": "9", "advdate": "2026-08-01"},
+                    "geometry": {"type": "Polygon", "coordinates": [[[-120.0, 15.0], [-121.0, 16.0], [-120.5, 17.0], [-120.0, 15.0]]]}
+                }
+            ]
+        }"#,
+        )
+        .unwrap();
+        let points_json: Value = serde_json::from_str(
+            r#"{
+            "features": [{
+                "properties": {"stormname": "Hurricane Sixteen-E", "binnumber": "EP3", "datelbl": "8:00 AM Mon"},
+                "geometry": {"type": "Point", "coordinates": [-116.4, 13.5]}
+            }]
+        }"#,
+        )
+        .unwrap();
+        let storms = parse_gis_storms(Some(&cone_json), None, Some(&points_json), None);
+        let six = storms.iter().find(|s| s.name == "Six").unwrap();
+        let sixteen_e = storms.iter().find(|s| s.name == "Sixteen-E").unwrap();
+        assert!(six.points.is_empty(), "Six must not inherit the point");
+        assert_eq!(sixteen_e.points.len(), 1);
+    }
+
+    #[test]
+    fn parse_gis_storms_merges_watches_by_bin_number_not_name_substring() {
+        // Review R2-2: a bin-merge test for the watches/warnings layer.
+        let cone_json: Value = serde_json::from_str(
+            r#"{
+            "features": [
+                {
+                    "properties": {"stormname": "Six", "stormtype": "TD", "basin": "AT", "binnumber": "AT2", "advisnum": "1", "advdate": "2026-08-01"},
+                    "geometry": {"type": "Polygon", "coordinates": [[[-80.0, 25.0], [-81.0, 26.0], [-80.5, 27.0], [-80.0, 25.0]]]}
+                },
+                {
+                    "properties": {"stormname": "Sixteen-E", "stormtype": "HU", "basin": "EP", "binnumber": "EP3", "advisnum": "9", "advdate": "2026-08-01"},
+                    "geometry": {"type": "Polygon", "coordinates": [[[-120.0, 15.0], [-121.0, 16.0], [-120.5, 17.0], [-120.0, 15.0]]]}
+                }
+            ]
+        }"#,
+        )
+        .unwrap();
+        let ww_json: Value = serde_json::from_str(
+            r#"{
+            "features": [{
+                "properties": {"stormname": "Hurricane Sixteen-E", "binnumber": "EP3", "tcww": "HW"},
+                "geometry": {"type": "LineString", "coordinates": [[-120.0, 15.0], [-121.0, 16.0]]}
+            }]
+        }"#,
+        )
+        .unwrap();
+        let storms = parse_gis_storms(Some(&cone_json), None, None, Some(&ww_json));
+        let six = storms.iter().find(|s| s.name == "Six").unwrap();
+        let sixteen_e = storms.iter().find(|s| s.name == "Sixteen-E").unwrap();
+        assert!(
+            six.watches_warnings.is_empty(),
+            "Six must not inherit the watch/warning"
+        );
+        assert_eq!(sixteen_e.watches_warnings.len(), 1);
     }
 }
