@@ -38,7 +38,11 @@ test-doc:
 audit:
     # RUSTSEC-2026-0192: ttf-parser 0.21.1 unmaintained, transitive via
     # ply-engine -> macroquad-ply -> fontdue. No upstream fix available.
-    cargo audit --ignore RUSTSEC-2026-0192
+    # RUSTSEC-2026-0370/0371/0372: zvariant/zbus_names/zvariant_derive
+    # unmaintained, transitive via ply-engine -> accesskit_unix -> zbus
+    # (Linux AT-SPI accessibility backend). See deny.toml for the full
+    # rationale; kept in sync with it and CI's audit job here.
+    cargo audit --ignore RUSTSEC-2026-0192 --ignore RUSTSEC-2026-0370 --ignore RUSTSEC-2026-0371 --ignore RUSTSEC-2026-0372
 
 deny:
     cargo deny check

@@ -82,7 +82,12 @@ repos:
     hooks:
       - id: cargo-audit
         name: cargo audit
-        entry: cargo-audit audit --ignore RUSTSEC-2026-0192
+        # Ignores kept in sync with the Justfile's `audit` recipe and CI's
+        # audit job (RUSTSEC-2026-0192: ttf-parser, unmaintained; 0370/0371/
+        # 0372: zvariant/zbus_names/zvariant_derive, unmaintained, Linux
+        # AT-SPI accessibility backend — see deny.toml for the full
+        # rationale).
+        entry: cargo-audit audit --ignore RUSTSEC-2026-0192 --ignore RUSTSEC-2026-0370 --ignore RUSTSEC-2026-0371 --ignore RUSTSEC-2026-0372
         language: system
         types: [rust]
         pass_filenames: false
