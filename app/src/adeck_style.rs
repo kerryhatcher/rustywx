@@ -842,6 +842,38 @@ pub fn any_official_suppressed_by_gis(
     })
 }
 
+/// Per-storm counterpart to `any_official_track_shown`/
+/// `any_official_suppressed_by_gis`, for UI that describes one storm rather
+/// than aggregating across every shown storm. The per-storm model-guidance
+/// card used to say "No NHC official forecast this cycle" off
+/// `StormGuidance::has_official` alone, which can disagree with what the
+/// legend says for the very same storm: `has_official` is true whenever the
+/// a-deck has an OFCL row for the selected cycle, even when that OFCL is
+/// suppressed in favour of the live NHC advisory GIS track, and false for
+/// a cycle that has no OFCL row at all even though the GIS advisory track
+/// may still be drawn (review R2-4, was N13).
+pub fn storm_official_legend_state(
+    g: &StormGuidance,
+    metas: &[crate::nhc::StormMeta],
+    gis_storms: &[crate::nhc::StormGis],
+    show_gis_track: bool,
+) -> OfficialLegendState {
+    if !has_official_candidate(g) {
+        return OfficialLegendState::NotIssued;
+    }
+    if gis_track_shown_for(
+        &g.storm_id,
+        metas,
+        gis_storms,
+        show_gis_track,
+        crate::adeck::cycle_time_unix(g.init),
+    ) {
+        OfficialLegendState::SuppressedForGis
+    } else {
+        OfficialLegendState::Drawn
+    }
+}
+
 /// Full disclaimer and attribution, one panel line each (no auto-wrap).
 /// Wording from `docs/research/spaghetti-models.md` section 4.
 pub const DISCLAIMER_LINES: [&str; 6] = [
@@ -2240,6 +2272,45 @@ mod tests {
             &[],
             true
         ));
+    }
+
+    #[test]
+    fn storm_official_legend_state_drawn_when_ofcl_is_shown_normally() {
+        let store = fixture_store();
+        let g = store.get("al092026").unwrap();
+        assert_eq!(
+            storm_official_legend_state(g, &[], &[], true),
+            OfficialLegendState::Drawn
+        );
+    }
+
+    #[test]
+    fn storm_official_legend_state_suppressed_agrees_with_the_legend() {
+        // Same inputs as any_official_suppressed_by_gis_true_when_the_only_
+        // ofcl_is_suppressed: the per-storm card must report the same state
+        // as the aggregate legend for the very storm it's describing,
+        // rather than "No NHC official forecast this cycle" while the
+        // legend (correctly) says the advisory track carries OFCL (review
+        // R2-4, was N13).
+        let store = fixture_store();
+        let g = store.get("al092026").unwrap();
+        let metas = [test_meta("al092026", "Jerry", "AT9")];
+        let gis = [test_gis("Jerry", "AL", true)];
+        assert_eq!(
+            storm_official_legend_state(g, &metas, &gis, true),
+            OfficialLegendState::SuppressedForGis
+        );
+    }
+
+    #[test]
+    fn storm_official_legend_state_not_issued_when_there_is_no_ofcl_candidate() {
+        let store = fixture_store();
+        let mut g = store.get("al092026").unwrap().clone();
+        g.tracks.retain(|t| t.group != ModelGroup::Official);
+        assert_eq!(
+            storm_official_legend_state(&g, &[], &[], true),
+            OfficialLegendState::NotIssued
+        );
     }
 
     #[test]

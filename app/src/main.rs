@@ -2983,9 +2983,29 @@ async fn main() {
                                                     ),
                                                     |t| t.font_size(11).color(0x9E9590),
                                                 );
-                                                if !g.has_official {
+                                                // Review R2-4 (was N13): derive the card's
+                                                // OFCL line from the same function the
+                                                // legend uses, rather than `g.has_official`
+                                                // alone — that flag is true even when OFCL
+                                                // is suppressed in favour of the drawn GIS
+                                                // advisory track, and false even when that
+                                                // advisory track still carries an official
+                                                // forecast. Using the shared function keeps
+                                                // the card and legend from disagreeing.
+                                                let ofcl_state =
+                                                    rustywx::adeck_style::storm_official_legend_state(
+                                                        g,
+                                                        &bundle.metas,
+                                                        &bundle.gis_storms,
+                                                        state.nhc_overlays.show_track,
+                                                    );
+                                                if ofcl_state
+                                                    != rustywx::adeck_style::OfficialLegendState::Drawn
+                                                {
                                                     ui.text(
-                                                        "No NHC official forecast this cycle",
+                                                        rustywx::adeck_style::official_legend_label(
+                                                            ofcl_state,
+                                                        ),
                                                         |t| t.font_size(11).color(0xFFC140),
                                                     );
                                                 }
