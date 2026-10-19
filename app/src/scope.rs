@@ -2,6 +2,7 @@
 //! Uses render_to_texture for the radar sweep and macroquad draw calls
 //! for overlays (range rings, borders, markers, etc.).
 
+use crate::adeck_style::{self, ProjectedTrack};
 use crate::alerts::Alert;
 use crate::borders::Ring;
 use crate::colors;
@@ -1388,6 +1389,8 @@ pub fn project_site(
 ///
 /// Stage 4 adds optional border and alert overlay drawing.
 /// Stage 5 adds optional NHC tropical cyclone overlay drawing.
+/// `model_tracks` adds the optional spaghetti-models overlay, drawn under
+/// the official NHC layers.
 /// `melting_layer` adds the optional melting-layer hint ring (see
 /// `melting_layer.rs`); `Some` only when the feature is on and a ring was
 /// detected in the current scan.
@@ -1400,6 +1403,10 @@ pub fn draw_scope_to_texture(
     borders: Option<(&[Ring], bool)>,
     alerts: Option<(&[Alert], bool, bool)>,
     nhc: Option<(&NhcBundle, &NhcOverlayState)>,
+    model_tracks: Option<&[ProjectedTrack]>,
+    // Wall-clock unix time, used only to compute model-track cycle-age
+    // dimming (`adeck_style::track_alpha_mult`, review S1).
+    now_unix: i64,
     user: Option<Coords>,
     show_sites: bool,
     show_rings: bool,
@@ -1596,8 +1603,26 @@ pub fn draw_scope_to_texture(
         );
     }
 
-    // ── NHC overlays (Stage 5) ──────────────────────────────────
+    // ── NHC overlays (Stage 5) + model tracks (spaghetti) ───────
     if let Some((bundle, overlays)) = nhc {
+        // Models first so the official cone/track sit on top. `bundle` and
+        // `overlays.show_track` are passed through so a storm with a live,
+        // currently-drawn GIS advisory track can have its a-deck OFCL track
+        // suppressed (review S4 "two official tracks") — the toggle and
+        // `StormGis::track` emptiness are both checked by
+        // `adeck_style::gis_track_shown_for` so suppression never fires for
+        // a track that isn't actually being drawn (fix-round Important 2).
+        if let Some(tracks) = model_tracks {
+            draw_model_tracks(
+                tracks,
+                bundle,
+                overlays.show_track,
+                center_x,
+                center_y,
+                px_per_km,
+                now_unix,
+            );
+        }
         draw_nhc_overlays(bundle, overlays, site, center_x, center_y, px_per_km);
     }
 
@@ -1888,9 +1913,13 @@ fn draw_nhc_overlays(
             }
         }
 
-        // Forecast track (dotted line in storm color)
+        // Forecast track (dotted line in storm color). The colour is moved
+        // off the Saffir-Simpson palette and shared with the legend swatch
+        // (review S4: the old `#FFCC66` sat close to the Cat 3 model
+        // colour and wasn't in the legend).
         if overlays.show_track {
-            let track_color = MacroquadColor::from_rgba(0xff, 0xcc, 0x66, 200);
+            let [r, g, b] = adeck_style::GIS_ADVISORY_RGB;
+            let track_color = MacroquadColor::from_rgba(r, g, b, 200);
             for ring in &storm.track {
                 for pair in ring.windows(2) {
                     let a_km = geo::point_to_km_offset(site.lat, site.lon, pair[0]);
@@ -1913,7 +1942,8 @@ fn draw_nhc_overlays(
 
         // Forecast points (markers with labels)
         if overlays.show_points {
-            let pt_color = MacroquadColor::from_rgba(0xff, 0xcc, 0x66, 255);
+            let [r, g, b] = adeck_style::GIS_ADVISORY_RGB;
+            let pt_color = MacroquadColor::from_rgba(r, g, b, 255);
             for &(lat, lon, ref label) in &storm.points {
                 let km = geo::point_to_km_offset(site.lat, site.lon, (lat, lon));
                 let px = center_x + km.x * px_per_km;
@@ -2016,6 +2046,183 @@ fn draw_nhc_overlays(
             margin,
             MacroquadColor::from_rgba(0x66, 0xdd, 0x88, 180),
         );
+    }
+}
+
+/// Draw ATCF model-guidance tracks ("spaghetti"). Each segment is coloured
+/// by the forecast wind at its start (`adeck_style::segment_rgba`); OFCL gets
+/// a dark outline (review S4: a white outline erased OFCL's own pale Cat
+/// 1/2 colours). Tech ids are drawn at track ends with greedy collision
+/// skipping (same idiom as the city labels).
+///
+/// `now_unix` drives each track's dim level via `adeck_style::track_alpha_mult`,
+/// recomputed fresh every call (not cached on `ProjectedTrack`) so dimming
+/// keeps advancing with real time even across a total fetch outage, when
+/// nothing bumps the guidance store's revision and the caller's projection
+/// cache never rebuilds (review S1 fix-round critical fix).
+///
+/// `bundle` and `show_gis_track` are used only to suppress a storm's OFCL
+/// track when that same storm already has a live, currently-drawn NHC
+/// advisory GIS track (review S4 "two official tracks") — see
+/// `adeck_style::gis_track_shown_for`, which also checks `StormGis::track`
+/// emptiness so this can't suppress OFCL for a track that isn't actually on
+/// screen (fix-round Important 2). Doing this here, at draw time, means the
+/// decision is always as fresh as `bundle` itself: it doesn't wait on the
+/// `(site_index, revision)` projection cache (`main.rs`), which only
+/// rebuilds when the a-deck guidance store changes, not when the
+/// independently-polled NHC bundle does.
+fn draw_model_tracks(
+    tracks: &[ProjectedTrack],
+    bundle: &NhcBundle,
+    show_gis_track: bool,
+    center_x: f32,
+    center_y: f32,
+    px_per_km: f32,
+    now_unix: i64,
+) {
+    let sw = screen_width();
+    let sh = screen_height();
+    let margin = 50.0;
+    let to_px = |km: Vec2| (center_x + km.x * px_per_km, center_y + km.y * px_per_km);
+    // Alpha multiplier travels with each label so a dimmed (cycle-stale)
+    // track's tech id fades along with its line (review S1).
+    let mut labels: Vec<(&str, f32, f32, f32)> = Vec::new();
+
+    for track in tracks {
+        if track.group == crate::adeck::ModelGroup::Official
+            && adeck_style::gis_track_shown_for(
+                &track.storm_id,
+                &bundle.metas,
+                &bundle.gis_storms,
+                show_gis_track,
+                track.cycle_unix,
+            )
+        {
+            continue; // the advisory GIS track already shows this storm's official forecast
+        }
+        let (x0, y0) = to_px(track.min_km);
+        let (x1, y1) = to_px(track.max_km);
+        if x1 < -margin || x0 > sw + margin || y1 < -margin || y0 > sh + margin {
+            continue; // whole track off-screen
+        }
+        let style = adeck_style::track_style(track.group);
+        let pts: Vec<(f32, f32)> = track.km.iter().map(|&k| to_px(k)).collect();
+        let alpha_mult = adeck_style::track_alpha_mult(track, now_unix);
+        let dim = |a: u8| ((f32::from(a)) * alpha_mult).round().clamp(0.0, 255.0) as u8;
+        if let Some(under) = style.underlay_px {
+            let [or, og, ob] = adeck_style::OFFICIAL_OUTLINE_RGB;
+            let outline =
+                MacroquadColor::from_rgba(or, og, ob, dim(adeck_style::OFFICIAL_OUTLINE_ALPHA));
+            for w in pts.windows(2) {
+                draw_line(w[0].0, w[0].1, w[1].0, w[1].1, under, outline);
+            }
+        }
+        // Dash phase accumulates across this track's whole polyline, in
+        // screen-space pixels, so the pattern doesn't visibly reset at
+        // every forecast point (review S11) — it's reset to 0.0 only once
+        // per track, here, not inside the loop below.
+        let mut dash_phase = 0.0_f32;
+        for (i, w) in pts.windows(2).enumerate() {
+            let start = track.vmax_kt.get(i).copied().flatten();
+            let end = track.vmax_kt.get(i + 1).copied().flatten();
+            let [r, g, b, a] = adeck_style::segment_rgba(track.group, start, end);
+            let color = MacroquadColor::from_rgba(r, g, b, dim(a));
+            match style.dash {
+                None => {
+                    draw_line(w[0].0, w[0].1, w[1].0, w[1].1, style.width_px, color);
+                }
+                Some(pattern) => {
+                    let seg_len = ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt();
+                    if seg_len <= 0.0 || !seg_len.is_finite() {
+                        continue;
+                    }
+                    let dx = (w[1].0 - w[0].0) / seg_len;
+                    let dy = (w[1].1 - w[0].1) / seg_len;
+                    // Clip to the viewport (plus margin) BEFORE dashing: a
+                    // segment thousands of screen pixels long off-screen
+                    // at high zoom must not cost anything beyond this one
+                    // check (review N1). The invisible lead-in and
+                    // trailing portions still advance the dash phase, via
+                    // O(1) modular math rather than a loop, so the
+                    // pattern stays continuous once the track re-enters
+                    // view.
+                    match adeck_style::clip_segment_to_rect(
+                        w[0].0,
+                        w[0].1,
+                        w[1].0,
+                        w[1].1,
+                        -margin,
+                        -margin,
+                        sw + margin,
+                        sh + margin,
+                    ) {
+                        None => {
+                            dash_phase =
+                                adeck_style::advance_dash_phase(pattern, dash_phase, seg_len);
+                        }
+                        Some((t0, t1)) => {
+                            let clip_start = t0 * seg_len;
+                            let clip_end = t1 * seg_len;
+                            let phase_at_start =
+                                adeck_style::advance_dash_phase(pattern, dash_phase, clip_start);
+                            let (spans, phase_after_visible) = adeck_style::dash_steps(
+                                pattern,
+                                phase_at_start,
+                                clip_end - clip_start,
+                            );
+                            let spans = adeck_style::cap_dash_spans(spans, clip_end - clip_start);
+                            for span in spans {
+                                let s = clip_start + span.start;
+                                let e = clip_start + span.end;
+                                draw_line(
+                                    w[0].0 + dx * s,
+                                    w[0].1 + dy * s,
+                                    w[0].0 + dx * e,
+                                    w[0].1 + dy * e,
+                                    style.width_px,
+                                    color,
+                                );
+                            }
+                            dash_phase = adeck_style::advance_dash_phase(
+                                pattern,
+                                phase_after_visible,
+                                seg_len - clip_end,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        if style.label
+            && let Some(&(lx, ly)) = pts.last()
+        {
+            labels.push((track.tech.as_str(), lx, ly, alpha_mult));
+        }
+    }
+
+    // OFCL is last in draw order; reversing gives it first pick of space.
+    let label_font = 12.0;
+    let pad = 3.0;
+    let mut placed: Vec<(f32, f32, f32, f32)> = Vec::new();
+    for &(text, x, y, alpha_mult) in labels.iter().rev() {
+        if x < 0.0 || x > sw || y < 0.0 || y > sh {
+            continue;
+        }
+        let dims = measure_text(text, None, label_font as u16, 1.0);
+        let bx = x + 4.0 - pad;
+        let by = y - 4.0 - dims.height - pad;
+        let bw = dims.width + 2.0 * pad;
+        let bh = dims.height + 2.0 * pad;
+        let collides = placed
+            .iter()
+            .any(|&(px0, py0, px1, py1)| bx < px1 && bx + bw > px0 && by < py1 && by + bh > py0);
+        if collides {
+            continue;
+        }
+        let label_alpha = (230.0 * alpha_mult).round().clamp(0.0, 255.0) as u8;
+        let label_color = MacroquadColor::from_rgba(0xe8, 0xe0, 0xdc, label_alpha);
+        draw_text(text, x + 4.0, y - 4.0, label_font, label_color);
+        placed.push((bx, by, bx + bw, by + bh));
     }
 }
 

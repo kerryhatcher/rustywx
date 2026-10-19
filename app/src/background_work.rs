@@ -51,6 +51,11 @@ pub enum ParsePayload {
         gis_points: Option<String>,
         gis_ww: Option<String>,
     },
+    /// Gzipped ATCF a-deck body for one storm (spaghetti-models overlay).
+    ADeck {
+        storm_id: String,
+        gz: Vec<u8>,
+    },
 }
 
 impl ParsePayload {
@@ -59,6 +64,7 @@ impl ParsePayload {
             Self::Borders { .. } => "borders_parse",
             Self::Alerts(_) => "alerts_parse",
             Self::NhcMetadata { .. } => "nhc_metadata_parse",
+            Self::ADeck { .. } => "adeck_parse",
         }
     }
 
@@ -83,6 +89,7 @@ impl ParsePayload {
                     + gis_points.as_ref().map_or(0, String::len)
                     + gis_ww.as_ref().map_or(0, String::len)
             }
+            Self::ADeck { gz, .. } => gz.len(),
         }
     }
 }
@@ -105,6 +112,7 @@ pub enum ParsedData {
     Borders(Vec<Ring>),
     Alerts(Vec<Alert>),
     NhcMetadata(NhcMetadata),
+    ADeck(crate::adeck::StormGuidance),
 }
 
 pub struct ParseResult {
@@ -322,6 +330,12 @@ impl BackgroundWorkers {
     pub fn poll_parse(&mut self) -> Option<ParseResult> {
         self.parse_rx.try_recv().ok()
     }
+    /// True when `submit_parse` will not fail with `Full`. The UI thread is
+    /// the only sender, so capacity can't vanish between this check and the
+    /// send. Mirrors `image_queue_has_capacity`.
+    pub fn parse_queue_has_capacity(&self) -> bool {
+        self.parse_tx.capacity() > 0
+    }
     pub fn submit_raster(&self, request: RasterRequest) -> Result<(), SubmitError> {
         self.raster_tx.try_send(request).map_err(map_submit)
     }
@@ -375,6 +389,11 @@ fn parse(payload: ParsePayload) -> Result<ParsedData, String> {
                         gis_ww: parse_gis(gis_ww),
                     })
                 })
+                .map_err(|e| format!("{e:#}"))
+        }
+        ParsePayload::ADeck { storm_id, gz } => {
+            crate::adeck::guidance_from_gzip(&storm_id, &gz, chrono::Utc::now().timestamp())
+                .map(ParsedData::ADeck)
                 .map_err(|e| format!("{e:#}"))
         }
     }
@@ -665,5 +684,61 @@ mod tests {
             Product::Reflectivity,
             true
         ));
+    }
+
+    fn gzip_fixture() -> Vec<u8> {
+        use std::io::Write;
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(include_str!("testdata/aal092026_sample.dat").as_bytes())
+            .unwrap();
+        enc.finish().unwrap()
+    }
+
+    fn run_adeck_parse(gz: Vec<u8>) -> ParseResult {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _guard = runtime.enter();
+        let mut workers = BackgroundWorkers::new(runtime.handle());
+        assert!(workers.parse_queue_has_capacity());
+        workers
+            .submit_parse(ParseRequest {
+                generation: 21,
+                payload: ParsePayload::ADeck {
+                    storm_id: "al092026".to_owned(),
+                    gz,
+                },
+                submitted_at: Instant::now(),
+            })
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(result) = workers.poll_parse() {
+                return result;
+            }
+            assert!(Instant::now() < deadline, "parse worker timed out");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn parse_worker_turns_adeck_gzip_into_guidance() {
+        let result = run_adeck_parse(gzip_fixture());
+        assert_eq!(result.generation, 21);
+        match result.result {
+            Ok(ParsedData::ADeck(g)) => {
+                assert_eq!(g.storm_id, "al092026");
+                assert_eq!(g.init, 2026100912);
+            }
+            Ok(_) => panic!("wrong ParsedData variant"),
+            Err(e) => panic!("parse failed: {e}"),
+        }
+    }
+
+    #[test]
+    fn parse_worker_reports_bad_adeck_body_as_error() {
+        let result = run_adeck_parse(b"<html>oops</html>".to_vec());
+        match result.result {
+            Err(e) => assert!(e.contains("not gzip"), "{e}"),
+            Ok(_) => panic!("non-gzip body must fail"),
+        }
     }
 }

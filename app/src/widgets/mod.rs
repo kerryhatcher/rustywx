@@ -49,11 +49,14 @@ pub enum ChartWidget {
     None,
     /// Hourly rain-chance line graph — the hours to plot.
     RainChart(Vec<Hour>),
+    /// Spaghetti-models intensity graph: wind (kt) vs forecast hour per model.
+    IntensityChart(Vec<crate::adeck::IntensitySeries>),
 }
 
 pub mod collapsing;
 pub mod dropdown;
 pub mod glass_panel;
+pub mod model_legend;
 pub mod settings;
 pub mod shortcuts;
 pub mod toast;

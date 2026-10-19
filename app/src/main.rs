@@ -357,6 +357,95 @@ fn draw_rain_chart(cmd: &RenderCommand<ChartWidget>) {
     }
 }
 
+/// Ply custom-draw dispatcher: each chart fn returns early on other variants.
+fn draw_custom_widget(cmd: &RenderCommand<ChartWidget>) {
+    draw_rain_chart(cmd);
+    draw_intensity_chart(cmd);
+}
+
+/// Spaghetti-models intensity chart: faint Saffir-Simpson bands, kt labels at
+/// band floors, 24 h ticks, model lines thin blue, NHC official thick white.
+fn draw_intensity_chart(cmd: &RenderCommand<ChartWidget>) {
+    use rustywx::adeck_style::{CHART_MAX_KT, chart_bands, chart_max_tau};
+    let RenderCommandConfig::Custom(c) = &cmd.config else {
+        return;
+    };
+    let ChartWidget::IntensityChart(series) = &c.data else {
+        return;
+    };
+    if series.is_empty() {
+        return;
+    }
+    let bb = cmd.bounding_box;
+    let gray = MacroquadColor::new(0.6, 0.58, 0.56, 1.0);
+    draw_rectangle(
+        bb.x,
+        bb.y,
+        bb.width,
+        bb.height,
+        MacroquadColor::new(0.118, 0.106, 0.106, 1.0),
+    );
+    let left = bb.x + 28.0;
+    let right = bb.x + bb.width - 8.0;
+    let top = bb.y + 8.0;
+    let bottom = bb.y + bb.height - 16.0;
+    let plot_w = (right - left).max(1.0);
+    let plot_h = (bottom - top).max(1.0);
+    let max_tau = chart_max_tau(series);
+    let x_at = |tau: i32| left + (tau.clamp(0, max_tau) as f32 / max_tau as f32) * plot_w;
+    let y_at = |kt: u32| bottom - (kt.min(CHART_MAX_KT) as f32 / CHART_MAX_KT as f32) * plot_h;
+
+    for (lo, hi, [r, g, b]) in chart_bands() {
+        draw_rectangle(
+            left,
+            y_at(hi),
+            plot_w,
+            y_at(lo) - y_at(hi),
+            MacroquadColor::from_rgba(r, g, b, 38),
+        );
+        if lo > 0 {
+            let label = lo.to_string();
+            let d = measure_text(&label, None, 10, 1.0);
+            draw_text(
+                &label,
+                left - 4.0 - d.width,
+                y_at(lo) + d.height / 2.0,
+                10.0,
+                gray,
+            );
+        }
+    }
+    let mut tau = 0;
+    while tau <= max_tau {
+        let x = x_at(tau);
+        draw_line(x, bottom, x, bottom + 3.0, 1.0, gray);
+        let label = format!("{tau}h");
+        let d = measure_text(&label, None, 10, 1.0);
+        draw_text(&label, x - d.width / 2.0, bottom + 13.0, 10.0, gray);
+        tau += 24;
+    }
+
+    let polyline = |points: &[(i32, u32)], width: f32, color: MacroquadColor| {
+        for w in points.windows(2) {
+            draw_line(
+                x_at(w[0].0),
+                y_at(w[0].1),
+                x_at(w[1].0),
+                y_at(w[1].1),
+                width,
+                color,
+            );
+        }
+    };
+    let model_color = MacroquadColor::new(0.62, 0.78, 0.95, 0.75);
+    for s in series.iter().filter(|s| !s.official) {
+        polyline(&s.points, 1.2, model_color);
+    }
+    for s in series.iter().filter(|s| s.official) {
+        polyline(&s.points, 2.5, WHITE);
+    }
+}
+
 /// Draw a subtle dark radial-gradient background behind the scope.
 /// Uses concentric filled circles from a brighter centre to darker edges,
 /// approximating the observatory mockup's radial gradient without a custom
@@ -545,6 +634,32 @@ mod window_backend_tests {
             linux_window_backend_from_override(Some("invalid")),
             miniquad::conf::LinuxBackend::WaylandWithX11Fallback
         );
+    }
+}
+
+/// Whether the model-tracks overlay should be rebuilt and drawn this frame.
+/// A single gate shared by the projection-cache rebuild and the draw-call
+/// lookup, so the two can never disagree: if `model_guidance` drains to
+/// empty (e.g. the storm leaves `CurrentStorms.json`), both the rebuild and
+/// the draw must turn off together, or the last cached projection keeps
+/// rendering as phantom spaghetti for a storm that no longer exists.
+fn model_tracks_enabled(show_model_tracks: bool, guidance_is_empty: bool) -> bool {
+    show_model_tracks && !guidance_is_empty
+}
+
+#[cfg(test)]
+mod model_tracks_gate_tests {
+    use super::*;
+
+    #[test]
+    fn requires_both_the_setting_on_and_nonempty_guidance() {
+        assert!(model_tracks_enabled(true, false));
+        assert!(
+            !model_tracks_enabled(true, true),
+            "empty store must disable, even though the setting is on"
+        );
+        assert!(!model_tracks_enabled(false, false));
+        assert!(!model_tracks_enabled(false, true));
     }
 }
 
@@ -751,6 +866,9 @@ async fn main() {
         nhc_modal_scroll: 0.0,
         alert_modal: None,
         alert_modal_scroll: 0.0,
+        adeck_fetch: rustywx::adeck_fetch::AdeckFetcher::new(),
+        model_guidance: rustywx::adeck::GuidanceStore::default(),
+        model_projection: None,
         last_mouse_pos: None,
         start_time: get_time(),
         nhc_anim_start: 0.0,
@@ -796,6 +914,7 @@ async fn main() {
     let mut nhc_image_generation = 0_u64;
     let mut nhc_image_submit = VecDeque::new();
     let mut nhc_image_results = OrderedImageResults::new(nhc_image_generation);
+    let mut ply_net = rustywx::adeck_fetch::PlyNet;
     let mut logged_initial_radar_response = false;
 
     // Boot-time bookkeeping for applying loaded settings exactly once, and
@@ -1094,10 +1213,73 @@ async fn main() {
                         metadata.gis_ww,
                     );
                 }
+                Ok(ParsedData::ADeck(mut guidance))
+                    if state.adeck_fetch.owns_generation(parsed.generation) =>
+                {
+                    let _ = state.adeck_fetch.parse_finished(parsed.generation, true);
+                    let fetched_at_unix = chrono::Utc::now().timestamp();
+                    guidance.fetched_at_unix = fetched_at_unix;
+                    let (storm_id, init, n_tracks, n_intensity) = (
+                        guidance.storm_id.clone(),
+                        guidance.init,
+                        guidance.tracks.len(),
+                        guidance.intensity.len(),
+                    );
+                    // `revision()` alone can no longer distinguish a real
+                    // cycle regression (S3) from a routine unchanged
+                    // refetch (S9) — both leave it unchanged — so the
+                    // outcome is read directly off `insert`'s return value
+                    // instead (fix-round-1 follow-up).
+                    match state.model_guidance.insert(guidance, fetched_at_unix) {
+                        rustywx::adeck::InsertOutcome::RejectedOlder => {
+                            // Regression guard rejected it (review S3): an
+                            // older/implausible cycle than what's already
+                            // stored. Log distinctly so this never reads as
+                            // "applied" in startup logs.
+                            eprintln!(
+                                "startup phase=adeck_cycle_regression_rejected generation={} storm={storm_id} cycle={init} elapsed_ms={}",
+                                parsed.generation,
+                                parsed.elapsed.as_millis()
+                            );
+                        }
+                        rustywx::adeck::InsertOutcome::Unchanged => {
+                            // Routine refetch with byte-identical content
+                            // (review S9): fetched_at_unix was updated, but
+                            // nothing else changed, so this is not a parse
+                            // failure or a regression — just log it as its
+                            // own distinct, expected phase.
+                            eprintln!(
+                                "startup phase=adeck_refetch_unchanged generation={} storm={storm_id} cycle={init} elapsed_ms={}",
+                                parsed.generation,
+                                parsed.elapsed.as_millis()
+                            );
+                        }
+                        rustywx::adeck::InsertOutcome::Replaced => {
+                            eprintln!(
+                                "startup phase=adeck_parse_applied generation={} storm={storm_id} cycle={init} tracks={n_tracks} intensity={n_intensity} elapsed_ms={}",
+                                parsed.generation,
+                                parsed.elapsed.as_millis()
+                            );
+                        }
+                    }
+                }
                 Ok(_) => eprintln!(
                     "startup phase=parse_drop generation={} stale=true result_age_ms={age_ms}",
                     parsed.generation
                 ),
+                Err(error) if state.adeck_fetch.owns_generation(parsed.generation) => {
+                    eprintln!(
+                        "Warning: a-deck parse failed generation={}: {error}",
+                        parsed.generation
+                    );
+                    if state
+                        .adeck_fetch
+                        .parse_finished(parsed.generation, false)
+                        .is_some_and(|o| o.show_toast)
+                    {
+                        show_toast(&mut state, now, toast_widget::ErrorKind::Network);
+                    }
+                }
                 Err(error) => {
                     let current = borders_parse_generation == Some(parsed.generation)
                         || alerts_parse_generation == Some(parsed.generation)
@@ -1371,6 +1553,55 @@ async fn main() {
             }
         }
 
+        // ── Spaghetti models: per-storm a-deck fetch (opt-in) ─────────
+        // Separate from the NHC state machine, so a hung a-deck can't stall
+        // other tropical data. Cancel-and-retry, deadline, and backoff live in
+        // AdeckFetcher; gunzip+parse run on the background worker.
+        if state.settings.show_model_tracks && state.show_nhc_data {
+            let active: Vec<String> = state
+                .nhc_bundle
+                .as_ref()
+                .map(|b| b.metas.iter().map(|m| m.id.clone()).collect())
+                .unwrap_or_default();
+            state.model_guidance.retain_active(&active);
+            if state.adeck_fetch.tick(&active, &mut ply_net).show_toast {
+                show_toast(&mut state, now, toast_widget::ErrorKind::Network);
+            }
+            // At most one a-deck parse job in flight at a time: the shared
+            // parse queue has only QUEUE_CAPACITY slots, and the NHC
+            // metadata, alerts, and borders jobs that pre-date this feature
+            // also submit to it (S2). Without this cap, a-decks from 4+
+            // active storms could grab every free slot and starve them.
+            if background.parse_queue_has_capacity() && !state.adeck_fetch.has_parsing() {
+                let generation = next_generation;
+                if let Some((storm_id, gz)) = state.adeck_fetch.take_parse_job(generation) {
+                    next_generation += 1;
+                    let payload_bytes = gz.len();
+                    let request = ParseRequest {
+                        generation,
+                        payload: ParsePayload::ADeck {
+                            storm_id: storm_id.clone(),
+                            gz,
+                        },
+                        submitted_at: std::time::Instant::now(),
+                    };
+                    if background.submit_parse(request).is_ok() {
+                        eprintln!(
+                            "startup phase=adeck_response generation={generation} storm={storm_id} payload_bytes={payload_bytes}"
+                        );
+                    } else if state
+                        .adeck_fetch
+                        .parse_finished(generation, false)
+                        .is_some_and(|o| o.show_toast)
+                    {
+                        show_toast(&mut state, now, toast_widget::ErrorKind::Network);
+                    }
+                }
+            }
+        } else if state.adeck_fetch.is_active() {
+            state.adeck_fetch.disable(&mut ply_net);
+        }
+
         // ── Poll the location resolver (Detect in progress) ───────
         if let Some(coords) = state.location_resolver.poll(now) {
             state.user_location = Some(coords);
@@ -1585,6 +1816,35 @@ async fn main() {
             } else {
                 None
             };
+            if model_tracks_enabled(
+                state.settings.show_model_tracks,
+                state.model_guidance.is_empty(),
+            ) {
+                let key = (state.site_index, state.model_guidance.revision());
+                let fresh = state
+                    .model_projection
+                    .as_ref()
+                    .is_some_and(|(s, r, _)| (*s, *r) == key);
+                if !fresh {
+                    let tracks = rustywx::adeck_style::project_tracks(
+                        &state.model_guidance,
+                        site.lat,
+                        site.lon,
+                    );
+                    state.model_projection = Some((key.0, key.1, tracks));
+                }
+            }
+            let model_tracks = if model_tracks_enabled(
+                state.settings.show_model_tracks,
+                state.model_guidance.is_empty(),
+            ) {
+                state
+                    .model_projection
+                    .as_ref()
+                    .map(|(_, _, t)| t.as_slice())
+            } else {
+                None
+            };
             scope::draw_scope_to_texture(
                 if state.show_radar_data {
                     state.radar_texture.as_ref()
@@ -1601,6 +1861,8 @@ async fn main() {
                 } else {
                     None
                 },
+                model_tracks,
+                chrono::Utc::now().timestamp(),
                 if state.show_location {
                     state.user_location
                 } else {
@@ -2604,7 +2866,166 @@ async fn main() {
                                             "Most Likely Arrival (34kt)",
                                             state.nhc_overlays.show_most_likely_arrival,
                                         );
+                                        nhc_toggle_button(
+                                            ui,
+                                            "btn-nhc-models",
+                                            "Model Tracks (spaghetti)",
+                                            state.settings.show_model_tracks,
+                                        );
                                     });
+
+                                // Model guidance (spaghetti) — only while on.
+                                if state.settings.show_model_tracks {
+                                    let now_unix = chrono::Utc::now().timestamp();
+                                    let guidance = state.model_guidance.get(&meta.id);
+                                    let status = state.adeck_fetch.status(&meta.id);
+                                    ui.element()
+                                        .width(grow!())
+                                        .height(fit!())
+                                        .background_color(0x171A1F)
+                                        .corner_radius(4.0)
+                                        .layout(|layout| {
+                                            layout.direction(TopToBottom).padding(8).gap(4)
+                                        })
+                                        .children(|ui| {
+                                            ui.text("Model Guidance", |t| {
+                                                t.font_size(12).color(0xE8E0DC)
+                                            });
+                                            if let Some(g) = guidance {
+                                                // Primary freshness signal: the forecast
+                                                // cycle's own age, not when it was last
+                                                // fetched (review S1) — a stalled feed can
+                                                // keep re-fetching the same old cycle and
+                                                // this is what still catches it. The card is
+                                                // always for one storm, so `mixed` is false.
+                                                let (cycle_base, cycle_stale) =
+                                                    rustywx::adeck_style::cycle_freshness_line(
+                                                        g.init, false, now_unix,
+                                                    );
+                                                let cycle_text = format!(
+                                                    "{cycle_base}{}",
+                                                    if cycle_stale { " (stale)" } else { "" }
+                                                );
+                                                ui.text(&cycle_text, |t| {
+                                                    t.font_size(11).color(if cycle_stale {
+                                                        0xFFC140
+                                                    } else {
+                                                        0x9E9590
+                                                    })
+                                                });
+                                                // Secondary line: when the overlay last
+                                                // heard from the network at all, regardless
+                                                // of which cycle that was.
+                                                let fetch_stale = rustywx::adeck_style::is_stale(
+                                                    g.fetched_at_unix,
+                                                    now_unix,
+                                                );
+                                                ui.text(
+                                                    &format!(
+                                                        "Checked {}",
+                                                        rustywx::adeck_style::format_age(
+                                                            g.fetched_at_unix,
+                                                            now_unix
+                                                        ),
+                                                    ),
+                                                    |t| {
+                                                        t.font_size(11).color(if fetch_stale {
+                                                            0xFFC140
+                                                        } else {
+                                                            0x9E9590
+                                                        })
+                                                    },
+                                                );
+                                                let shown = g
+                                                    .tracks
+                                                    .iter()
+                                                    .filter(|t| t.default_visible)
+                                                    .count();
+                                                ui.text(
+                                                    &format!(
+                                                        "{shown} tracks, {} intensity models",
+                                                        g.intensity.len()
+                                                    ),
+                                                    |t| t.font_size(11).color(0x9E9590),
+                                                );
+                                                if !g.has_official {
+                                                    ui.text(
+                                                        "No NHC official forecast this cycle",
+                                                        |t| t.font_size(11).color(0xFFC140),
+                                                    );
+                                                }
+                                                match &status {
+                                                    rustywx::adeck_fetch::SlotStatus::Retrying {
+                                                        in_secs,
+                                                    } => {
+                                                        ui.text(
+                                                            &format!(
+                                                                "Refresh failed, retrying in {in_secs} s"
+                                                            ),
+                                                            |t| t.font_size(10).color(0xFFC140),
+                                                        );
+                                                    }
+                                                    rustywx::adeck_fetch::SlotStatus::WaitingForGuidance {
+                                                        in_secs,
+                                                    } => {
+                                                        ui.text(
+                                                            &format!(
+                                                                "No model guidance published yet, checking again in {in_secs} s"
+                                                            ),
+                                                            |t| t.font_size(10).color(0x9E9590),
+                                                        );
+                                                    }
+                                                    _ => {}
+                                                }
+                                                if !g.intensity.is_empty() {
+                                                    ui.element()
+                                                        .width(fixed!(272.0))
+                                                        .height(fixed!(130.0))
+                                                        .custom_element(
+                                                            ChartWidget::IntensityChart(
+                                                                g.intensity.clone(),
+                                                            ),
+                                                        )
+                                                        .empty();
+                                                    ui.text(
+                                                        "Wind (kt) by forecast hour. White = NHC official.",
+                                                        |t| t.font_size(10).color(0x9E9590),
+                                                    );
+                                                }
+                                            } else {
+                                                ui.text(
+                                                    &rustywx::adeck_fetch::status_message(&status),
+                                                    |t| t.font_size(11).color(0x9E9590),
+                                                );
+                                            }
+                                            for line in rustywx::adeck_style::DISCLAIMER_LINES {
+                                                ui.text(line, |t| t.font_size(10).color(0x9E9590));
+                                            }
+                                            ui.element()
+                                                .id("btn-nhc-model-summary")
+                                                .width(fit!())
+                                                .height(fixed!(22.0))
+                                                .background_color(0x1E1B1B)
+                                                .corner_radius(4.0)
+                                                .layout(|layout| {
+                                                    layout
+                                                        .padding((0, 8, 0, 8))
+                                                        .gap(5)
+                                                        .align(CenterX, CenterY)
+                                                })
+                                                .accessibility(|a| a.link("NHC model summary"))
+                                                .children(|ui| {
+                                                    ui.text("NHC model summary", |t| {
+                                                        t.font_size(11).color(0x4a90d9)
+                                                    });
+                                                    ui.text(nf::EXTERNAL_LINK, |t| {
+                                                        t.font_size(11)
+                                                            .font(&SYMBOL_FONT)
+                                                            .color(0x4a90d9)
+                                                    });
+                                                });
+                                        });
+                                }
 
                                 // Graphics products (thumbnails)
                                 ui.element()
@@ -2720,6 +3141,116 @@ async fn main() {
                             }
                         }
                     });
+                }
+
+                // ── Spaghetti-models legend (bottom-left, above the bar) ──
+                if state.view_mode == ViewMode::Radar
+                    && state.show_nhc_data
+                    && state.settings.show_model_tracks
+                    && let Some(oldest) = state.model_guidance.oldest()
+                    && let Some(cycle_storm) = state.model_guidance.earliest_cycle()
+                {
+                    let now_unix = chrono::Utc::now().timestamp();
+                    // Cycle line: picked by init (cycle order), not fetch
+                    // order, so it never names a cycle that belongs to a
+                    // different storm than the one it's shown for (review
+                    // S5). When the shown storms are genuinely on different
+                    // cycles, this still surfaces the oldest shown cycle's
+                    // own age and staleness ("Mixed cycles, oldest ...")
+                    // instead of suppressing freshness information for the
+                    // one case it matters most (fix-round finding).
+                    let mixed = !state.model_guidance.has_single_cycle();
+                    let (cycle_line, cycle_stale) = rustywx::adeck_style::cycle_freshness_line(
+                        cycle_storm.init,
+                        mixed,
+                        now_unix,
+                    );
+                    // Review L1: colour alone ("(stale)" shown only via the
+                    // amber warn colour below) is an accessibility gap, so
+                    // both freshness lines also get the text suffix.
+                    let cycle_line = rustywx::adeck_style::stale_suffix(&cycle_line, cycle_stale);
+                    // Fetch line: unchanged from before (review S5 keeps
+                    // this one as-is) — the least-recently-fetched storm, so
+                    // the legend never claims fresher data than the
+                    // stalest track on screen.
+                    let fetch_stale =
+                        rustywx::adeck_style::is_stale(oldest.fetched_at_unix, now_unix);
+                    let age_line = rustywx::adeck_style::stale_suffix(
+                        &format!(
+                            "checked {}",
+                            rustywx::adeck_style::format_age(oldest.fetched_at_unix, now_unix)
+                        ),
+                        fetch_stale,
+                    );
+                    // Review fix-round Important 4: drive the legend's OFCL
+                    // row off what's actually drawn/suppressed this frame,
+                    // not off `cycle_storm.has_official` (a cycle-selection
+                    // flag from review S8) — the two can disagree, e.g. a
+                    // GIS advisory track shown while `has_official` is
+                    // false, or OFCL suppressed by the S4 GIS-overlap fix
+                    // while `has_official` is true. Two independent facts
+                    // (drawn, suppressed-for-GIS) resolve to one of three
+                    // legend states — see `OfficialLegendState`.
+                    let empty_metas: &[rustywx::nhc::StormMeta] = &[];
+                    let empty_gis: &[rustywx::nhc::StormGis] = &[];
+                    let (bundle_metas, bundle_gis) = state
+                        .nhc_bundle
+                        .as_ref()
+                        .map(|b| (b.metas.as_slice(), b.gis_storms.as_slice()))
+                        .unwrap_or((empty_metas, empty_gis));
+                    let any_drawn = rustywx::adeck_style::any_official_track_shown(
+                        &state.model_guidance,
+                        bundle_metas,
+                        bundle_gis,
+                        state.nhc_overlays.show_track,
+                    );
+                    let any_suppressed = rustywx::adeck_style::any_official_suppressed_by_gis(
+                        &state.model_guidance,
+                        bundle_metas,
+                        bundle_gis,
+                        state.nhc_overlays.show_track,
+                    );
+                    let ofcl_state =
+                        rustywx::adeck_style::official_legend_state(any_drawn, any_suppressed);
+                    // Review S10: height is content-sized (`fit!()` inside
+                    // `model_legend::draw`), so the fixed `HEIGHT` constant
+                    // this `y` calc used to depend on is gone — `legend_y`
+                    // only needs a rough per-mode estimate to anchor the
+                    // panel above the bottom bar, and clamps so it can never
+                    // go above the top bar (36 px) or off-screen on a short
+                    // or mobile window.
+                    let legend_mode = rustywx::widgets::model_legend::legend_mode(
+                        screen_height(),
+                        is_mobile,
+                        36.0,
+                        54.0,
+                    );
+                    let height_estimate = match legend_mode {
+                        rustywx::widgets::model_legend::LegendMode::Full => {
+                            rustywx::widgets::model_legend::FULL_HEIGHT_ESTIMATE
+                        }
+                        rustywx::widgets::model_legend::LegendMode::Compact => {
+                            rustywx::widgets::model_legend::COMPACT_HEIGHT_ESTIMATE
+                        }
+                    };
+                    // 46 px bottom status bar + 8 px gap; 36 px top bar.
+                    let y = rustywx::widgets::model_legend::legend_y(
+                        screen_height(),
+                        36.0,
+                        54.0,
+                        height_estimate,
+                    );
+                    rustywx::widgets::model_legend::draw(
+                        ui,
+                        8.0,
+                        y,
+                        legend_mode,
+                        &cycle_line,
+                        cycle_stale,
+                        &age_line,
+                        fetch_stale,
+                        ofcl_state,
+                    );
                 }
 
                 // ── NHC product modal (Stage 5) ────────────────────────────
@@ -3182,7 +3713,7 @@ async fn main() {
                     });
             });
 
-        ui.show(draw_rain_chart).await;
+        ui.show(draw_custom_widget).await;
 
         // ── Draw NHC modal image ───────────────────────────────────
         // Text products are rendered exclusively by Ply inside the modal.
@@ -3648,6 +4179,10 @@ fn handle_input(
             // recompute that lives alongside the raster (see above).
             state.needs_reraster = true;
         }
+        if ply.is_just_pressed(settings_widget::MODEL_TRACKS_TOGGLE_ID) {
+            state.settings.show_model_tracks = !state.settings.show_model_tracks;
+            state.cache.save_settings(&state.settings);
+        }
         // Threshold steppers: nudge each QC knob, clamp to a sane range,
         // persist, and re-raster so the effect is visible immediately.
         {
@@ -3941,6 +4476,14 @@ fn handle_input(
     }
     if ply.is_just_pressed("btn-nhc-likely") {
         state.nhc_overlays.show_most_likely_arrival = !state.nhc_overlays.show_most_likely_arrival;
+    }
+    if ply.is_just_pressed("btn-nhc-models") {
+        // Same persisted field as the Settings-panel row.
+        state.settings.show_model_tracks = !state.settings.show_model_tracks;
+        state.cache.save_settings(&state.settings);
+    }
+    if ply.is_just_pressed("btn-nhc-model-summary") {
+        let _ = webbrowser::open(rustywx::adeck_style::MODEL_SUMMARY_URL);
     }
 
     // ── NHC modal scrolling / close / browser buttons ─────────────

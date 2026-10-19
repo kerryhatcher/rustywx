@@ -27,6 +27,9 @@ serde_json = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
 webbrowser = "1.2.2"
 zip = "2"
+# A-deck guidance files are gzip only (spaghetti-models overlay). Already in
+# Cargo.lock via `zip`; this pins it as a direct dependency.
+flate2 = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
