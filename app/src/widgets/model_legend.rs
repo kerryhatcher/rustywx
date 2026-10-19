@@ -24,9 +24,12 @@ pub const WIDTH: f32 = 196.0;
 pub const FULL_HEIGHT_ESTIMATE: f32 = 420.0;
 
 /// Same estimate, for `LegendMode::Compact`'s much shorter content (review
-/// S10 item 3): header, cycle/age freshness lines, the OFCL-state line, and
-/// the two-line disclaimer — the safety-critical rows, nothing else.
-pub const COMPACT_HEIGHT_ESTIMATE: f32 = 130.0;
+/// S10 item 3): header, cycle/age freshness lines, the OFCL-state line, the
+/// three-line disclaimer ("Guidance only.", "Not an official forecast.",
+/// "May differ from official NHC products." — review L1 fix-round
+/// follow-up), and one source-attribution line (review N12) — the
+/// safety-critical rows plus minimal attribution, nothing else.
+pub const COMPACT_HEIGHT_ESTIMATE: f32 = 160.0;
 
 /// Below this window height, or on the mobile layout, `legend_mode` returns
 /// `Compact` (review S10 item 3). Derived from the SAME numbers `legend_y`
@@ -226,14 +229,25 @@ pub fn draw(
         });
         ui.text("Guidance only.", |t| t.font_size(10).color(WARN));
         ui.text("Not an official forecast.", |t| t.font_size(10).color(WARN));
+        // Review L1 fix-round follow-up: the ATCF README itself warns the
+        // files "can differ from information issued in official NHC
+        // products" (`docs/research/spaghetti-models.md` section 4's
+        // source) — shown in both modes, alongside the other two
+        // safety-critical caveats above, since it's the same category of
+        // warning (what the models are, not just that they exist).
+        ui.text("May differ from official NHC products.", |t| {
+            t.font_size(10).color(WARN)
+        });
 
+        // Review L1: the full disclaimer and "Source: NOAA/NHC" credit
+        // only live in the Tropical card, which can be closed or sit
+        // off-screen on mobile while the map (and this legend) stay
+        // visible. Full mode keeps both lines; Compact mode (review S10)
+        // keeps just the source credit — attribution the legend shouldn't
+        // drop entirely even on a short or mobile window (review N12) —
+        // and drops only the secondary "consult" pointer to save space.
+        ui.text("Source: NOAA/NHC ATCF", |t| t.font_size(10).color(MUTED));
         if mode == LegendMode::Full {
-            // Review L1: the full disclaimer and "Source: NOAA/NHC" credit
-            // only live in the Tropical card, which can be closed or sit
-            // off-screen on mobile while the map (and this legend) stay
-            // visible. Dropped in `Compact` mode (review S10): it's
-            // attribution, not a freshness or official-forecast signal.
-            ui.text("Source: NOAA/NHC ATCF", |t| t.font_size(10).color(MUTED));
             ui.text("Consult nhc.noaa.gov", |t| t.font_size(10).color(MUTED));
         }
     });

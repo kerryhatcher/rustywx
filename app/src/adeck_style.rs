@@ -343,18 +343,20 @@ pub struct TrackStyle {
 ///   track, not a forecast model — a dash pattern implies "one model's
 ///   extrapolation among several," which doesn't describe observed fixes.
 ///   It's already visually distinct (plain grey, unlabeled, thin).
-/// - **Consensus**: long dash (12 on / 6 off) — the biggest, clearest marks
-///   of the five model dash styles, fitting for the multi-model averages
-///   that are usually the most-trusted non-official guidance.
-/// - **Hurricane**: medium dash (8 on / 4 off) — the specialized hurricane
-///   models, one size down from Consensus.
-/// - **Ensemble**: short dash (5 on / 5 off), an even 1:1 mark:space ratio —
-///   visually reads as "busier" than the two longer dashes above it.
-/// - **Ai**: fine dash (3 on / 3 off) — same 1:1 ratio as Ensemble but at
-///   half the scale, so the two are told apart by mark *size*, the same way
-///   Consensus and Hurricane are.
-/// - **Global**: dotted (1.5 on / 4 off) — short marks, wide gaps; the
-///   lowest duty cycle of the set, reading as "dots" rather than "dashes".
+/// - **Consensus**: long dash (12 on / 6 off), 2.0px — the biggest, clearest
+///   marks of the five model dash styles, fitting for the multi-model
+///   averages that are usually the most-trusted non-official guidance.
+/// - **Hurricane**: medium dash (8 on / 4 off), 1.75px — the specialized
+///   hurricane models, one size down from Consensus in both dash length and
+///   width.
+/// - **Ensemble**: short dash (5 on / 5 off), 1.5px, an even 1:1 mark:space
+///   ratio — visually reads as "busier" than the two longer dashes above it.
+/// - **Ai**: fine dash (3 on / 3 off), 1.25px — same 1:1 ratio as Ensemble
+///   but thinner as well as smaller-scale, so the two don't collapse into
+///   the same texture at typical screen sizes (review N14: at one shared
+///   1.5px width, Ensemble and Ai were hard to tell apart).
+/// - **Global**: dotted (1.5 on / 4 off), 1.0px — the thinnest and lowest
+///   duty cycle of the set, reading as "dots" rather than "dashes".
 pub fn track_style(group: ModelGroup) -> TrackStyle {
     match group {
         ModelGroup::Official => TrackStyle {
@@ -372,7 +374,7 @@ pub fn track_style(group: ModelGroup) -> TrackStyle {
             dash: None,
         },
         ModelGroup::Consensus => TrackStyle {
-            width_px: 1.5,
+            width_px: 2.0,
             underlay_px: None,
             label: true,
             draw_rank: 0,
@@ -382,7 +384,7 @@ pub fn track_style(group: ModelGroup) -> TrackStyle {
             }),
         },
         ModelGroup::Hurricane => TrackStyle {
-            width_px: 1.5,
+            width_px: 1.75,
             underlay_px: None,
             label: true,
             draw_rank: 0,
@@ -402,7 +404,7 @@ pub fn track_style(group: ModelGroup) -> TrackStyle {
             }),
         },
         ModelGroup::Ai => TrackStyle {
-            width_px: 1.5,
+            width_px: 1.25,
             underlay_px: None,
             label: true,
             draw_rank: 0,
@@ -412,7 +414,7 @@ pub fn track_style(group: ModelGroup) -> TrackStyle {
             }),
         },
         ModelGroup::Global => TrackStyle {
-            width_px: 1.5,
+            width_px: 1.0,
             underlay_px: None,
             label: true,
             draw_rank: 0,
@@ -1317,6 +1319,35 @@ mod tests {
             groups.len(),
             "every group's pattern must differ"
         );
+    }
+
+    #[test]
+    fn default_visible_model_groups_have_distinct_widths() {
+        // Review N14: at one shared 1.5px width, Ensemble's 5/5 dash and
+        // Ai's 3/3 dash were hard to tell apart. Width now varies per
+        // group too, and must stay under Official's 2.5px so the one
+        // track that must never be ambiguous still reads as the thickest
+        // line on screen.
+        let groups = [
+            ModelGroup::Consensus,
+            ModelGroup::Hurricane,
+            ModelGroup::Ensemble,
+            ModelGroup::Ai,
+            ModelGroup::Global,
+        ];
+        let widths: Vec<f32> = groups.iter().map(|&g| track_style(g).width_px).collect();
+        let mut sorted_bits: Vec<u32> = widths.iter().map(|w| w.to_bits()).collect();
+        sorted_bits.sort_unstable();
+        sorted_bits.dedup();
+        assert_eq!(
+            sorted_bits.len(),
+            groups.len(),
+            "every group's width must differ"
+        );
+        let official_width = track_style(ModelGroup::Official).width_px;
+        for w in widths {
+            assert!(w < official_width, "{w} must stay under Official's width");
+        }
     }
 
     #[test]
