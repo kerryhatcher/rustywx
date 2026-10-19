@@ -248,10 +248,17 @@ struct Slot {
 /// idle, and say whether to toast. `quiet` failures (404, or a parse
 /// failure) never toast and never arm the streak, so they can't suppress a
 /// later genuine failure's toast. `not_found` additionally switches this
-/// slot to the flat retry cadence and the `WaitingForGuidance` status.
-/// `now` is the scheduler's current monotonic instant (never a wall clock).
+/// slot to the flat retry cadence and the `WaitingForGuidance` status, and
+/// does NOT bump `slot.failures` — a 404 isn't a failure in the backoff
+/// sense (it already gets its own flat cadence instead of backoff), so an
+/// invest that's 404'd for hours must not make the first genuine transport
+/// error afterward jump straight to `BACKOFF_CAP_SECS` as if it were the
+/// Nth consecutive real failure (review N11). `now` is the scheduler's
+/// current monotonic instant (never a wall clock).
 fn record_failure(slot: &mut Slot, now: Instant, quiet: bool, not_found: bool) -> bool {
-    slot.failures = slot.failures.saturating_add(1);
+    if !not_found {
+        slot.failures = slot.failures.saturating_add(1);
+    }
     slot.not_found = not_found;
     slot.next_due = now
         + Duration::from_secs_f64(if not_found {
@@ -783,6 +790,45 @@ mod tests {
             SlotStatus::WaitingForGuidance {
                 in_secs: NOT_FOUND_RETRY_SECS as u32,
             }
+        );
+    }
+
+    #[test]
+    fn a_long_404_streak_does_not_inflate_backoff_for_the_next_real_failure() {
+        // Review N11: record_failure used to bump `slot.failures` on every
+        // failure including 404s, even though 404s already get their own
+        // flat cadence instead of backoff. After hours of 404s, the first
+        // genuine transport error would then jump straight to
+        // BACKOFF_CAP_SECS as if it were the Nth consecutive real failure.
+        let clock = FakeClock::new();
+        let mut f = AdeckFetcher::with_clock(clock.clone());
+        let mut net = FakeNet::default();
+        let active = ids(&["al942026"]);
+        f.tick(&active, &mut net); // fires the first request
+        for _ in 0..5 {
+            net.respond(
+                "nhc-adeck-al942026",
+                NetPoll::Done(Err("http status: 404".into())),
+            );
+            clock.advance(Duration::from_secs(1));
+            f.tick(&active, &mut net); // processes the 404
+            clock.advance(Duration::from_secs_f64(NOT_FOUND_RETRY_SECS));
+            f.tick(&active, &mut net); // due again, refires
+        }
+        // Now a genuine transport error, the first real failure this slot
+        // has ever had.
+        net.respond(
+            "nhc-adeck-al942026",
+            NetPoll::Done(Err("http status: 500".into())),
+        );
+        clock.advance(Duration::from_secs(1));
+        f.tick(&active, &mut net); // processes the 500
+        let SlotStatus::Retrying { in_secs } = f.status("al942026") else {
+            panic!("expected Retrying after the first real failure");
+        };
+        assert_eq!(
+            in_secs, BACKOFF_BASE_SECS as u32,
+            "the 404 streak must not have counted toward backoff"
         );
     }
 
