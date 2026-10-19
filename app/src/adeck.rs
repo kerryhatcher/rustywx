@@ -63,14 +63,20 @@ pub fn parse_adeck_line(line: &str) -> Option<ADeckRecord> {
     })
 }
 
-/// Parse every well-formed line; malformed lines are skipped. Stops at
-/// `MAX_ADECK_RECORDS` rows regardless of how much more input remains
-/// (review L5).
-pub fn parse_adeck(text: &str) -> Vec<ADeckRecord> {
-    text.lines()
-        .filter_map(parse_adeck_line)
-        .take(MAX_ADECK_RECORDS)
-        .collect()
+/// Parse every well-formed line; malformed lines are skipped. Errs if more
+/// than `MAX_ADECK_RECORDS` well-formed rows are seen, rather than silently
+/// keeping only the first `MAX_ADECK_RECORDS` — a-decks are append-only and
+/// chronological, so truncating at the cap would keep the *oldest* rows and
+/// freeze guidance on a stale cycle instead of failing loudly (review R2-3).
+pub fn parse_adeck(text: &str) -> Result<Vec<ADeckRecord>> {
+    let mut records = Vec::new();
+    for record in text.lines().filter_map(parse_adeck_line) {
+        if records.len() >= MAX_ADECK_RECORDS {
+            bail!("a-deck exceeds the {MAX_ADECK_RECORDS}-record cap");
+        }
+        records.push(record);
+    }
+    Ok(records)
 }
 
 fn parse_init(s: &str) -> Option<u32> {
@@ -184,12 +190,21 @@ pub const MAX_GZIP_BYTES: usize = 10 * 1024 * 1024;
 /// size.
 pub const MAX_UNCOMPRESSED_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Hard cap on parsed rows, independent of `MAX_UNCOMPRESSED_BYTES`. Each
-/// `ADeckRecord` costs roughly 90 bytes against about 30 bytes per source
-/// line, so a crafted gzip that inflates all the way to the 64 MiB text cap
-/// could still push `parse_adeck`'s `Vec` to a couple hundred MB. No real
-/// a-deck comes close to this many rows (review L5).
-pub const MAX_ADECK_RECORDS: usize = 200_000;
+/// Smallest real a-deck row observed, in bytes. Narrow rows (CARQ, the
+/// bare-minimum AVNI-style fixture above) run about 134 B; wide rows with
+/// `STORMNAME` and the userdefined fields run up to about 200 B. 134 B is
+/// the conservative (smallest) end, used below to size the record cap
+/// (review R2-3; an earlier version of this comment assumed 30 B/line,
+/// which was never a real row's size).
+const MIN_ADECK_LINE_BYTES: u64 = 134;
+
+/// Hard cap on parsed rows, independent of `MAX_UNCOMPRESSED_BYTES` but
+/// derived from it: even if every byte of the 64 MiB decompressed-text cap
+/// were spent on the smallest real row (`MIN_ADECK_LINE_BYTES`), that's
+/// this many rows. So the record cap can never trigger before the byte cap
+/// for any real a-deck, while still bounding `parse_adeck`'s `Vec` against a
+/// crafted gzip (review L5, R2-3).
+pub const MAX_ADECK_RECORDS: usize = (MAX_UNCOMPRESSED_BYTES / MIN_ADECK_LINE_BYTES) as usize;
 
 /// Inflate a gzip body, refusing non-gzip input and anything that inflates
 /// past `max_out` bytes. Invalid UTF-8 is replaced, not rejected (a-decks
@@ -500,7 +515,7 @@ pub fn build_guidance(storm_id: &str, records: &[ADeckRecord], init: u32) -> Sto
 /// `now_unix` bounds `latest_cycle`'s future-dated-row check.
 pub fn guidance_from_gzip(storm_id: &str, gz: &[u8], now_unix: i64) -> Result<StormGuidance> {
     let text = gunzip_limited(gz, MAX_UNCOMPRESSED_BYTES)?;
-    let records = parse_adeck(&text);
+    let records = parse_adeck(&text)?;
     let init = latest_cycle(&records, now_unix)
         .ok_or_else(|| anyhow!("a-deck for {storm_id} has no parseable rows"))?;
     Ok(build_guidance(storm_id, &records, init))
@@ -724,8 +739,11 @@ mod tests {
         // bug (review L19 fixture gap).
         let lf = "AL, 09, 2026100912, 03, AVNI,  12, 301N,  870W,  87,    0,   ,  34, NEQ,\nAL, 09, 2026100912, 03, OFCL,  24, 280N,  875W,  90,    0,   ,  34, NEQ,";
         let crlf = lf.replace('\n', "\r\n");
-        assert_eq!(parse_adeck(crlf.as_str()), parse_adeck(lf));
-        assert_eq!(parse_adeck(crlf.as_str()).len(), 2);
+        assert_eq!(
+            parse_adeck(crlf.as_str()).unwrap(),
+            parse_adeck(lf).unwrap()
+        );
+        assert_eq!(parse_adeck(crlf.as_str()).unwrap().len(), 2);
     }
 
     #[test]
@@ -742,7 +760,7 @@ mod tests {
             // Same tech+tau as the row above, a later TECHNUM revision.
             "AL, 09, 2026100912, 02, CARQ,   0, 271N,  801W,  85,    0,   ,  34, NEQ,",
         ];
-        let records = parse_adeck(&lines.join("\n"));
+        let records = parse_adeck(&lines.join("\n")).unwrap();
         assert_eq!(records.len(), 3, "all three rows parse individually");
         let g = build_guidance("al092026", &records, 2026100912);
         let carq = g.tracks.iter().find(|t| t.tech == "CARQ").unwrap();
@@ -883,7 +901,7 @@ mod tests {
     #[test]
     fn parse_adeck_reads_every_fixture_line() {
         assert_eq!(FIXTURE.lines().count(), 48);
-        assert_eq!(parse_adeck(FIXTURE).len(), 48);
+        assert_eq!(parse_adeck(FIXTURE).unwrap().len(), 48);
     }
 
     #[test]
@@ -979,12 +997,23 @@ mod tests {
     }
 
     #[test]
-    fn parse_adeck_caps_the_record_count() {
-        // A crafted gzip that inflates to the full text cap must not be
-        // able to push the parsed Vec past a bounded size (review L5).
+    fn parse_adeck_errs_rather_than_silently_dropping_the_newest_rows() {
+        // a-decks are append-only and chronological, so truncating at the
+        // cap (as an earlier version did) would keep the file's *oldest*
+        // rows and freeze guidance on a stale cycle with no error or log
+        // (review R2-3). Erring instead routes through the existing quiet
+        // parse-failure path via `guidance_from_gzip`.
         let line = "AL, 09, 2026100912, 03, AVNI,  12, 301N,  870W,  87,    0,   ,  34, NEQ,\n";
         let text = line.repeat(MAX_ADECK_RECORDS + 10);
-        assert_eq!(parse_adeck(&text).len(), MAX_ADECK_RECORDS);
+        let err = parse_adeck(&text).unwrap_err();
+        assert!(format!("{err:#}").contains("record"), "{err:#}");
+    }
+
+    #[test]
+    fn parse_adeck_accepts_exactly_the_cap() {
+        let line = "AL, 09, 2026100912, 03, AVNI,  12, 301N,  870W,  87,    0,   ,  34, NEQ,\n";
+        let text = line.repeat(MAX_ADECK_RECORDS);
+        assert_eq!(parse_adeck(&text).unwrap().len(), MAX_ADECK_RECORDS);
     }
 
     /// The research "on by default" set plus OFCL and CARQ (always on).
@@ -1050,7 +1079,7 @@ mod tests {
     }
 
     fn fixture_guidance() -> StormGuidance {
-        build_guidance("AL092026", &parse_adeck(FIXTURE), 2026100912)
+        build_guidance("AL092026", &parse_adeck(FIXTURE).unwrap(), 2026100912)
     }
 
     /// `now` exactly at `init`'s cycle time, so nothing in a record set
@@ -1062,11 +1091,11 @@ mod tests {
     #[test]
     fn latest_cycle_is_newest_with_official_forecast() {
         assert_eq!(
-            latest_cycle(&parse_adeck(FIXTURE), now_after(2026100912)),
+            latest_cycle(&parse_adeck(FIXTURE).unwrap(), now_after(2026100912)),
             Some(2026100912)
         );
         // A newer, still-filling cycle without OFCL must not win.
-        let mut records = parse_adeck(FIXTURE);
+        let mut records = parse_adeck(FIXTURE).unwrap();
         records.extend(parse_adeck_line(
             "AL, 09, 2026100918, 03, AVNI,  12, 301N,  870W,  87,    0,   ,  34, NEQ,",
         ));
@@ -1080,6 +1109,7 @@ mod tests {
     fn latest_cycle_falls_back_when_no_official_forecast() {
         // Invests often have models but no OFCL.
         let records: Vec<_> = parse_adeck(FIXTURE)
+            .unwrap()
             .into_iter()
             .filter(|r| r.tech != "OFCL")
             .collect();
@@ -1281,6 +1311,7 @@ mod tests {
     #[test]
     fn invest_without_official_forecast_is_flagged() {
         let records: Vec<_> = parse_adeck(FIXTURE)
+            .unwrap()
             .into_iter()
             .filter(|r| r.tech != "OFCL")
             .collect();

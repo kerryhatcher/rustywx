@@ -1099,7 +1099,7 @@ mod tests {
     const TEST_NOW: i64 = 4_102_444_800; // 2100-01-01T00:00:00Z
 
     fn fixture_store() -> GuidanceStore {
-        let records = crate::adeck::parse_adeck(FIXTURE);
+        let records = crate::adeck::parse_adeck(FIXTURE).unwrap();
         let mut store = GuidanceStore::default();
         store.insert(
             crate::adeck::build_guidance("al092026", &records, 2026100912),
