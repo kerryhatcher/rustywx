@@ -96,10 +96,8 @@ fn parse_tenths(digits: &str) -> Option<f64> {
 pub fn parse_lat(s: &str) -> Option<f64> {
     let lat = if let Some(d) = s.strip_suffix('N') {
         parse_tenths(d)?
-    } else if let Some(d) = s.strip_suffix('S') {
-        -parse_tenths(d)?
     } else {
-        return None;
+        -parse_tenths(s.strip_suffix('S')?)?
     };
     (-90.0..=90.0).contains(&lat).then_some(lat)
 }
@@ -113,10 +111,8 @@ pub fn parse_lat(s: &str) -> Option<f64> {
 pub fn parse_lon(s: &str) -> Option<f64> {
     let lon = if let Some(d) = s.strip_suffix('W') {
         -parse_tenths(d)?
-    } else if let Some(d) = s.strip_suffix('E') {
-        parse_tenths(d)?
     } else {
-        return None;
+        parse_tenths(s.strip_suffix('E')?)?
     };
     (-180.0..=180.0).contains(&lon).then_some(lon)
 }
