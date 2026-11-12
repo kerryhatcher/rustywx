@@ -140,7 +140,7 @@ pub fn hour_label(iso: &str) -> String {
     format!("{h12}{period}")
 }
 
-/// "YYYY-MM-DD" → short weekday ("Mon"). Empty string if unparseable.
+/// "YYYY-MM-DD" → short weekday ("Mon"). Empty string if unparsable.
 pub fn weekday_from_iso(date: &str) -> String {
     chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
         .map(|d| d.format("%a").to_string())

@@ -7,6 +7,8 @@ extend-exclude = [
     "target/",
     "app/target/",
     "docs/research/",
+    "docs/reviews/",
+    "docs/superpowers/plans/",
     "*.png",
     "*.jpg",
     "*.gif",
@@ -18,6 +20,7 @@ extend-exclude = [
     "*.geojson",
     "md_partB.md",
     "fmh-11B-2005.md",
+    "app/src/testdata/",
 ]
 
 [default]

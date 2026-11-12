@@ -105,7 +105,7 @@ pub fn parse_and_merge(states: &str, coast: &str, country: &str) -> Result<Vec<R
 
 /// Load cached border rings from Ply storage (async).
 ///
-/// A corrupt/unparseable cache entry degrades to `Ok(None)` (cache miss —
+/// A corrupt/unparsable cache entry degrades to `Ok(None)` (cache miss —
 /// the caller falls back to a fresh network fetch) rather than an error;
 /// the bad entry is also removed so it self-heals once the fresh fetch
 /// completes and re-saves under the same key.

@@ -101,8 +101,33 @@ pub struct StormGis {
     pub name: String,
     pub storm_type: String,
     pub basin: String,
+    /// NHC bin number (e.g. `"AT14"`), from each layer's `binnumber`
+    /// property. Empty when a layer doesn't carry it. Matches
+    /// `StormMeta::bin_number` exactly (confirmed live: `ep212026` / `EP1`
+    /// / MapServer `binnumber` "EP1") and is the primary key
+    /// `parse_gis_storms` merges the cone/track/points/watches layers on,
+    /// with the old name-substring rule as a fallback only when it's
+    /// empty on either side (review N2) — a name substring match merged
+    /// one storm's track onto a different, unrelated storm's entry
+    /// whenever one name was a substring of another ("Four" inside
+    /// "Fourteen-E"), silently corrupting the storm it landed on.
+    pub bin_number: String,
     pub advisory_num: String,
+    /// Local-time advisory date/time string as NHC writes it (e.g.
+    /// `"200 PM MST Mon Oct 19 2026"`) — kept for display only. Not
+    /// parseable as a reliable UTC instant (no fixed format, local
+    /// timezone abbreviation), so `idp_filedate_ms` below is what the
+    /// freshness gate actually uses (review R2-1).
     pub advisory_date: String,
+    /// This feature's `idp_filedate` MapServer property: an
+    /// `esriFieldTypeDate` field, epoch milliseconds UTC, read with
+    /// `prop_i64` (not `prop_str`, which would see the JSON number and
+    /// return `""`). `None` when a layer doesn't carry it. Used by
+    /// `adeck_style::gis_advisory_confirmed_fresh` to compare the
+    /// advisory's real issue time against the OFCL cycle it would
+    /// suppress — `advisory_date`'s local, non-fixed-format string can't
+    /// do that safely (review R2-1).
+    pub idp_filedate_ms: Option<i64>,
     /// Forecast cone polygon rings.
     pub cone: Vec<Ring>,
     /// Forecast track line (single ring of points).
@@ -485,17 +510,40 @@ fn format_bin(bin: &str) -> String {
 
 // ── KMZ / KML parsing ──────────────────────────────────────────────────
 
+/// Largest KML entry read out of a KMZ. Real NHC wind-probability and
+/// arrival-time KMLs are well under 1 MB; this leaves generous headroom
+/// while still bounding a crafted or corrupted KMZ's in-memory expansion —
+/// a zip entry's declared size can't be trusted before it's actually
+/// decompressed (review R2-11).
+const MAX_KML_BYTES: u64 = 32 * 1024 * 1024;
+
 /// Decompress a KMZ (ZIP) byte slice and return the KML content.
 pub fn extract_kml_from_kmz(bytes: &[u8]) -> Result<String> {
+    use std::io::Read;
     let cursor = std::io::Cursor::new(bytes);
     let mut archive = zip::ZipArchive::new(cursor).map_err(|e| anyhow!("opening KMZ zip: {e}"))?;
 
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i)?;
-        let name = file.name().to_string();
+        let file = archive.by_index(i)?;
+        // `name()` returns `Result` as of zip 3.0 (previously infallible
+        // `&str`), since a raw entry name isn't guaranteed to decode as
+        // UTF-8/CP437. An entry whose name can't be read is just skipped,
+        // same as any other non-`.kml` entry.
+        let Ok(name) = file.name().map(|n| n.to_string()) else {
+            continue;
+        };
         if name.ends_with(".kml") {
-            let mut kml = String::new();
-            std::io::Read::read_to_string(&mut file, &mut kml)?;
+            let mut buf = Vec::new();
+            file.take(MAX_KML_BYTES + 1)
+                .read_to_end(&mut buf)
+                .map_err(|e| anyhow!("reading KML entry in KMZ: {e}"))?;
+            if buf.len() as u64 > MAX_KML_BYTES {
+                return Err(anyhow!(
+                    "KML entry in KMZ is over the {MAX_KML_BYTES} byte cap"
+                ));
+            }
+            let kml = String::from_utf8(buf)
+                .map_err(|e| anyhow!("KML entry in KMZ is not valid UTF-8: {e}"))?;
             return Ok(kml);
         }
     }
@@ -704,6 +752,14 @@ fn prop_str(feature: &Value, key: &str) -> String {
         .to_string()
 }
 
+/// Reads an `esriFieldTypeDate` property (epoch milliseconds, e.g.
+/// `idp_filedate`) as an `i64`. `prop_str` would return `""` for this —
+/// the MapServer layers encode it as a JSON number, not a string (review
+/// R2-1).
+fn prop_i64(feature: &Value, key: &str) -> Option<i64> {
+    feature.get("properties")?.get(key)?.as_i64()
+}
+
 /// Extract rings from a single GeoJSON feature.
 fn extract_rings_for_feature(feature: &Value) -> Vec<Ring> {
     let Some(geometry) = feature.get("geometry") else {
@@ -744,6 +800,34 @@ fn extract_rings_for_feature(feature: &Value) -> Vec<Ring> {
     }
 }
 
+/// Finds the `StormGis` entry a layer feature (`bin_number`, `name`)
+/// belongs to. When the feature carries a non-empty `bin_number`, this
+/// matches **by bin only** — a feature with a bin that matches no known
+/// storm returns `None` rather than falling through to a name match
+/// (review R2-2: NHC's four MapServer layers update independently, so a
+/// feature can show up with a bin that the cone layer hasn't caught up to
+/// yet; falling back to substring matching for it could still attach its
+/// track to a *different*, unrelated storm, exactly the N2 bug this was
+/// meant to fix). The name-substring rule is a fallback only when the
+/// feature has no bin at all, and even then only against storms that
+/// themselves have no bin — a storm with a confirmed bin is never
+/// re-matched by a substring guess.
+fn find_storm_mut<'a>(
+    storms: &'a mut [StormGis],
+    bin_number: &str,
+    name: &str,
+) -> Option<&'a mut StormGis> {
+    if !bin_number.is_empty() {
+        return storms
+            .iter()
+            .position(|s| !s.bin_number.is_empty() && s.bin_number.eq_ignore_ascii_case(bin_number))
+            .and_then(|pos| storms.get_mut(pos));
+    }
+    storms
+        .iter_mut()
+        .find(|s| s.bin_number.is_empty() && name.contains(&s.name))
+}
+
 /// Parse all GIS storm data from four MapServer layer JSON responses.
 /// Layers: 5 = forecast points, 6 = track, 7 = cone, 8 = watches/warnings.
 pub fn parse_gis_storms(
@@ -766,8 +850,10 @@ pub fn parse_gis_storms(
                 name,
                 storm_type: prop_str(feature, "stormtype"),
                 basin: prop_str(feature, "basin"),
+                bin_number: prop_str(feature, "binnumber"),
                 advisory_num: prop_str(feature, "advisnum"),
                 advisory_date: prop_str(feature, "advdate"),
+                idp_filedate_ms: prop_i64(feature, "idp_filedate"),
                 cone: extract_rings_for_feature(feature),
                 track: Vec::new(),
                 points: Vec::new(),
@@ -776,29 +862,36 @@ pub fn parse_gis_storms(
         }
     }
 
-    // Merge track data.
+    // Merge track data. The track layer's own `idp_filedate` overwrites
+    // the cone's if present: it's the record for the track actually drawn
+    // and checked for staleness (review R2-1), so it takes precedence
+    // over the cone layer's possibly-older copy of the same field.
     if let Some(track) = track_json
         && let Some(features) = track.get("features").and_then(Value::as_array)
     {
         for feature in features {
             let name = prop_str(feature, "stormname");
-            if let Some(storm) = storms.iter_mut().find(|s| name.contains(&s.name)) {
+            let bin = prop_str(feature, "binnumber");
+            if let Some(storm) = find_storm_mut(&mut storms, &bin, &name) {
                 storm.track = extract_rings_for_feature(feature);
+                if let Some(ms) = prop_i64(feature, "idp_filedate") {
+                    storm.idp_filedate_ms = Some(ms);
+                }
             }
         }
     }
 
-    // Merge forecast points.
-    // The points layer (5) uses a full "Tropical Storm Fausto" style
-    // stormname, while the cone layer (7) uses just "Fausto".  Match by
-    // checking if any existing storm's name is contained in the points
-    // feature's stormname.
+    // Merge forecast points. The points layer (5) uses a full "Tropical
+    // Storm Fausto" style stormname, while the cone layer (7) uses just
+    // "Fausto" — the name-substring fallback above handles that shape
+    // mismatch when binnumber isn't available on this layer.
     if let Some(points) = points_json
         && let Some(features) = points.get("features").and_then(Value::as_array)
     {
         for feature in features {
             let name = prop_str(feature, "stormname");
-            if let Some(storm) = storms.iter_mut().find(|s| name.contains(&s.name))
+            let bin = prop_str(feature, "binnumber");
+            if let Some(storm) = find_storm_mut(&mut storms, &bin, &name)
                 && let Some(geom) = feature.get("geometry")
                 && let Some(coords) = geom.get("coordinates").and_then(Value::as_array)
                 && let (Some(lon), Some(lat)) = (
@@ -818,8 +911,9 @@ pub fn parse_gis_storms(
     {
         for feature in features {
             let name = prop_str(feature, "stormname");
+            let bin = prop_str(feature, "binnumber");
             let ww_type = prop_str(feature, "tcww");
-            if let Some(storm) = storms.iter_mut().find(|s| name.contains(&s.name)) {
+            if let Some(storm) = find_storm_mut(&mut storms, &bin, &name) {
                 for ring in extract_rings_for_feature(feature) {
                     storm.watches_warnings.push((ring, ww_type.clone()));
                 }
@@ -1345,6 +1439,48 @@ pub fn watch_warning_color(ww_type: &str) -> [u8; 4] {
 mod tests {
     use super::*;
 
+    fn build_kmz(entry_name: &str, content: &[u8]) -> Vec<u8> {
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut w = zip::ZipWriter::new(&mut buf);
+            let opts = zip::write::SimpleFileOptions::default();
+            w.start_file(entry_name, opts).unwrap();
+            std::io::Write::write_all(&mut w, content).unwrap();
+            w.finish().unwrap();
+        }
+        buf.into_inner()
+    }
+
+    #[test]
+    fn extract_kml_from_kmz_finds_the_kml_entry() {
+        // No dedicated test existed before bumping zip 2.4.2 -> 9 for
+        // RUSTSEC advisories; this pins the round trip against the new
+        // major version's API (`ZipArchive`/`ZipWriter` unchanged in
+        // shape, but `ZipFile::name()` became fallible).
+        let kmz = build_kmz("34kt_wind_probs.kml", b"<kml>contents</kml>");
+        let kml = extract_kml_from_kmz(&kmz).unwrap();
+        assert_eq!(kml, "<kml>contents</kml>");
+    }
+
+    #[test]
+    fn extract_kml_from_kmz_errors_without_a_kml_entry() {
+        let kmz = build_kmz("readme.txt", b"not kml");
+        assert!(extract_kml_from_kmz(&kmz).is_err());
+    }
+
+    #[test]
+    fn extract_kml_from_kmz_rejects_a_kml_entry_over_the_cap() {
+        // A zip entry's declared/decompressed size can't be trusted before
+        // it's actually read, so the reader itself must be bounded
+        // (review R2-11). A real NHC KML is well under 1 MB; this content
+        // is one byte over the cap and highly compressible, so the KMZ
+        // stays small while the decompressed entry doesn't.
+        let oversized = vec![b'x'; (MAX_KML_BYTES + 1) as usize];
+        let kmz = build_kmz("34kt_wind_probs.kml", &oversized);
+        let err = extract_kml_from_kmz(&kmz).unwrap_err();
+        assert!(format!("{err:#}").contains("cap"), "{err:#}");
+    }
+
     #[test]
     fn iso_to_ddhhmm_parses_iso8601() {
         let result = iso_to_ddhhmm("2026-07-19T23:44:32.968Z").unwrap();
@@ -1709,5 +1845,189 @@ mod tests {
         assert_eq!(storms.len(), 1);
         assert_eq!(storms[0].points.len(), 1);
         assert_eq!(storms[0].points[0].2, "8:00 AM Mon");
+    }
+
+    #[test]
+    fn parse_gis_storms_merges_track_by_bin_number_not_name_substring() {
+        // Review N2: "Four" is a substring of "Fourteen-E", so the old
+        // name-substring merge (`find(|s| name.contains(&s.name))`) could
+        // attach Fourteen-E's track to Four's entry instead, since Four's
+        // cone entry comes first and matches the substring test too. With
+        // binnumber present on both sides, the track must land on the
+        // storm it actually belongs to.
+        let cone_json: Value = serde_json::from_str(
+            r#"{
+            "features": [
+                {
+                    "properties": {"stormname": "Four", "stormtype": "TD", "basin": "AT", "binnumber": "AT4", "advisnum": "1", "advdate": "2026-08-01"},
+                    "geometry": {"type": "Polygon", "coordinates": [[[-80.0, 25.0], [-81.0, 26.0], [-80.5, 27.0], [-80.0, 25.0]]]}
+                },
+                {
+                    "properties": {"stormname": "Fourteen-E", "stormtype": "HU", "basin": "EP", "binnumber": "EP14", "advisnum": "9", "advdate": "2026-08-01"},
+                    "geometry": {"type": "Polygon", "coordinates": [[[-120.0, 15.0], [-121.0, 16.0], [-120.5, 17.0], [-120.0, 15.0]]]}
+                }
+            ]
+        }"#,
+        )
+        .unwrap();
+        let track_json: Value = serde_json::from_str(
+            r#"{
+            "features": [{
+                "properties": {"stormname": "Fourteen-E", "binnumber": "EP14"},
+                "geometry": {"type": "LineString", "coordinates": [[-120.0, 15.0], [-121.0, 16.0]]}
+            }]
+        }"#,
+        )
+        .unwrap();
+        let storms = parse_gis_storms(Some(&cone_json), Some(&track_json), None, None);
+        let four = storms.iter().find(|s| s.name == "Four").unwrap();
+        let fourteen_e = storms.iter().find(|s| s.name == "Fourteen-E").unwrap();
+        assert!(
+            four.track.is_empty(),
+            "Four must not inherit Fourteen-E's track"
+        );
+        assert!(
+            !fourteen_e.track.is_empty(),
+            "Fourteen-E must get its own track"
+        );
+    }
+
+    #[test]
+    fn parse_gis_storms_merges_track_by_bin_number_across_a_td_to_named_storm_rename() {
+        // Review N3: MapServer can lag CurrentStorms through a rename (a
+        // depression upgraded and named while the track layer still used
+        // the old TD-style stormname, or vice versa). An exact name match
+        // would miss this entirely; the bin number doesn't change.
+        let cone_json: Value = serde_json::from_str(
+            r#"{
+            "features": [{
+                "properties": {"stormname": "TD Fifteen", "stormtype": "TD", "basin": "AT", "binnumber": "AT15", "advisnum": "2", "advdate": "2026-08-02"},
+                "geometry": {"type": "Polygon", "coordinates": [[[-80.0, 25.0], [-81.0, 26.0], [-80.5, 27.0], [-80.0, 25.0]]]}
+            }]
+        }"#,
+        )
+        .unwrap();
+        let track_json: Value = serde_json::from_str(
+            r#"{
+            "features": [{
+                "properties": {"stormname": "Nadine", "binnumber": "AT15"},
+                "geometry": {"type": "LineString", "coordinates": [[-80.0, 25.0], [-81.0, 26.0]]}
+            }]
+        }"#,
+        )
+        .unwrap();
+        let storms = parse_gis_storms(Some(&cone_json), Some(&track_json), None, None);
+        assert_eq!(storms.len(), 1);
+        assert!(
+            !storms[0].track.is_empty(),
+            "bin number must still merge the track across the rename"
+        );
+    }
+    #[test]
+    fn parse_gis_storms_rejects_an_unmatched_bin_instead_of_falling_back_to_substring() {
+        // Review R2-2: "Six" is a substring of "Sixteen-E". The old rule
+        // fell back to substring matching whenever a non-empty bin found
+        // no match, so a track feature carrying a bin for a storm the
+        // cone layer hasn't caught up to yet (NHC's 4 layers update
+        // independently) could still attach to a different, unrelated
+        // storm. With both sides carrying a bin, an unmatched bin must
+        // return None, not fall through.
+        let cone_json: Value = serde_json::from_str(
+            r#"{
+            "features": [{
+                "properties": {"stormname": "Six", "stormtype": "TD", "basin": "AT", "binnumber": "AT2", "advisnum": "1", "advdate": "2026-08-01"},
+                "geometry": {"type": "Polygon", "coordinates": [[[-80.0, 25.0], [-81.0, 26.0], [-80.5, 27.0], [-80.0, 25.0]]]}
+            }]
+        }"#,
+        )
+        .unwrap();
+        let track_json: Value = serde_json::from_str(
+            r#"{
+            "features": [{
+                "properties": {"stormname": "Sixteen-E", "binnumber": "EP3"},
+                "geometry": {"type": "LineString", "coordinates": [[-120.0, 15.0], [-121.0, 16.0]]}
+            }]
+        }"#,
+        )
+        .unwrap();
+        let storms = parse_gis_storms(Some(&cone_json), Some(&track_json), None, None);
+        assert_eq!(storms.len(), 1, "Sixteen-E has no cone entry to attach to");
+        assert!(
+            storms[0].track.is_empty(),
+            "Six must not inherit Sixteen-E's track just because its bin went unmatched"
+        );
+    }
+
+    #[test]
+    fn parse_gis_storms_merges_points_by_bin_number_not_name_substring() {
+        // Review R2-2: a bin-merge test for the points layer specifically
+        // — neither this nor the watches layer had one, so reverting the
+        // bin-number change for either failed nothing.
+        let cone_json: Value = serde_json::from_str(
+            r#"{
+            "features": [
+                {
+                    "properties": {"stormname": "Six", "stormtype": "TD", "basin": "AT", "binnumber": "AT2", "advisnum": "1", "advdate": "2026-08-01"},
+                    "geometry": {"type": "Polygon", "coordinates": [[[-80.0, 25.0], [-81.0, 26.0], [-80.5, 27.0], [-80.0, 25.0]]]}
+                },
+                {
+                    "properties": {"stormname": "Sixteen-E", "stormtype": "HU", "basin": "EP", "binnumber": "EP3", "advisnum": "9", "advdate": "2026-08-01"},
+                    "geometry": {"type": "Polygon", "coordinates": [[[-120.0, 15.0], [-121.0, 16.0], [-120.5, 17.0], [-120.0, 15.0]]]}
+                }
+            ]
+        }"#,
+        )
+        .unwrap();
+        let points_json: Value = serde_json::from_str(
+            r#"{
+            "features": [{
+                "properties": {"stormname": "Hurricane Sixteen-E", "binnumber": "EP3", "datelbl": "8:00 AM Mon"},
+                "geometry": {"type": "Point", "coordinates": [-116.4, 13.5]}
+            }]
+        }"#,
+        )
+        .unwrap();
+        let storms = parse_gis_storms(Some(&cone_json), None, Some(&points_json), None);
+        let six = storms.iter().find(|s| s.name == "Six").unwrap();
+        let sixteen_e = storms.iter().find(|s| s.name == "Sixteen-E").unwrap();
+        assert!(six.points.is_empty(), "Six must not inherit the point");
+        assert_eq!(sixteen_e.points.len(), 1);
+    }
+
+    #[test]
+    fn parse_gis_storms_merges_watches_by_bin_number_not_name_substring() {
+        // Review R2-2: a bin-merge test for the watches/warnings layer.
+        let cone_json: Value = serde_json::from_str(
+            r#"{
+            "features": [
+                {
+                    "properties": {"stormname": "Six", "stormtype": "TD", "basin": "AT", "binnumber": "AT2", "advisnum": "1", "advdate": "2026-08-01"},
+                    "geometry": {"type": "Polygon", "coordinates": [[[-80.0, 25.0], [-81.0, 26.0], [-80.5, 27.0], [-80.0, 25.0]]]}
+                },
+                {
+                    "properties": {"stormname": "Sixteen-E", "stormtype": "HU", "basin": "EP", "binnumber": "EP3", "advisnum": "9", "advdate": "2026-08-01"},
+                    "geometry": {"type": "Polygon", "coordinates": [[[-120.0, 15.0], [-121.0, 16.0], [-120.5, 17.0], [-120.0, 15.0]]]}
+                }
+            ]
+        }"#,
+        )
+        .unwrap();
+        let ww_json: Value = serde_json::from_str(
+            r#"{
+            "features": [{
+                "properties": {"stormname": "Hurricane Sixteen-E", "binnumber": "EP3", "tcww": "HW"},
+                "geometry": {"type": "LineString", "coordinates": [[-120.0, 15.0], [-121.0, 16.0]]}
+            }]
+        }"#,
+        )
+        .unwrap();
+        let storms = parse_gis_storms(Some(&cone_json), None, None, Some(&ww_json));
+        let six = storms.iter().find(|s| s.name == "Six").unwrap();
+        let sixteen_e = storms.iter().find(|s| s.name == "Sixteen-E").unwrap();
+        assert!(
+            six.watches_warnings.is_empty(),
+            "Six must not inherit the watch/warning"
+        );
+        assert_eq!(sixteen_e.watches_warnings.len(), 1);
     }
 }

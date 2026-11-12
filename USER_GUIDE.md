@@ -77,6 +77,7 @@ Toggle overlays on or off using the controls or settings:
 - **Borders:** State, county, and international borders for geographic reference
 - **Alerts:** NWS Warning (tornado warnings, severe thunderstorm warnings) and Watch (areas of potential severe weather) polygons
 - **Tropical (NHC):** National Hurricane Center storm track and forecast cone overlays for tropical systems
+- **Spaghetti models (optional, off by default):** Computer-model forecast tracks for each active storm, from the National Hurricane Center's public model-guidance files (ATCF). Each line is colored by the model's forecast wind speed. The thick white-outlined line is NHC's official forecast, and the thin grey line is the storm's past track. A legend in the lower left shows the color key and how old the data is. Turn it on from the Tropical panel ("Model Tracks (spaghetti)") or in Settings ("Spaghetti models (tropical)"). The panel also shows a wind-speed chart for each model. **These are guidance, not official forecasts.** Always follow NHC and your local National Weather Service office. The overlay downloads one file per active storm every 15 minutes while it's on, and nothing while it's off. In `--demo` mode it shows today's storms, not the historical event.
 
 ## Settings Panel
 
@@ -95,6 +96,7 @@ Click the gear icon to open the Settings panel. Configure:
 - **Borders:** Toggle borders on/off at startup
 - **Alerts:** Toggle NWS alerts on/off at startup
 - **Tropical (NHC):** Toggle tropical system overlay on/off at startup
+- **Spaghetti models (tropical):** Show model-guidance tracks (default off)
 
 ### Animation Level
 - **Full:** Animate between stored radar volumes smoothly
