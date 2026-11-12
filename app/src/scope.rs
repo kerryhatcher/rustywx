@@ -310,8 +310,8 @@ fn clean_sweep(sweep: &SweepData, product: Product, qc: &QcConfig) -> SweepData 
                     for d in -AZ_HALF..=AZ_HALF {
                         let az_idx = (sorted_idx as i64 + d).rem_euclid(n_az as i64) as usize;
                         let r = &cleaned.radials[az_order[az_idx]];
-                        for g in g_start..g_end.min(r.gates.len()) {
-                            if let Some(v) = r.gates[g] {
+                        for gate_val in r.gates.iter().take(g_end).skip(g_start) {
+                            if let Some(v) = *gate_val {
                                 sum += v as f64;
                                 sum_sq += (v as f64) * (v as f64);
                                 count += 1;
@@ -2885,9 +2885,9 @@ mod tests {
         );
 
         // Precip block (az 100-108, indices 7..16): untouched end to end.
-        for i in 7..16 {
+        for radial in &cleaned.radials[7..16] {
             assert_eq!(
-                cleaned.radials[i].gates, precip_gates,
+                radial.gates, precip_gates,
                 "continuous precip block must not be touched by sun-spike removal"
             );
         }
