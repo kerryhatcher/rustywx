@@ -67,6 +67,8 @@ plyx = "plyx"
 Ply = "Ply"
 # Other
 rustywx = "rustywx"
+# Existing worktree directory name (misspelled upstream)
+improvments = "improvments"
 
 [default.extend-identifiers]
 # "PNGs" splits to PN+Gs; PN is flagged as a typo for ON

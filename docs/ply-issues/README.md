@@ -24,6 +24,7 @@ files marked “needs revalidation” should not be filed unchanged.
 | 11 | `11-color-i32-overflow.md` | Ergonomics | Low | Revalidate | Color literals use i32; values above 0x7FFFFFFF overflow |
 | 12 | `12-storage-new-signature-docs.md` | Docs gap | Low | Revalidate | Storage::new() signature mismatch in docs |
 | 13 | `13-borderless-window-conf.md` | Feature request | Medium | Ready | Borderless/undecorated window option in Conf (macOS style mask hardcoded) |
+| 14 | `14-net-timeouts-tls-proxy.md` | Feature request / docs | High | Ready | net: no HTTP timeouts, TLS root choice or system proxy; cancel()/eviction semantics undocumented |
 
 ## Stage 3 corrections
 
