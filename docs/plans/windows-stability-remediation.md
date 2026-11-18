@@ -63,14 +63,15 @@ Each of these is pinned by a test in the task named.
 
 | PR | Branch | Contents | Review ids | Prerequisite |
 |---|---|---|---|---|
-| **1a** | `fix/cache-durability` | Tasks 1–6: atomic writes, bounded decode, compressed scan cache with LRU in the OS cache dir, saves off the UI thread, cache/live race, single settings writer | C1, M16, M1, M3, L10, L21 | none |
+| **0** | `ci/windows-gate` | Task 24 Steps 1–3 only: tokio `rt-multi-thread` feature, `deny.toml` targets, and the `windows-latest` check/test/release-build job (no launch check yet) | H7 (build and test half), L8, L9 | none |
+| **1a** | `fix/cache-durability` | Tasks 1–6: atomic writes, bounded decode, compressed scan cache with LRU in the OS cache dir, saves off the UI thread, cache/live race, single settings writer | C1, M16 (partial), M1, M3, L10, L21 | none |
 | **1b** | `fix/net-recovery` | Tasks 7–14: shared `NetPort`, `Feed` retry/deadline/toast-once, alerts, borders (H6), forecast/geocoder, NHC (C2, C3, M22), ureq `win-system-proxy` | C2, C3 (ply feeds), H6, M22, M23 (part), H1 (stopgap) | **`feat/spaghetti-models` merged** (reuses its `NetPort`, `PlyNet`, `parse_queue_has_capacity`) |
-| **2** | `fix/windows-crash-proofing` | Tasks 15–18: vendored miniquad patch (wheel, drop-file, DPI assert), `--version` and explicit `main`, `windows_subsystem` + panic hook + log file, byte-slice panics | H2, H9, H8, M21, M4 (visibility) | none (merges cleanly after 1a/1b) |
-| **3** | `perf/raster-and-borders` | Tasks 19–23: SAT morphology/smoothing, BFS hole fill, 2048 benchmark, border projection cache | H3, H4, H5 (borders) | none; coordinate with the radar-improvments worktree (it edits `scope.rs`) |
-| **4** | `ci/windows` | Tasks 24–26: `windows-latest` CI job, `deny.toml` targets, Justfile on Windows, manifest + icon/version resource, static CRT, release zip fixes | H7, L7, L8, L9, M5 (manifest only), M19 (a, b, d, checksum) | Phase 2 Task 16 (`--version`) |
+| **2** | `fix/windows-crash-proofing` | Tasks 15–18: vendored miniquad patch (wheel, drop-file, DPI assert), `--version` and explicit `main`, `windows_subsystem` + panic hook + log file, byte-slice panics | H2, H9, H8, M21, M4 (visibility) | **PR 0 merged**, so the `cfg(windows)` code is compiled before it ships (merges cleanly after 1a/1b) |
+| **3** | `perf/raster-and-borders` | Tasks 19–23: SAT morphology/smoothing, BFS hole fill, 2048 benchmark, border projection cache | H3, H4, H5 (borders; alerts and NHC are F13) | none; coordinate with the radar-improvments worktree (it edits `scope.rs`) |
+| **4** | `ci/windows` | Tasks 24 (Steps 4–6, plus the launch check), 25–26: Justfile on Windows, manifest + icon/version resource, static CRT, release zip fixes | H7 (launch check), L7, M5 (manifest only), M19 (a, b, d, checksum) | Phase 2 Task 16 (`--version`) |
 | **5** | `feat/app-http` | Outline only: app-owned reqwest HTTP module behind `NetPort` | H1, C3 (full), M13 | Phase 1b |
 
-Phases 1a, 2, and 3 can proceed in parallel on separate worktrees. Phase 1b waits for the spaghetti merge. Phase 4 waits for Task 16.
+Phases 1a, 2, and 3 can proceed in parallel on separate worktrees. PR 0 is small and goes first, because Phase 2 adds `cfg(windows)` code (Tasks 15 and 17) that nothing else compiles, and the release tag is the only Windows build today. Phase 1b waits for the spaghetti merge. Phase 4 waits for Task 16.
 
 ---
 
@@ -81,10 +82,10 @@ That plan (`docs/plans/spaghetti-models-overlay.md`) introduces helpers this pla
 | Spaghetti introduces | This plan | Decision |
 |---|---|---|
 | `adeck_fetch::NetPort` / `NetPoll` / `PlyNet` (transport trait, Ply impl) | Needed by every feed (Phase 1b) and by the Phase 5 HTTP module | **Task 7 moves them to `app/src/net_port.rs`** and leaves `pub use` re-exports in `adeck_fetch`, so spaghetti code and tests compile unchanged. Task 7 adds `get_with_headers` with a default impl. Phase 5 implements `NetPort` once and every feed switches. |
-| `AdeckFetcher` per-storm scheduler (stable id plus cancel, 60 s deadline, backoff, toast-once) | `net_feed::Feed` is the same state machine for one request | Feed's API mirrors AdeckFetcher's (`tick`, `take_body`, `parse_finished`, `status`). Porting `AdeckFetcher` onto `Feed` is **Follow-up F1**, gated on its 13 tests passing unchanged; it's not in Phase 1b, to keep that PR's blast radius down. |
+| `AdeckFetcher` per-storm scheduler (stable id plus cancel, 60 s deadline, backoff, toast-once) | `net_feed::Feed` is the same state machine for one request | Feed's API mirrors AdeckFetcher's (`tick`, `take_body`, `parse_finished`, `status`). Porting `AdeckFetcher` onto `Feed` is **Follow-up F1**, gated on all its existing tests passing unchanged (the count has grown with the spaghetti branch, so don't pin a number); it's not in Phase 1b, to keep that PR's blast radius down. |
 | `BackgroundWorkers::parse_queue_has_capacity()` | Feeds hand bodies to the parse worker only when the queue has room (C2 fix 3) | Reused as-is. This is why 1b requires the spaghetti merge. |
 | `adeck_style::ProjectedTrack` / `project_tracks` (km-projection cache keyed by site and revision, review H5) | Border projection cache (Task 23) | Task 23 adds a shared `geo::KmPolyline { km, min_km, max_km }` with `from_latlon` and `visible`. Borders use it. **Task 23 Step 6** refactors `ProjectedTrack` to embed a `KmPolyline` (its 3 projection tests are the gate). |
-| `adeck::gunzip_limited` (bounded inflate with `Read::take`) | `rle::decompress_bounded` (Task 2) uses the same cap-then-error shape | Same pattern, separate code (different codecs). The 2026-08-27 plan's KMZ cap (its Task 14) should copy `gunzip_limited`'s shape. |
+| `adeck::gunzip_limited` (bounded inflate with `Read::take`) | `rle::decompress_bounded` (Task 2) uses the same cap-then-error shape | Same pattern, separate code (different codecs). The KMZ entry cap already landed on the spaghetti branch (commit `c894d4f`). |
 | No-byte-slicing rule for a-deck parsing | `text::truncate_chars` (Task 18) | Spaghetti needs no change. |
 | Edits `main.rs` near the NHC fetch block, `background_work.rs` enums, and the `settings.rs` test literals | 1b edits the same NHC block and the `ParsePayload` match arms; 1a edits the settings tests | Merge spaghetti first. 1a's settings change doesn't touch the `Settings` struct, so the conflict is at most in test literals. |
 
@@ -99,7 +100,7 @@ An earlier plan sits uncommitted in `.claude/worktrees/radar-improvments`. Its f
 | T6 save off render thread (F4), T8 eviction (F5), T9 RLE bound (F7), T21 length bounds (F7), T23 adopt compressed cache (F7) | Tasks 2–5 | **This plan.** It also moves scans out of Roaming, adds atomic writes, and saves from the data worker with no clone, which avoids audit T6's clone-versus-serialize dilemma. Its measured 52% saving (audit F7) is why the LRU is mandatory here. |
 | T5/T11 overlay cache: pre-filter rings/alerts to scope (F3) | Task 23: per-site km projection with bbox cull (H5) | **Complementary.** Filtering drops rings; projection removes per-frame trig. If audit T5/T11 lands first, Task 23 projects `overlay_cache.rings` instead of `state.borders`; the code is otherwise identical. |
 | T10 2048 benchmark (F6), T25 separable morphology (F6) | Tasks 20–22 (SAT and BFS) | **This plan** (SAT is exact for all three filters, including the NaN-aware blur, which separable morphology doesn't cover). Keep audit T10's benchmark if it lands first and skip Task 22. |
-| T12–T14 NHC parser bounds (F8a/b/c = M21, M20) | Task 18 covers M21 only | **Split:** this plan takes M21 (Task 18); the audit plan keeps T14 (KMZ cap, M20). |
+| T12–T14 NHC parser bounds (F8a/b/c = M21, M20) | Task 18 covers M21 only | **Split:** this plan takes M21 (Task 18). M20's KMZ size cap is already done by `feat/spaghetti-models` commit `c894d4f`, so the audit plan's T14 shrinks to the case-insensitive `.kml` match and the lossy UTF-8 decode. |
 | T16/T19 worker panic isolation (F11 = M17) | not in scope | Audit plan. |
 | T20 shader fallback (F12 = M18) | not in scope | Audit plan. |
 | T22 bound raster retries (F7 part 4 ≈ M2) | not in scope | Audit plan. |
@@ -130,7 +131,7 @@ An earlier plan sits uncommitted in `.claude/worktrees/radar-improvments`. Its f
 
 # Phase 1a — Cache and settings durability (PR `fix/cache-durability`)
 
-Closes C1, M16, M1, M3, L10, and L21. After this PR:
+Closes C1, M1, M3, L10, and L21, and part of M16 (superseded cache loads are dropped, but a started decode still runs to completion; see Follow-up F3). After this PR:
 - No scan is serialized or written on the UI thread.
 - Scans live as compressed binary in the OS cache directory (`%LOCALAPPDATA%\rustywx\scans`, never Roaming), capped at 6 sites and 512 MiB.
 - Every write is atomic.
@@ -1098,7 +1099,7 @@ pub fn remove_legacy_scans(app_dir: &Path) -> usize {
 
 ---
 
-### Task 5: Save scans from the data worker, load via `ScanCache`, fix the cache-vs-live race (C1, M16, M1)
+### Task 5: Save scans from the data worker, load via `ScanCache`, fix the cache-vs-live race (C1, M16 partial, M1)
 
 **Files:**
 - Modify: `app/src/data.rs` (`spawn_worker` around l.227–300)
@@ -1437,6 +1438,8 @@ Smoke test. Manual check:
 
 **Prerequisite:** `feat/spaghetti-models` is merged into `main`. This phase moves that branch's `NetPort` and `PlyNet` and reuses `BackgroundWorkers::parse_queue_has_capacity()`.
 
+That branch has since changed `main.rs` heavily (it adds a `Clock` trait and roughly 600 lines), so the tasks in this phase locate code by the `// ──` section comments in `main.rs`, not by line number. Re-find each anchor after the merge.
+
 Closes C2, and C3 for every Ply-backed feed, plus H6, M22, the forecast half of M23, and the H1 stopgap. After this PR, every feed:
 - polls its id every frame;
 - `cancel()`s after each result;
@@ -1651,7 +1654,7 @@ pub(crate) mod testing {
 
 In `adeck_fetch.rs`, after its module doc, add `pub use crate::net_port::{NetPoll, NetPort, PlyNet};`, and delete its now-unused `use ply_engine...` lines if any. Leave its own test `FakeNet` alone.
 
-- [ ] **Step 4: Run all tests.** Run `cargo test --all-features && cargo clippy --all-targets --all-features -- -D warnings`. Expected: everything passes, including all 13 `adeck_fetch::` tests unchanged.
+- [ ] **Step 4: Run all tests.** Run `cargo test --all-features && cargo clippy --all-targets --all-features -- -D warnings`. Expected: everything passes, including every existing `adeck_fetch::` test unchanged.
 
 - [ ] **Step 5: Commit.** `git commit -am "refactor(net): move NetPort and PlyNet to a shared net_port module"`
 
@@ -2172,8 +2175,8 @@ If the compiler rejects `match self.phase` because the enum isn't `Copy`, match 
 - Modify: `app/src/state.rs` (replace `alerts_fetch_fired`, `last_alert_poll` with `alerts_feed`)
 - Modify: `app/src/main.rs`:
   - initializer
-  - parse-result arms around l.1066 and l.1101–1127
-  - the two alerts blocks around l.1179–1226
+  - the alerts parse-result arms and the generic `Err` arm, inside `// ── Apply completed background parses`
+  - the two alerts blocks, from `// ── Fire alerts fetch if not yet started` through `// ── Hand alerts response body to the parse worker`
 
 **Interfaces:**
 - Consumes: `net_feed::{Feed, RetryPolicy}`, `net_port::PlyNet` (`ply_net` is declared in `main` by the spaghetti feature).
@@ -2284,8 +2287,8 @@ Offline check:
 - Modify: `app/src/borders.rs` (constants; delete `fire_fetch_all`, `poll_and_merge`, `poll_raw`)
 - Modify: `app/src/state.rs` (replace `borders_fetch_fired` with `border_feeds`)
 - Modify: `app/src/main.rs`:
-  - the two borders blocks around l.1131–1177
-  - parse arms around l.1052 and the generic `Err` arm
+  - the two borders blocks, from `// ── Fire border fetch if not yet started and no cache` through `// ── Hand border response bodies to the parse worker`
+  - the borders parse arms and the generic `Err` arm, inside `// ── Apply completed background parses`
 
 **Interfaces:**
 - Produces:
@@ -2396,8 +2399,8 @@ Manual check:
 
 **Files:**
 - Modify: `app/src/forecast.rs` (pub helpers and constants; `fire_geo` and `poll_geo` cancel; delete `fire_forecast` and `poll_forecast`)
-- Modify: `app/src/state.rs` (`forecast_fetch_fired` becomes `forecast_feed: Option<Feed>`; `fc_geo_fired` becomes `fc_geo_query: Option<String>`)
-- Modify: `app/src/main.rs` (forecast block in `handle_input` around l.3772–3851)
+- Modify: `app/src/state.rs` (`forecast_fetch_fired` becomes `forecast_feed: Option<Feed>`; `fc_geo_fired` becomes `fc_geo_query: Option<(String, f64)>`, the submitted query and the time it was fired)
+- Modify: `app/src/main.rs` (the block under `// ── Forecast view: fetch, poll, and search input` in `handle_input`)
 
 **Interfaces:**
 - Produces:
@@ -2433,6 +2436,17 @@ pub fn fire_geo(query: &str) {
     net::get(&id, &geo_url(query), |cfg| cfg.header("User-Agent", USER_AGENT));
 }
 
+/// Drop the geocode entry for `query` (a deadline, or a newer search).
+pub fn cancel_geo(query: &str) {
+    use ply_engine::prelude::net;
+    if let Some(req) = net::request(&geo_net_id(query)) {
+        req.cancel();
+    }
+}
+
+/// Give up on a geocode search after this long (C3: no request may hang).
+pub const GEO_TIMEOUT_SECS: f64 = 20.0;
+
 /// Poll the geocode search for `query`. Cancels the entry once consumed so
 /// the same query can be searched again (C2). A lost entry is an error,
 /// never "pending forever" (M23).
@@ -2452,7 +2466,7 @@ pub fn poll_geo(query: &str) -> Option<Result<Vec<GeoHit>>> {
 
 Delete `fire_forecast` and `poll_forecast` after Step 3.
 
-- [ ] **Step 2: State.** Replace `forecast_fetch_fired: bool` with `pub forecast_feed: Option<crate::net_feed::Feed>,` (doc: "Forecast feed for `forecast_coords`; replaced when the coords change.") and `fc_geo_fired: bool` with `pub fc_geo_query: Option<String>,` (doc: "Query submitted to the geocoder, polled by this string, not the live box text."). Update the initializer (`None`, `None`) and resolve every `grep -n "forecast_fetch_fired\|fc_geo_fired" app/src/*.rs` hit. Use `state.fc_geo_query.is_some()` where a "searching" flag was read.
+- [ ] **Step 2: State.** Replace `forecast_fetch_fired: bool` with `pub forecast_feed: Option<crate::net_feed::Feed>,` (doc: "Forecast feed for `forecast_coords`; replaced when the coords change.") and `fc_geo_fired: bool` with `pub fc_geo_query: Option<(String, f64)>,` (doc: "Query submitted to the geocoder and the `get_time()` it was fired at; polled by this string, not the live box text."). Update the initializer (`None`, `None`) and resolve every `grep -n "forecast_fetch_fired\|fc_geo_fired" app/src/*.rs` hit. Use `state.fc_geo_query.is_some()` where a "searching" flag was read.
 
 - [ ] **Step 3: Forecast fetch.** In `handle_input`'s Forecast block, replace everything from `if let Some(target) = state.user_location {` through the end of the `// Poll whichever coords we last fired for.` block with:
 
@@ -2504,17 +2518,33 @@ Delete `fire_forecast` and `poll_forecast` after Step 3.
 
 The forecast JSON is a few KB, so parsing it here on the UI thread stays as it was.
 
-- [ ] **Step 4: Geocoder.** In the Enter handler, replace `forecast::fire_geo(&q); state.fc_geo_fired = true;` with `forecast::fire_geo(&q); state.fc_geo_query = Some(q);`. Replace the `// Poll geocode results.` block with:
+- [ ] **Step 4: Geocoder.** In the Enter handler, replace `forecast::fire_geo(&q); state.fc_geo_fired = true;` with:
+
+```rust
+                    if let Some((old, _)) = state.fc_geo_query.take() {
+                        forecast::cancel_geo(&old); // don't orphan the earlier entry
+                    }
+                    forecast::fire_geo(&q);
+                    state.fc_geo_query = Some((q, get_time()));
+```
+
+Replace the `// Poll geocode results.` block with:
 
 ```rust
         // Poll by the submitted query, not the live box text (M23).
-        if let Some(q) = state.fc_geo_query.clone() {
+        if let Some((q, fired_at)) = state.fc_geo_query.clone() {
             match forecast::poll_geo(&q) {
                 Some(Ok(hits)) => {
                     state.fc_geo_hits = hits;
                     state.fc_geo_query = None;
                 }
                 Some(Err(_)) => {
+                    state.fc_geo_hits = Vec::new();
+                    state.fc_geo_query = None;
+                }
+                None if get_time() - fired_at > forecast::GEO_TIMEOUT_SECS => {
+                    // A hung request must not pin the search forever.
+                    forecast::cancel_geo(&q);
                     state.fc_geo_hits = Vec::new();
                     state.fc_geo_query = None;
                 }
@@ -2527,6 +2557,8 @@ The forecast JSON is a few KB, so parsing it here on the UI thread stays as it w
 1. Open Forecast offline. It shows "Forecast unavailable, retrying in N s" and recovers when the network returns.
 2. Search "Atlanta", then edit the box before the results land. The results still arrive.
 3. Searching "Atlanta" twice in a row works both times.
+4. Press Enter on one query, then on a different one before the first returns. Only the second's results show, and the first entry is cancelled.
+5. With the network blocked after pressing Enter, the search gives up after about 20 s and the box accepts a new search.
 
 - [ ] **Step 6: Commit.** `git commit -am "fix(forecast): retry failed forecasts, refresh every 30 min, unstick geocoder"`
 
@@ -2805,8 +2837,9 @@ fn take_response(net: &mut impl NetPort, id: &str) -> Option<std::result::Result
 **Files:**
 - Modify: `app/src/state.rs` (replace `nhc_fetch_fired`, `nhc_last_poll` with `nhc_retry`)
 - Modify: `app/src/main.rs`:
-  - NHC fire/poll block around l.1228–1311
-  - `accept_metadata` call around l.1089
+  - the NHC fire/poll blocks, from `// ── Fire NHC fetch if not yet started or refresh interval elapsed` through the end of `// ── Poll NHC fetch state machine`
+  - the `accept_metadata` call in the `NhcMetadata` arm of `// ── Apply completed background parses`
+  - the generic `Err` arm of that same block
   - every read of `nhc_fetch_fired`
 
 **Interfaces:**
@@ -2859,20 +2892,49 @@ Paste the bodies of the existing `Metadata` and `Complete` arms in place of the 
 
 - [ ] **Step 3: accept_metadata.** In the `Ok(ParsedData::NhcMetadata(metadata))` arm, add the arguments `now, &mut ply_net` to `state.nhc_fetch.accept_metadata(...)`.
 
-- [ ] **Step 4: Verify.** Run `cargo test --all-features && cargo clippy --all-targets --all-features -- -D warnings`, then the smoke test.
+- [ ] **Step 4: Generic `Err` arm.** Tasks 9 and 10 removed the alerts and borders terms from the generic `Err(error)` arm of `// ── Apply completed background parses`. Remove the NHC term too, so the arm is no longer a second toast source for NHC metadata parse failures:
+
+```rust
+                Err(error) => {
+                    let current = nhc_parse_generation == Some(parsed.generation);
+                    if nhc_parse_generation == Some(parsed.generation) {
+                        nhc_parse_generation = None;
+                        state.nhc_fetch.reject_metadata(error.clone());
+                    }
+                    if current {
+                        // Log only. `reject_metadata` makes `nhc_fetch.poll` return
+                        // `Err`, and that path toasts once per streak through
+                        // `nhc_retry.failed` (Step 2).
+                        eprintln!(
+                            "Warning: background parse failed generation={}: {error}",
+                            parsed.generation
+                        );
+                    } else {
+                        eprintln!(
+                            "startup phase=parse_drop generation={} stale=true error={error}",
+                            parsed.generation
+                        );
+                    }
+                }
+```
+
+Without this step an NHC metadata parse failure toasts twice (once here, once from `nhc_retry.failed`), which breaks "one toast per failure streak".
+
+- [ ] **Step 5: Verify.** Run `cargo test --all-features && cargo clippy --all-targets --all-features -- -D warnings`, then the smoke test.
 
 Offline check:
 1. Launch offline. There's one toast, and `NHC fetch failed` retries are spaced 5, 10, 20 s….
 2. Go online. NHC loads without a restart.
 3. Open the Tropical panel: "Loading NHC data…" shows only while a cycle runs.
+4. Serve a malformed `CurrentStorms.json` (or stop the parse worker's NHC job from succeeding). Exactly one toast appears for the streak.
 
 With 2+ active storms that have arrival KMZs, turn on "Earliest Arrival" and check that contours draw for each storm (M22).
 
-- [ ] **Step 5: Commit (Tasks 12 and 13 together).** `git commit -am "fix(nhc): cancel consumed requests, add phase deadlines and backoff, per-storm KMZ ids"`
+- [ ] **Step 6: Commit (Tasks 12 and 13 together).** `git commit -am "fix(nhc): cancel consumed requests, add phase deadlines and backoff, per-storm KMZ ids"`
 
 ---
 
-### Task 14: ureq `win-system-proxy` stopgap and ureq 3.4 (H1 partial)
+### Task 14: ureq `win-system-proxy` stopgap and a current ureq 3.x (H1 partial)
 
 **Files:**
 - Modify: `app/Cargo.toml`, `Cargo.lock`
@@ -2888,7 +2950,7 @@ With 2+ active storms that have arrival KMZs, turn on "Earliest Arrival" and che
 ureq = { version = "3", default-features = false, features = ["win-system-proxy"] }
 ```
 
-- [ ] **Step 2: Update ureq.** Run `cargo update -p ureq`. Expect 3.3.0 → 3.4.x, which brings the TLS-through-CONNECT and timeout fixes. Then `cargo tree -i ureq -e features --target x86_64-pc-windows-msvc | head -20` should show both `rustls` and `win-system-proxy` enabled. Run `cargo deny check`; `winreg` is MIT and must pass.
+- [ ] **Step 2: Update ureq.** Run `cargo update -p ureq`. Expect 3.3.0 → 3.5.1 or later 3.x (check `cargo search ureq` or crates.io for the current release), which brings the TLS-through-CONNECT and timeout fixes and the 3.4.3 TLS security fix. Then `cargo tree -i ureq -e features --target x86_64-pc-windows-msvc | head -20` should show both `rustls` and `win-system-proxy` enabled. Run `cargo deny check`; `winreg` is MIT and must pass.
 
 - [ ] **Step 3: Document.** Add to `USER_GUIDE.md` under Tips (or a new `## Troubleshooting`):
 
@@ -2902,7 +2964,7 @@ rustywx uses the proxy set in Windows Settings > Network > Proxy (manual proxy o
 
 **[verify on Windows]** (Appendix B, item 3): with a manual proxy set in Windows Settings and no `HTTPS_PROXY` set, alerts and NHC load through the proxy. With the proxy set to a dead port, the failure is one toast plus a retry, not a hang.
 
-- [ ] **Step 5: Commit.** `git commit -am "fix(net): honor the Windows proxy setting and update ureq to 3.4"`
+- [ ] **Step 5: Commit.** `git commit -am "fix(net): honor the Windows proxy setting and update ureq to the current 3.x"`
 
 
 ---
@@ -2925,6 +2987,7 @@ Closes H2, H9 (a, b, c), H8, and M21. It also makes M4's startup failures visibl
   - `init_dpi` around l.1095–1110
   - the `shellapi` import around l.21
 - Modify: root `Cargo.toml` (`exclude`, `[patch.crates-io]`)
+- Modify: `typos.toml`, `.pre-commit-config.yaml`, `.github/workflows/ci.yml` (lychee args), `.trivy.yaml`, `.gitleaks.toml` (exclude `vendor/`)
 - Modify: `app/src/main.rs` (one test)
 
 **Interfaces:**
@@ -2958,6 +3021,14 @@ miniquad-ply = { path = "vendor/miniquad-ply" }
 ```
 
 Run `cargo build -p rustywx` and `grep -A3 'name = "miniquad-ply"' Cargo.lock`. The `source =` line must be gone, which shows the path patch is in use.
+
+Then keep the vendored crate out of the repo-wide hygiene jobs, which would otherwise scan its upstream code and fail on it:
+- `typos.toml`: add `"vendor/"` to `[files].extend-exclude` (CI runs `typos --config typos.toml` over the whole repo).
+- `.pre-commit-config.yaml`: add a top-level `exclude: '^vendor/'`.
+- `.github/workflows/ci.yml`: add `--exclude-path 'vendor'` to the lychee args.
+- `.trivy.yaml`: add `skip-dirs:` with `"vendor/**"` (next to the existing `skip-files`).
+- `.gitleaks.toml`: add `'''vendor/'''` to the allowlist `paths`.
+- Run `cargo deny check` with the path patch in place. The vendored crate keeps its upstream license (MIT or Apache-2.0) and is a path source, so it should pass; fix `deny.toml` only if it doesn't.
 
 - [ ] **Step 2: Write the failing test.** In `app/src/main.rs`'s `#[cfg(test)] mod window_backend_tests` (or a new `#[cfg(test)] mod miniquad_patch_tests { use super::*; ... }`), add:
 
@@ -3075,7 +3146,7 @@ Vendored copy of crates.io `miniquad-ply` 0.4.8 (repo `TheRedDeveloper/miniquad-
 Upstream: send this diff to `TheRedDeveloper/miniquad-fix` and `not-fl3/miniquad`, then drop the vendor copy when a release carries it. To re-sync after a version bump, re-copy the crate and re-apply this table.
 ```
 
-- [ ] **Step 6: Verify.** Run `cargo test --all-features` (the new test passes) and `cargo clippy --all-targets --all-features -- -D warnings`. Clippy doesn't lint the excluded vendor crate. Then run the smoke test on macOS or Linux, where behavior is unchanged.
+- [ ] **Step 6: Verify.** Run `cargo test --all-features` (the new test passes) and `cargo clippy --all-targets --all-features -- -D warnings`. Clippy doesn't lint the excluded vendor crate. Then run the smoke test on macOS or Linux, where behavior is unchanged. The Windows-only edits aren't compiled here, so push the branch and confirm the `windows` CI job from PR 0 is green.
 
 Optional: `cargo test --manifest-path vendor/miniquad-ply/Cargo.toml --lib` (needs its dev-dependencies from the network).
 
@@ -3364,7 +3435,7 @@ fn main() {
 
 - [ ] **Step 5: Verify.** Run `cargo test --all-features && cargo clippy --all-targets --all-features -- -D warnings`, then the smoke test. On macOS and Linux nothing visible changes, except that a panic now also appends to `~/Library/Application Support/rustywx/crash.log` (macOS: `dirs::data_local_dir` is Application Support) or `~/.local/share/rustywx/crash.log`.
 
-Windows CI (Phase 4) compiles the `cfg(windows)` code.
+The `windows` CI job from PR 0 (Task 24 Steps 1–3) compiles the `cfg(windows)` code. Push the branch and wait for that job to go green before merging.
 
 **[verify on Windows]** (Appendix B, item 5):
 - Double-clicking `rustywx.exe` opens no console.
@@ -4021,7 +4092,9 @@ Why this is identical to the old loop: old pass *k* fills every hole cell that h
 
 ---
 
-### Task 23: Border projection cache via a shared `geo::KmPolyline` (H5)
+### Task 23: Border projection cache via a shared `geo::KmPolyline` (H5, borders only)
+
+This task covers the border rings. H5 for alerts and NHC contours, and L20, are Follow-up F13.
 
 **Files:**
 - Modify: `app/src/geo.rs` (add `KmPolyline`)
@@ -4183,11 +4256,13 @@ Measure: temporarily wrap the `draw_scope_to_texture` call in `let t = std::time
 
 # Phase 4 — Windows CI and packaging (PR `ci/windows`)
 
-**Prerequisite:** Task 16 (`--version`) merged. Closes H7, L7, L8, and L9; covers M5's manifest step and M19 a, b, d plus the checksum.
+**Prerequisite:** Task 16 (`--version`) and PR 0 (Task 24 Steps 1–3, which closes L8 and L9 and the build-and-test half of H7) merged. This PR adds the launch check (rest of H7) and L7; it covers M5's manifest step and M19 a, b, d plus the checksum.
 
-Tasks 25 and 26 change the Windows link and are only provable on Windows. The CI job from Task 24 is their gate.
+Tasks 25 and 26 change the Windows link and are only provable on Windows. The CI job from Task 24 (landed as PR 0) is their gate.
 
 ### Task 24: `windows-latest` CI job, `deny.toml` targets, explicit tokio runtime, Justfile on Windows
+
+Steps 1–3 are **PR 0** and land before Phase 2, so Windows-only code is compiled in CI from the start. Leave the "Launch check (--version)" step out of Step 3 until Task 16 has merged; add it in Phase 4 with Steps 4–6.
 
 **Files:**
 - Modify: `.github/workflows/ci.yml`
@@ -4281,7 +4356,7 @@ stdout/stderr go to `%LOCALAPPDATA%\rustywx\app.log`, and a panic writes
 `%LOCALAPPDATA%\rustywx\crash.log` and shows a message box.
 ```
 
-- [ ] **Step 6: Verify and commit.** Push the branch. The `windows` job must be green before Tasks 25–26 land.
+- [ ] **Step 6: Verify and commit.** Push the branch. The `windows` job, including the launch check, must be green before Tasks 25–26 land.
 
 `git commit -am "ci: build, test, and launch-check on windows-latest"`
 
@@ -4459,9 +4534,9 @@ The format matches `sha256sum`, so `sha256sum -c` works on it.
 
 | Id | Item | Why deferred |
 |---|---|---|
-| F1 | Port `adeck_fetch::AdeckFetcher` onto `net_feed::Feed` (a `BTreeMap<String, Feed>`), gated on its 13 tests passing unchanged | Same logic, two copies; deferred to keep PR 1b small |
+| F1 | Port `adeck_fetch::AdeckFetcher` onto `net_feed::Feed` (a `BTreeMap<String, Feed>`), gated on all its existing tests passing unchanged | Same logic, two copies; deferred to keep PR 1b small |
 | F2 | ProjectedTrack refactor | Done in Task 23 Step 6 if spaghetti is merged; otherwise do it when spaghetti lands |
-| F3 | Debounce rapid site switches (~250 ms) and cancel superseded cache loads early (M16 remainder) | Loads are now on the blocking pool and results are dropped when superseded; the debounce is UX polish |
+| F3 | Finish M16: cancel a superseded cache load while it decodes (or run at most one load at a time), and debounce rapid site switches (~250 ms) | Task 5 only drops the superseded result. The decode (up to ~400 MB) still runs to completion, and several can overlap on the blocking pool during fast site switches |
 | F4 | Radar data worker: `tokio::time::timeout` around list and download, a `select!` on site changes (C3 radar half) | Different client (nexrad-data/reqwest); its own PR |
 | F5 | Move the demo-volume blob (`demo_volume_*`, ~20 MB) from Roaming to `fsutil::cache_root()` with `write_atomic` | Rarely written; small |
 | F6 | H3 correctness: never fill pixels the range floor nulled (needs a "floor-nulled" mask) | Behavior change; needs a product decision and before/after images |
@@ -4469,7 +4544,8 @@ The format matches `sha256sum`, so `sha256sum -c` works on it.
 | F8 | Ship `rustywx.pdb` in the Windows zip (`debug = "line-tables-only"`), so `crash.log` backtraces symbolicate | Profile change affects every platform's binary size; decide separately |
 | F9 | Code signing via SignPath Foundation (research section C) | Application and approval process |
 | F10 | Existing AGENTS.md icon violations: `"✓"` in `nhc_toggle_button` (main.rs:3243), `"Tropical ✓"` (main.rs:1833), `"🌐 "` NHC modal title (main.rs:2762; review L5) | Out of scope here, also noted by the spaghetti plan; one small `fix:` PR |
-| F11 | M2 (raster retry cap, keep the old texture), M17 (worker `catch_unwind`), M18 (shader fallback), M20 (KMZ cap) | Owned by the 2026-08-27 audit plan (see the overlap table) |
+| F11 | M2 (raster retry cap, keep the old texture), M17 (worker `catch_unwind`), M18 (shader fallback), M20 remainder (the size cap is done in `c894d4f`; the `.kml` case-insensitive match and lossy decode are left) | Owned by the 2026-08-27 audit plan (see the overlap table) |
+| F13 | H5 for alerts and NHC contours: project alert rings and NHC polylines through `geo::KmPolyline` with the same per-site cache and bbox cull as borders (also removes L20's per-click re-projection) | Task 23 covers borders only; alerts and NHC change at different times and need their own revision keys |
 | F12 | M6, M7, M8, M9, M10, M11, M12, M13 (NHC skip-if-unchanged, concurrency cap), M14, M24, M25, M26, M27, the remaining Lows | Reviewer order steps 4, 7, 8, 11; schedule after these PRs |
 
 ---
@@ -4495,7 +4571,8 @@ Plus the PR's manual checks:
 | 1b | the offline checks in Tasks 9–13 |
 | 2 | Task 16 Step 4 |
 | 3 | benchmark table and the Harvey screenshots (Task 22), `draw_ms` numbers (Task 23) |
-| 4 | green `windows` CI job |
+| 0 | green `windows` CI job (check, test, release build) |
+| 4 | green `windows` CI job including the `--version` launch check |
 
 The PR description lists each **[verify on Windows]** item it touches, with its Appendix B result, or says "pending a Windows machine" so the item stays open.
 
