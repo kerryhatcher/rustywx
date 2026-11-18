@@ -25,7 +25,7 @@
 **Confidence:**
 - **Confirmed:** the mechanism was read in the source, and the trigger is reachable.
 - **Plausible:** the mechanism was read, but the trigger or size was not shown.
-- **✔** means the lead reviewer re-checked the cited lines against the source.
+- **✔** means the lead reviewer re-checked the cited lines against the source. Only the C, H and M1-M14 findings carry the mark; the M15-M27 and L findings were not re-checked line by line, so their citations are less reliable.
 
 **Estimates:** where a time in ms or seconds is given, it's a reviewer's estimate from counting operations, not a measurement.
 
@@ -163,7 +163,7 @@ Line numbers refer to commit `081df73`. Dependency paths are relative to `~/.car
   - ply `net/mod.rs:107-111` creates a fresh `ureq::Agent::new_with_defaults()` per request on a new `std::thread`.
   - ureq `ureq-3.3.0/src/config.rs:894-907`: `Timeouts::default()` is all `None` except `await_100`.
   - ply `net/mod.rs:59`: `Pending` is never evicted.
-  - App sites: `nhc.rs:936`, `nhc.rs:1182-1296` (`still_pending` at `nhc.rs:1277`), `alerts.rs:40`, `forecast.rs:84`, `forecast.rs:96`, the `*_fetch_fired` guards at `main.rs:1181`, `main.rs:1229`, `main.rs:3787`.
+  - App sites: `nhc.rs:936`, `nhc.rs:1182-1296` (`still_pending` at `nhc.rs:1277`), `alerts.rs:44`, `forecast.rs:97` (forecast), `forecast.rs:116` (geocoder), the `*_fetch_fired` guards at `main.rs:1180`, `main.rs:1229`, and `main.rs:3787-3788` (`fire_forecast`, then `forecast_fetch_fired = true`).
   - Radar data worker: `data.rs:233-253`, `data.rs:276` (`runtime.block_on(fetch_latest_scan(...))`), and nexrad-data `aws/client.rs:17-25` (`Client::builder()` with no timeout).
 - **Severity:** Critical. **Category:** stability. **Platform:** Win+. Sleep/resume, Wi-Fi roaming, and VPN changes leave dead TCP connections, and Windows keepalive defaults to about 2 hours. **Confidence:** confirmed.
 - **Failure scenarios:**
@@ -287,7 +287,7 @@ Line numbers refer to commit `081df73`. Dependency paths are relative to `~/.car
 
 ### H6. `borders::poll_raw` stops at the first pending request, so the other responses are cleared before they're read ✔
 
-- **Where:** `app/src/borders.rs:59-61` (`poll_and_merge`), `borders.rs:79-81` (`poll_raw`).
+- **Where:** `app/src/borders.rs:49-51` (`poll_and_merge`), `borders.rs:82-84` (`poll_raw`).
 - **Severity:** High. **Category:** stability. **Platform:** All; Windows makes it more likely, with antivirus TLS scanning and cold connections. **Confidence:** the code is confirmed; the trigger is plausible.
 - **Evidence:**
   ```rust
@@ -305,7 +305,7 @@ Line numbers refer to commit `081df73`. Dependency paths are relative to `~/.car
 
 ### H7. Windows is never built or tested in CI ✔
 
-- **Where:** `.github/workflows/ci.yml` runs every job on `ubuntu-latest` or `ubuntu-24.04` (lines 18–178). `.github/workflows/release-please.yml:88` holds the only `windows-latest` / `x86_64-pc-windows-msvc` matrix entry.
+- **Where:** `.github/workflows/ci.yml` runs every job on `ubuntu-latest` or `ubuntu-24.04` (lines 18–178). `.github/workflows/release-please.yml:104-105` holds the only `windows-latest` / `x86_64-pc-windows-msvc` matrix entry (line 88 is only the `runs-on` that reads the matrix).
 - **Severity:** High. **Category:** build/release. **Platform:** Win. **Confidence:** confirmed.
 - **Failure scenarios:**
   - Any Windows-only compile or link break (miniquad Win32 code, `webbrowser`, a native build dependency through rustls/ureq, a `windows-sys` version clash) shows up first in the release workflow, after release-please has already cut the tag and the GitHub release.
@@ -319,7 +319,7 @@ Line numbers refer to commit `081df73`. Dependency paths are relative to `~/.car
 ### H8. Console-subsystem exe, no panic hook, no log file ✔
 
 - **Where:** `app/src/main.rs:1-12` has no `#![windows_subsystem]`, and `main.rs:555-556` has no `std::panic::set_hook`.
-  - The UI-thread `eprintln!` calls this matters for include `main.rs:1045`, `1307`, `1359`, and `1445`.
+  - The UI-thread `eprintln!` calls this matters for include `main.rs:1046`, `1307`, `1359`, and `1445`.
   - The Windows package step is `release-please.yml:260-272`.
 - **Severity:** High. **Category:** stability. **Platform:** Win. **Confidence:** confirmed. A grep for `windows_subsystem` and `set_hook` finds nothing.
 - **Failure scenarios today (console subsystem):**
@@ -328,7 +328,7 @@ Line numbers refer to commit `081df73`. Dependency paths are relative to `~/.car
   - **QuickEdit:** if the user clicks into the console, selection mode blocks every stderr write. The render thread freezes at the next `eprintln!` (a raster upload, toast, or parse result) until the selection is cleared.
   - Windows console writes are synchronous and slow, which amplifies any `eprintln!` in a hot loop (M2, C2).
 - **Failure scenarios after adding `windows_subsystem = "windows"` alone:**
-  - All 35 `eprintln!` diagnostics go nowhere.
+  - All 51 `eprintln!` diagnostics in `app/src` go nowhere (`main.rs` 35, `cache.rs` 8, `nhc.rs` 4, `background_work.rs` 2, `borders.rs` 1, `widgets/toast.rs` 1).
   - Any startup panic (`main.rs:569` tokio, `main.rs:629` storage) makes the window vanish with no trace.
   - `RUST_BACKTRACE` is set only in CI.
 - **Proposed fix:**
@@ -403,7 +403,7 @@ Line numbers refer to commit `081df73`. Dependency paths are relative to `~/.car
 ### M3. Settings and cache writes race, aren't atomic, and fail silently
 
 - **Where:**
-  - `cache.rs:224-237` (`save_settings`), called from 30+ sites in `main.rs` (for example `1379`, `3477-3761`).
+  - `cache.rs:224-237` (`save_settings`), called from 29 sites in `main.rs` (for example `1379`, `3477-3761`).
   - Other non-atomic writes: `cache.rs:126`, `cache.rs:180`, `borders.rs:135`, `data.rs:140`.
   - The ply implementation is `storage.rs:59` (`std::fs::write`).
   - The runtime is multi-threaded (`Runtime::new()`, `main.rs:569`).
@@ -457,7 +457,7 @@ Line numbers refer to commit `081df73`. Dependency paths are relative to `~/.car
 - **Where:** main loop `main.rs:812-3228`, `main.rs:837` (`state.sweep_angle = (state.sweep_angle + 0.6) % 360.0`), and `miniquad-ply-0.4.8/src/native/windows.rs:1255-1290` (update, draw, and `SwapBuffers` every iteration; `iconified` is only used to fire events).
 - **Category:** perf. **Platform:** Win. **Confidence:** the missing throttle is confirmed; the minimized busy loop depends on the driver.
 - **Failure scenarios:**
-  - While minimized, WGL `SwapBuffers` with swap interval 1 often returns immediately, depending on the driver. The full frame then runs unthrottled at 100% of a core: layout, about 284 `format!` calls, the 24 circles from M6, and border projection from H5.
+  - While minimized, WGL `SwapBuffers` with swap interval 1 often returns immediately, depending on the driver. The full frame then runs unthrottled at 100% of a core: layout, a few hundred `format!` calls (47 sites in `main.rs`, 118 in `app/src`), the 24 circles from M6, and border projection from H5.
   - The same happens when vsync is forced off in the driver control panel.
   - Sweep animation speed scales with fps.
 - **Proposed fix:**
@@ -491,7 +491,7 @@ Line numbers refer to commit `081df73`. Dependency paths are relative to `~/.car
 ### M10. Re-raster preparation runs on the UI thread: deep sweep clones and melting-layer detection
 
 - **Where:**
-  - `main.rs:1466-1558`: submit block, including `main.rs:1478-1483` (sweep clone) and `nearest_aux` clones.
+  - `main.rs:1466-1558`: submit block, including `main.rs:1472` (sweep clone) and `nearest_aux` clones.
   - `main.rs:1515-1520`: calls `melting_layer::detect` (`melting_layer.rs:~105-160`).
   - Clones on the worker: `scope.rs:191-197` (`clean_sweep` always clones), `scope.rs:268-271` (dealias), `scope.rs:516-519` (gap-fill), and `dealias.rs:129-190`.
 - **Category:** perf. **Platform:** All. **Confidence:** the clones and the UI-thread location are confirmed; the size is an estimate.
@@ -523,7 +523,7 @@ Line numbers refer to commit `081df73`. Dependency paths are relative to `~/.car
 
 ### M12. NHC phase-2 work runs on the UI thread
 
-- **Where:** `nhc.rs:1182-1285` (`poll_phase2`), called from `main.rs:1240`. `nhc.rs:1021` (`accept_metadata`, which runs `construct_image_products` and fires requests).
+- **Where:** `nhc.rs:1168-1285` (`poll_phase2`), reached through `poll` (`nhc.rs:969`), which `main.rs:1240` calls. `nhc.rs:1021` (`accept_metadata`, which runs `construct_image_products` and fires requests).
 - **Category:** perf. **Platform:** All. **Confidence:** confirmed.
 - **Evidence:** per frame in phase 2, on the render thread:
   - `extract_kml_from_kmz` (inflate, then `read_to_string`);
@@ -553,7 +553,7 @@ Line numbers refer to commit `081df73`. Dependency paths are relative to `~/.car
 
 ### M14. One bad alert feature drops the whole list, and the national feed is re-downloaded in full
 
-- **Where:** `alerts.rs:117-137` and `alerts.rs:171-195` (geometry parsing), `alerts.rs:23` and `alerts.rs:40` (URL and fetch), `main.rs:1181` (gate). The ureq body cap is `ureq-3.3.0/src/body/mod.rs:30` (10 MiB for `read_to_vec`).
+- **Where:** `alerts.rs:117-140` and `alerts.rs:171-195` (geometry parsing, including the `other => Err` arm at line 140), `alerts.rs:22` and `alerts.rs:44` (URL and fetch), `main.rs:1180` (gate). The ureq body cap is `ureq-3.3.0/src/body/mod.rs:30` (10 MiB for `read_to_vec`).
 - **Category:** stability and perf. **Platform:** All. **Confidence:** the drop-all behaviour is confirmed; the cap risk is plausible.
 - **Evidence:**
   ```rust
@@ -611,7 +611,7 @@ Line numbers refer to commit `081df73`. Dependency paths are relative to `~/.car
 
 ### M19. Windows release packaging gaps
 
-- **Where:** `Cargo.toml` `[profile.release]`; there's no `.cargo/config.toml`, no `build.rs`, and no `[build-dependencies]`. The runtime icon only is set at `main.rs:441-452`. Packaging is in `release-please.yml`'s "Package (windows)" step (`Compress-Archive` then `softprops/action-gh-release`). Also `README.md:142-143`.
+- **Where:** `Cargo.toml` `[profile.release]`; there's no `.cargo/config.toml`, no `build.rs`, and no `[build-dependencies]`. The runtime icon only is set at `main.rs:441-452`. Packaging is in `release-please.yml`'s "Package (windows)" step (`Compress-Archive` then `softprops/action-gh-release`). Also `README.md:138-139`.
 - **Category:** build/release. **Platform:** Win. **Confidence:** confirmed, except the CRT point, which is plausible.
 - **Findings:**
   - **(a) Dynamic MSVC CRT:** the default `x86_64-pc-windows-msvc` build links `vcruntime140.dll` dynamically. On a clean Windows install without the VC++ Redistributable, the exe fails to start, and once H8 is fixed it fails silently. **Fix:** set `rustflags = ["-C", "target-feature=+crt-static"]` for the msvc target in `.cargo/config.toml`, or document the redistributable.
@@ -634,7 +634,7 @@ Line numbers refer to commit `081df73`. Dependency paths are relative to `~/.car
 
 - **Where:**
   - `nhc.rs:309-311` (`iso_to_ddhhmm`: `&time_part[..2]`, `[3..5]`).
-  - `nhc.rs:403`, `405`, `455`, `457` (`construct_image_products`: `&storm_id[..2]`, `[2..4]`, `[6..8.min(len)]`). `[6..8.min(len)]` still panics if `len < 6`.
+  - `nhc.rs:403`, `405`, `456`, `457` (`construct_image_products`: `&storm_id[..2]`, `[2..4]`, `[6..8.min(len)]`). `[6..8.min(len)]` still panics if `len < 6`.
   - `nhc.rs:370` (`&meta.bin_number[2..]`) is safe, because a prefix check guards it.
 - **Category:** stability. **Platform:** All. **Confidence:** plausible. The data is NOAA's, so a bad value is unlikely.
 - **Failure scenario:** a malformed `CurrentStorms.json` entry. The `iso_to_ddhhmm` case runs in the parse worker, which has no `catch_unwind`, so it kills the worker (M17). The `construct_image_products` case panics the UI thread via `accept_metadata`.
@@ -653,12 +653,12 @@ Line numbers refer to commit `081df73`. Dependency paths are relative to `~/.car
 - **Category:** stability. **Platform:** All. **Confidence:** confirmed.
 - **Failure scenarios:**
   - The fetch condition is `stale = forecast_coords != Some(target)`, which only changes when the coordinates change. Leaving the app open shows hours-old forecasts indefinitely, and a failed fetch is never retried.
-  - `poll_geo` builds its net ID from the live search-box text. If the user edits the box after pressing Enter, the poll looks for an ID that was never fired, gets `None` forever, and `fc_geo_fired` stays stuck.
+  - `poll_geo` builds its net ID from the live search-box text. If the user edits the box after pressing Enter, the poll looks for an ID that was never fired, gets `None` for as long as the text differs, and `fc_geo_fired` stays set until the user presses Enter again (which re-fires the request) or restores the text. Nothing times it out.
 - **Proposed fix:** store `forecast_fetched_at` and refresh every 15–30 min, with retry and backoff on failure. Store the submitted query string in state and poll by that.
 
 ### M24. Geocoder query is not percent-encoded
 
-- **Where:** `forecast.rs:62-64` (`query.trim().replace(' ', "%20")`).
+- **Where:** `forecast.rs:88-91` (`geo_url`, with `query.trim().replace(' ', "%20")` at line 90).
 - **Category:** stability. **Platform:** All; Windows IME input makes non-ASCII common. **Confidence:** confirmed.
 - **Failure scenario:** `&`, `#`, `%`, `+`, `?`, or non-ASCII input ("São Paulo", or CJK text from an IME) either injects extra query parameters or makes the `http` crate reject the URI. `poll_geo` turns the error into empty hits, so the search silently returns nothing.
 - **Proposed fix:** percent-encode with `url::form_urlencoded` or the `urlencoding` crate.
@@ -672,7 +672,7 @@ Line numbers refer to commit `081df73`. Dependency paths are relative to `~/.car
 
 ### M26. CPU-heavy work on tokio async workers, and possible slow exit
 
-- **Where:** `data.rs:150-152` (`fetch_demo_scan` decodes inside an async task), `cache.rs:79` (`from_slice` in `tokio::spawn`), `data.rs:123` and `demo.rs:105` (`std::fs::read` inside async functions), and `main.rs:569` (`Runtime::new()`, a local in async `main`).
+- **Where:** `data.rs:150-152` (`fetch_demo_scan` decodes inside an async task), `cache.rs:79` (`from_slice` in `tokio::spawn`), `data.rs:123` (`std::fs::read` inside an async function; `demo.rs:105` is only `path.is_file()`), and `main.rs:569` (`Runtime::new()`, a local in async `main`).
 - **Category:** perf and stability. **Platform:** Win+. **Confidence:** plausible. Whether `main` returns normally on window close under macroquad was not verified.
 - **Failure scenarios:**
   - Decode and JSON parse run on tokio async worker threads instead of `spawn_blocking`. That starves other cache I/O on low-core machines.
@@ -768,9 +768,9 @@ Line numbers refer to commit `081df73`. Dependency paths are relative to `~/.car
 
 ### L10. Self-heal deletes fail on locked files
 
-- **Where:** `cache.rs:275-278`, `cache.rs:85`, `cache.rs:153`, `cache.rs:201`, `cache.rs:257`, `borders.rs:123`. Ply's `remove` is a bare `std::fs::remove_file`, and its result is discarded.
+- **Where:** `cache.rs:275-278` (`remove_scan`, which is `#[allow(dead_code)]` and never called, so it can't be hit today), `cache.rs:85`, `cache.rs:153`, `cache.rs:201`, `cache.rs:257`, `borders.rs:123`. Ply's `remove` is a bare `std::fs::remove_file`, and its result is discarded.
 - **Platform:** Win+. **Confidence:** plausible.
-- **Problem:** if antivirus or a concurrent reader holds the file open, the delete fails. The corrupt entry survives, and it's re-read and re-logged on every start.
+- **Problem:** if antivirus or a concurrent reader holds the file open, the delete fails. The corrupt entry survives, and the other self-heal sites re-read and re-log it on every start.
 - **Fix:** retry, or overwrite with an empty or valid value instead of deleting. This is covered by the M3 atomic-write work.
 
 ### L11. No real system location on Windows
@@ -782,15 +782,15 @@ Line numbers refer to commit `081df73`. Dependency paths are relative to `~/.car
 
 ### L12. Raster range-texture recomputation
 
-- **Where:** `scope.rs:662-681` calls `nonmet::range_texture` (`nonmet.rs:~175-210`).
+- **Where:** `scope.rs:662-681` calls `nonmet::range_texture` (`nonmet.rs:155-188`).
 - **Confidence:** confirmed. It runs on the worker, so it's latency only.
 - **Problem:** ZDR and ΦDP range textures are recomputed for the whole aux sweeps on every reflectivity raster with fuzzy non-met on. That's O(radials × gates × kernel), about 1M gates × 2 sweeps × a 5–9 window.
 - **Fix:** cache per scan (compute alongside KDP), or use a sliding-window sum-of-squares.
 
-### L13. `circle_subsegments` allocates when only a boolean is needed
+### L13. `circle_subsegments` allocates when only a boolean is needed (dead code today)
 
 - **Where:** `geo.rs:918-965`, called at `borders.rs:228`.
-- **Problem:** it makes two `Vec` allocations per segment, and the call site only checks `.is_empty()`. This runs at border load time.
+- **Problem:** it makes two `Vec` allocations per segment, and the call site only checks `.is_empty()`. Its only caller, `ring_affects_scope`, is called only by `alert_affects_scope`, and nothing in the crate calls that, so the allocation never runs. This is dead code and a low priority.
 - **Fix:** add a non-allocating `segment_touches_circle(a, b, r) -> bool` (closest-point distance), and use `[f32; 4]` for `ts`.
 
 ### L14. Dealias API guards
@@ -803,7 +803,7 @@ Line numbers refer to commit `081df73`. Dependency paths are relative to `~/.car
 
 ### L15. Background workers process one job at a time per kind, and image decode has no size limit
 
-- **Where:** `background_work.rs:226`, `:252`, `:282`, and `:383` (`decode_image`). Also `main.rs:1396-1403`.
+- **Where:** `background_work.rs:226`, `:252`, `:282`, and `:383` (`decode_image`). Also `main.rs:1351` (the `as u16` cast).
 - **Problems:**
   - A slow NHC GIS parse delays the alerts and borders parses queued behind it.
   - `decode_image` doesn't limit image dimensions.
@@ -833,13 +833,13 @@ Line numbers refer to commit `081df73`. Dependency paths are relative to `~/.car
 
 ### L19. Cities data fails as a whole
 
-- **Where:** `cities.rs:38` and `cities.rs:49` (`unwrap_or_default()`).
+- **Where:** `cities.rs:34` (`unwrap_or_default()`).
 - **Problem:** one feature with a null `pop` or a bad shape silently empties every city. The data is bundled and tested, so the risk is low.
 - **Fix:** skip bad features one at a time.
 
 ### L20. Alert hit-test allocates per click
 
-- **Where:** `alerts.rs:228-243` (`hit_test`). `ring_affects_scope` is at `alerts.rs:258` and `borders.rs:221`.
+- **Where:** `alerts.rs:292-333` (`hit_test`). `alert_affects_scope` is at `alerts.rs:258`, and `ring_affects_scope` is at `borders.rs:221`.
 - **Problem:** it allocates and re-projects every ring on each click. That's fine for a click, but it would be O(alerts × vertices) if anything called it per frame. No per-frame caller was found; `alert_affects_scope` has no caller in `main.rs`.
 - **Fix:** reuse the H5 cached km-offset geometry.
 
@@ -852,7 +852,7 @@ Line numbers refer to commit `081df73`. Dependency paths are relative to `~/.car
 ### L22. Binary size: embedded fonts
 
 - **Where:** `main.rs:576-594` and `widgets/mod.rs:10`.
-- **Detail:** about 9.5 MB of fonts are `include_bytes!`. The two OpenDyslexic fonts are 4.3 MB of that, loaded even when unused.
+- **Detail:** about 7.5 MB of fonts are `include_bytes!`. The two OpenDyslexic fonts are 4.3 MB of that, loaded even when unused.
 - **Fix (optional):** load the OpenDyslexic fonts lazily, or ship them as optional assets.
 
 ---

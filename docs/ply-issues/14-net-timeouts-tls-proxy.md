@@ -2,7 +2,7 @@
 
 **Type:** Feature request + docs gap
 **Severity:** High — a hung or failed request can disable a feed for the whole session
-**Status:** Ready (validated against Ply 1.1.1 and `ureq` 3.3.0 source; Windows behaviour not run)
+**Status:** Ready (validated against Ply 1.1.1 and `ureq` 3.3.0 source, with the timeout and proxy defaults re-checked in `ureq` 3.5.1; Windows behaviour not run)
 
 ## Summary
 
@@ -149,30 +149,31 @@ returns, so a request that hangs forever leaks its thread.
 
 ## Why
 
-Any app that polls a live feed hits this on the first dropped connection. We
-hit it as: alerts, borders and hurricane data stop updating and the status
-stays stale with no indication, because the fetch never completes and the
-"already fired" guard never clears. On a TLS-inspecting network every request
-fails and, combined with the same-id no-op, stays failed until restart.
+Any app that polls a live feed hits this on the first dropped connection. The
+feed stops updating and the status stays stale with no indication, because
+the fetch never completes and the app's "already fired" guard never clears. On
+a TLS-inspecting network every request fails and, combined with the same-id
+no-op, stays failed until restart.
 
-## Workarounds (what we do today)
+## Workarounds
 
 - App-side deadline per request, then `cancel()` and exponential backoff.
 - `ureq = { version = "3", default-features = false, features = ["win-system-proxy"] }`
-  in our own `Cargo.toml` to turn on the registry proxy via feature
+  in the app's own `Cargo.toml` to turn on the registry proxy via feature
   unification.
-- Planned: move our fetches off `net` onto `reqwest`, which is already in our
-  build through another dependency and uses the platform verifier and system
-  proxy. If Ply gains the options above we would not need to.
+- Move the fetches off `net` onto a client such as `reqwest`, which can use the
+  platform verifier and system proxy. If Ply gains the options above that
+  would not be needed.
 
 ## Notes
 
-- Every statement about `ureq` is from 3.3.0 (the version in our lock).
-  3.4.0 to 3.4.2 add TLS-through-CONNECT-proxy support and fix timeout
-  budgets and the connect-phase TLS handshake; they do not change the
-  defaults above. Ply's `ureq = "3"` already permits them.
+- The `ureq` statements were read in 3.3.0. Later 3.x releases (3.4.0 to
+  3.5.1) add TLS-through-CONNECT-proxy support and fix timeout budgets and the
+  connect-phase TLS handshake, and 3.4.3 is a TLS security fix. In 3.5.1 the
+  `Timeouts` and `TlsConfig` defaults and the `win-system-proxy` feature gate
+  are unchanged, so the points above still hold. Ply's `ureq = "3"` already
+  permits these releases.
 - Related: #6 (same-id behaviour) and #7 (60-frame eviction). Suggest filing
-  these together or cross-linking, and correcting #6/#7 where they say there
-  is no remove API.
+  these together or cross-linking.
 - Not tested on Windows. The Windows registry proxy behaviour and the
   platform-verifier failure mode are inferred from source.

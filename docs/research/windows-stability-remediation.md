@@ -24,7 +24,7 @@ I have no Windows machine here. Everything below comes from reading source in `~
 | `HttpConfig` exposes only `header`, `body`, `body_bytes` | `http.rs:5-38` | There is **no** way to set timeouts, TLS roots, or a proxy per request. |
 | Same-id re-fire is a silent no-op while an entry exists | `mod.rs:91` ("Idempotent") | A stored `Err` or `Done` blocks every retry with that id (the C2 root cause). |
 | `Pending` entries are never evicted | `mod.rs:59` (`HttpRequestState::Pending(_) => true`) | A hung request stays forever. |
-| `Done` and `Error` entries are evicted after 60 frames **without access**; `net::request(id)` and `Request::response()` reset the counter | `mod.rs:60-63`, `http.rs:67` | Polling every frame keeps an entry alive indefinitely. Not polling for 60 frames loses the response silently. |
+| `Done` and `Error` entries are evicted after 60 frames **without access**; `net::request(id)` and `Request::response()` reset the counter | `mod.rs:60-63`, `http.rs:88` | Polling every frame keeps an entry alive indefinitely. Not polling for 60 frames loses the response silently. |
 | **`Request::cancel(self)` removes the entry** | `http.rs:115-118` | This is the missing piece for C2. It makes the id reusable. It does **not** stop the thread; the result goes to a dropped channel. |
 | `net::request(id)` returns `None` when no entry exists | `mod.rs:238-244` | It doubles as an "is anything tracked for this id" check. |
 
@@ -36,7 +36,7 @@ I have no Windows machine here. Everything below comes from reading source in `~
 - `TlsConfig::default()` sets `root_certs: RootCerts::WebPki`. Enabling the `platform-verifier` feature only makes `RootCerts::PlatformVerifier` *available*; it does **not** change the default. Enabling the feature alone fixes nothing.
 - Feature `win-system-proxy = ["dep:winreg"]` is wired into `Proxy::try_from_env()` (`proxy.rs:241-265`). Enabling it from outside *does* change behaviour, because it is a compile-time `cfg` inside the default path.
   - Limit: it reads only `HKCU\...\Internet Settings\ProxyServer` and wraps the value as `http://{value}`. The per-protocol form (`http=a:80;https=b:443`) and PAC/`AutoConfigURL` are not handled. **[verify on Windows]**
-- ureq changelog (docs of the `algesten/ureq` repo): 3.4.0 bumps rustls-platform-verifier to 0.7.0 and does TLS to the target through HTTPS CONNECT proxies; 3.4.1 fixes timeout budgets that restarted for later phases and makes `timeout_connect` cover the TLS handshake; 3.4.2 is current (crates.io, 2026-09-13). The lock has 3.3.0. ply's requirement is `ureq = "3"`, so `cargo update -p ureq` is allowed. Only `ply-engine` depends on ureq in our `Cargo.lock`.
+- ureq changelog (docs of the `algesten/ureq` repo): 3.4.0 bumps rustls-platform-verifier to 0.7.0 and does TLS to the target through HTTPS CONNECT proxies; 3.4.1 fixes timeout budgets that restarted for later phases and makes `timeout_connect` cover the TLS handshake; 3.4.2 was current on crates.io on 2026-09-13, and the local registry now also has 3.5.1 (3.4.3 is a TLS security-fix release, per the PR #26 review; its notes were not read here). The lock has 3.3.0. ply's requirement is `ureq = "3"`, so `cargo update -p ureq` is allowed. Only `ply-engine` depends on ureq in our `Cargo.lock`.
 
 ### reqwest is already in the build (this changes the options)
 
@@ -62,7 +62,7 @@ Caveats for option 2 (and for every `[patch]`): cargo ignores `[patch]` when pub
 1. **Now (no new dependencies, no patch):**
    - Use `cancel()` for C2 (pattern below).
    - Add `ureq = { version = "3", default-features = false, features = ["win-system-proxy"] }` to `app/Cargo.toml` so the registry proxy is honoured. Cargo feature unification merges it with ply's `rustls` feature.
-   - Run `cargo update -p ureq` to reach 3.4.2.
+   - Run `cargo update -p ureq` to reach 3.5.1 or a later 3.x release (3.4.2 was the minimum this research considered).
    - App-side deadlines: record `Instant` at fire, `cancel()` after about 30 s, back off.
 2. **End state:** replace `net::get` with a small `app/src/http.rs` on reqwest, because it fixes C2, C3, H1 and M13 in one place. Dependency line:
    ```toml
@@ -171,7 +171,7 @@ About 15 changed lines. Same `[patch]` caveat as in A: it is ignored by `cargo p
 ### Console subsystem, panic hook, log file (H8, M4, M17)
 
 1. `#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]` as the first line of `app/src/main.rs`. Debug builds keep the console. Note that `just run` uses `--release`, so on Windows its output goes to the log file, not the terminal. Update AGENTS.md's smoke test accordingly.
-2. **Redirect stderr to a file instead of rewriting 35 `eprintln!` calls.** std's Windows stderr calls `get_handle(STD_ERROR_HANDLE)` on every write (rustc 1.96.1 `sys/stdio/windows.rs:68`, `:457`), so a `SetStdHandle(STD_ERROR_HANDLE, file)` at startup captures all of them. Feature `Win32_System_Console` in windows-sys; pass `file.into_raw_handle()`. Keep the `File` alive for the process lifetime. **[verify on Windows]**
+2. **Redirect stderr to a file instead of rewriting the 51 `eprintln!` calls in `app/src`.** std's Windows stderr calls `get_handle(STD_ERROR_HANDLE)` on every write (rustc 1.96.1 `sys/stdio/windows.rs:68`, `:457`), so a `SetStdHandle(STD_ERROR_HANDLE, file)` at startup captures all of them. Feature `Win32_System_Console` in windows-sys; pass `file.into_raw_handle()`. Keep the `File` alive for the process lifetime. **[verify on Windows]**
 3. Panic hook, std only, installed as the first statement in `main()`:
    - Append `{timestamp, thread name, message, location, Backtrace::force_capture()}` to `%LOCALAPPDATA%\rustywx\crash.log`, then call the previous hook.
    - Optional `MessageBoxW` (`Win32_UI_WindowsAndMessaging`) so a startup failure (storage, WGL) is visible: "rustywx crashed; details in <path>".
@@ -182,7 +182,7 @@ Logging crates, if we later migrate `eprintln!` to `log`:
 
 | Crate | Version | Notes |
 |---|---|---|
-| `log` | 0.4.34 | Facade. Already in the lock. |
+| `log` | 0.4.x | Facade. Already in the lock (0.4.33), so any 0.4.x works. |
 | `fern` | 0.7.1 (2024-12) | Light. Sync file output; no rotation. Good fit with step 4 above. |
 | `flexi_logger` | 0.31.10 (2026-08) | Rotation, optional async writer. Heavier. |
 | `tracing` + `tracing-appender` | appender 0.2.5 | Non-blocking worker and rotation; also needs `tracing-subscriber`. Overkill here. |
@@ -322,7 +322,7 @@ OneDrive and other sync clients: Known Folder Move redirects Documents, Desktop 
 | Crate | Use | Why |
 |---|---|---|
 | `reqwest` | `0.13` (lock 0.13.4; latest 0.13.5), `default-features = false`, features `rustls`, `system-proxy`, `gzip` | App-owned HTTP: platform verifier, system proxy, real timeouts |
-| `ureq` | `3` (lock 3.3.0 → update to 3.4.2); direct dep with `win-system-proxy` (stopgap only) | Timeout and TLS-handshake fixes; registry proxy |
+| `ureq` | `3` (lock 3.3.0 → update to 3.5.1 or later 3.x); direct dep with `win-system-proxy` (stopgap only) | Timeout and TLS-handshake fixes; registry proxy |
 | `embed-manifest` | `1.5` (1.5.1) build-dep | PerMonitorV2/System DPI, long paths, UTF-8 |
 | `winresource` | `0.1.31` build-dep | Exe icon and VERSIONINFO (not `winres` 0.1.12, abandoned) |
 | `windows-sys` | `0.61` (0.61.2 already in lock); features `Win32_UI_HiDpi`, `Win32_UI_WindowsAndMessaging`, `Win32_System_Console`, `Win32_UI_Shell` | DPI sizing, MessageBox, SetStdHandle, drop-files |
@@ -352,5 +352,5 @@ OneDrive and other sync clients: Known Folder Move redirects Documents, Desktop 
 - Rust std (1.96.1) `sys/fs/windows.rs`, `sys/stdio/windows.rs`, `fs.rs` (file locks); https://docs.rs/tempfile/3.27.0/tempfile/struct.NamedTempFile.html ; https://docs.rs/atomic-write-file/0.3.1/atomic_write_file/
 - Signing: https://learn.microsoft.com/azure/artifact-signing/quickstart ; https://signpath.org/ ; https://about.signpath.io/product/open-source
 - just settings: https://just.systems/man/en/settings.html
-- crates.io API (versions and dates as of 2026-10-09).
+- crates.io API (versions and dates as of 2026-10-09). Re-check these versions and dates before implementing; some have moved since (ureq is at 3.5.1 in the local registry, and the lock has `log` 0.4.33, not 0.4.34).
 - Local measurements: `~/Library/Application Support/rustywx/scan_KJGX`; `app/src/cache.rs`; `app/src/rle.rs`; `.github/workflows/{ci,release-please}.yml`.
