@@ -88,7 +88,7 @@ jobs:
           # unmaintained, transitive via ply-engine -> accesskit_unix -> zbus
           # (Linux AT-SPI accessibility backend). See deny.toml for the full
           # rationale; kept in sync with it here.
-          ignore: RUSTSEC-2026-0192,RUSTSEC-2026-0370,RUSTSEC-2026-0371,RUSTSEC-2026-0372
+          ignore: RUSTSEC-2026-0192,RUSTSEC-2026-0370,RUSTSEC-2026-0371,RUSTSEC-2026-0372,RUSTSEC-2026-0543
 
   # ── License + advisory + source check (cargo-deny) ─────────
   deny:

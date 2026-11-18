@@ -25,6 +25,11 @@ ignore = [
     "RUSTSEC-2026-0370",
     "RUSTSEC-2026-0371",
     "RUSTSEC-2026-0372",
+    # chrono is flagged unmaintained, all versions affected, no safe upgrade.
+    # It is a direct dependency and also pulled in by nexrad-data and
+    # nexrad-decode, so it cannot be swapped out quickly. Migrating to jiff
+    # or time is tracked separately; revisit when the nexrad crates move.
+    "RUSTSEC-2026-0543",
 ]
 
 [licenses]
