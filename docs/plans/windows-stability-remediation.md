@@ -63,7 +63,7 @@ Each of these is pinned by a test in the task named.
 
 | PR | Branch | Contents | Review ids | Prerequisite |
 |---|---|---|---|---|
-| **0** | `ci/windows-gate` | Task 24 Steps 1–3 only: tokio `rt-multi-thread` feature, `deny.toml` targets, and the `windows-latest` check/test/release-build job (no launch check yet) | H7 (build and test half), L8, L9 | none |
+| **0** | `ci/windows-gate` | Task 24 Steps 1–3 only: tokio `rt-multi-thread` feature, `deny.toml` targets, and the `windows-latest` check/test/release-build job (no launch check yet; may include small Windows-only test fixes) | H7 (build and test half), L8, L9 | none |
 | **1a** | `fix/cache-durability` | Tasks 1–6: atomic writes, bounded decode, compressed scan cache with LRU in the OS cache dir, saves off the UI thread, cache/live race, single settings writer | C1, M16 (partial), M1, M3, L10, L21 | none |
 | **1b** | `fix/net-recovery` | Tasks 7–14: shared `NetPort`, `Feed` retry/deadline/toast-once, alerts, borders (H6), forecast/geocoder, NHC (C2, C3, M22), ureq `win-system-proxy` | C2, C3 (ply feeds), H6, M22, M23 (part), H1 (stopgap) | **`feat/spaghetti-models` merged** (reuses its `NetPort`, `PlyNet`, `parse_queue_has_capacity`) |
 | **2** | `fix/windows-crash-proofing` | Tasks 15–18: vendored miniquad patch (wheel, drop-file, DPI assert), `--version` and explicit `main`, `windows_subsystem` + panic hook + log file, byte-slice panics | H2, H9, H8, M21, M4 (visibility) | **PR 0 merged**, so the `cfg(windows)` code is compiled before it ships (merges cleanly after 1a/1b) |
@@ -2528,7 +2528,7 @@ The forecast JSON is a few KB, so parsing it here on the UI thread stays as it w
                     state.fc_geo_query = Some((q, get_time()));
 ```
 
-Replace the `// Poll geocode results.` block with:
+Replace the `// Poll geocode results.` block with the following. The timeout arm shows a toast through the existing `state.toast` (the same `Toast::new(message, now)` that `show_toast` uses), because `ErrorKind::Network`'s "retrying…" text would be wrong for a search that has stopped:
 
 ```rust
         // Poll by the submitted query, not the live box text (M23).
@@ -2547,6 +2547,11 @@ Replace the `// Poll geocode results.` block with:
                     forecast::cancel_geo(&q);
                     state.fc_geo_hits = Vec::new();
                     state.fc_geo_query = None;
+                    // Say so, instead of silently showing no results.
+                    state.toast = Some(toast_widget::Toast::new(
+                        "Location search timed out. Try again.",
+                        get_time(),
+                    ));
                 }
                 None => {}
             }
@@ -2558,7 +2563,7 @@ Replace the `// Poll geocode results.` block with:
 2. Search "Atlanta", then edit the box before the results land. The results still arrive.
 3. Searching "Atlanta" twice in a row works both times.
 4. Press Enter on one query, then on a different one before the first returns. Only the second's results show, and the first entry is cancelled.
-5. With the network blocked after pressing Enter, the search gives up after about 20 s and the box accepts a new search.
+5. With the network blocked after pressing Enter, the search gives up after about 20 s, a "Location search timed out. Try again." toast appears, and the box accepts a new search.
 
 - [ ] **Step 6: Commit.** `git commit -am "fix(forecast): retry failed forecasts, refresh every 30 min, unstick geocoder"`
 
@@ -2892,16 +2897,13 @@ Paste the bodies of the existing `Metadata` and `Complete` arms in place of the 
 
 - [ ] **Step 3: accept_metadata.** In the `Ok(ParsedData::NhcMetadata(metadata))` arm, add the arguments `now, &mut ply_net` to `state.nhc_fetch.accept_metadata(...)`.
 
-- [ ] **Step 4: Generic `Err` arm.** Tasks 9 and 10 removed the alerts and borders terms from the generic `Err(error)` arm of `// ── Apply completed background parses`. Remove the NHC term too, so the arm is no longer a second toast source for NHC metadata parse failures:
+- [ ] **Step 4: Generic `Err` arm.** Tasks 9 and 10 removed the alerts and borders terms from the generic `Err(error)` arm of the `// ── Apply completed background parses` block. That block is edited by Tasks 9, 10 and 13, so find the arm by its position: it is the last arm of the `match` on the parse result, right after `Ok(_) => eprintln!("startup phase=parse_drop ...` (the arm that begins `Err(error) => {` and computes `current`). Remove the NHC term too, so the arm is no longer a second toast source for NHC metadata parse failures. With the alerts and borders terms already gone, `current` and the generation check are the same condition, so the arm becomes one branch:
 
 ```rust
                 Err(error) => {
-                    let current = nhc_parse_generation == Some(parsed.generation);
                     if nhc_parse_generation == Some(parsed.generation) {
                         nhc_parse_generation = None;
                         state.nhc_fetch.reject_metadata(error.clone());
-                    }
-                    if current {
                         // Log only. `reject_metadata` makes `nhc_fetch.poll` return
                         // `Err`, and that path toasts once per streak through
                         // `nhc_retry.failed` (Step 2).
@@ -4262,7 +4264,7 @@ Tasks 25 and 26 change the Windows link and are only provable on Windows. The CI
 
 ### Task 24: `windows-latest` CI job, `deny.toml` targets, explicit tokio runtime, Justfile on Windows
 
-Steps 1–3 are **PR 0** and land before Phase 2, so Windows-only code is compiled in CI from the start. Leave the "Launch check (--version)" step out of Step 3 until Task 16 has merged; add it in Phase 4 with Steps 4–6.
+Steps 1–3 are **PR 0** and land before Phase 2, so Windows-only code is compiled in CI from the start. The `--version` launch check is not part of Step 3; it is Step 6a, added in Phase 4 once Task 16 has merged.
 
 **Files:**
 - Modify: `.github/workflows/ci.yml`
@@ -4286,7 +4288,7 @@ targets = [
 
 Run `cargo deny check`. Fix any new license or advisory findings for Windows-only crates by adding them to the existing `[licenses]`/`[advisories]` sections with a comment; don't loosen the global policy.
 
-- [ ] **Step 3: H7, the CI job.** Append to `.github/workflows/ci.yml` under `jobs:`, reusing the SHA pins the file already uses:
+- [ ] **Step 3: H7, the CI job.** PR 0 may start red: nothing has run this suite on Windows yet, and the review flagged `APPDATA` and `PathBuf` handling in the tests as untested there. If `cargo test` fails for a Windows-only reason, fix the test in PR 0 (a small `fix(test):` commit, or `#[cfg_attr(windows, ignore = "reason")]` with a note for anything bigger). That's a smaller edit than gating the job on `--no-run`, which would hide real failures. Append to `.github/workflows/ci.yml` under `jobs:`, reusing the SHA pins the file already uses:
 
 ```yaml
   # ── Windows: build, test, and a launch check (review H7) ──────
@@ -4306,19 +4308,6 @@ Run `cargo deny check`. Fix any new license or advisory findings for Windows-onl
       - run: cargo check --all-targets --all-features --locked
       - run: cargo test --all-features --locked
       - run: cargo build --release --locked -p rustywx
-      # The hosted runner has no GPU/OpenGL, so never launch the GUI here.
-      # `--version` exits before window creation and still proves the exe
-      # loads (static CRT, manifest, resources). Piping makes pwsh wait for
-      # the GUI-subsystem exe and captures its stdout.
-      - name: Launch check (--version)
-        shell: pwsh
-        run: |
-          $out = & ./target/release/rustywx.exe --version | Out-String
-          if ($LASTEXITCODE -ne 0 -or $out -notmatch 'rustywx \d') {
-            Write-Error "rustywx.exe --version failed (exit $LASTEXITCODE): $out"
-            exit 1
-          }
-          Write-Output $out
 ```
 
 - [ ] **Step 4: L7, the Justfile.** Add near the top of `Justfile`:
@@ -4356,9 +4345,31 @@ stdout/stderr go to `%LOCALAPPDATA%\rustywx\app.log`, and a panic writes
 `%LOCALAPPDATA%\rustywx\crash.log` and shows a message box.
 ```
 
-- [ ] **Step 6: Verify and commit.** Push the branch. The `windows` job, including the launch check, must be green before Tasks 25–26 land.
+- [ ] **Step 6: Verify and commit.** Push the branch. The `windows` job from PR 0 must stay green.
 
-`git commit -am "ci: build, test, and launch-check on windows-latest"`
+`git commit -am "ci: run just on Windows and add a cross-platform smoke recipe"`
+
+- [ ] **Step 6a: Launch check.** Do this only once Task 16 (`--version`) has merged; before that, `--version` doesn't exit early and this step would hang or fail. Append to the `windows` job in `.github/workflows/ci.yml`, after the release build step:
+
+```yaml
+      # The hosted runner has no GPU/OpenGL, so never launch the GUI here.
+      # `--version` exits before window creation and still proves the exe
+      # loads (static CRT, manifest, resources). Piping makes pwsh wait for
+      # the GUI-subsystem exe and captures its stdout.
+      - name: Launch check (--version)
+        shell: pwsh
+        run: |
+          $out = & ./target/release/rustywx.exe --version | Out-String
+          if ($LASTEXITCODE -ne 0 -or $out -notmatch 'rustywx \d') {
+            Write-Error "rustywx.exe --version failed (exit $LASTEXITCODE): $out"
+            exit 1
+          }
+          Write-Output $out
+```
+
+Push the branch. The `windows` job, including the launch check, must be green before Tasks 25–26 land.
+
+`git commit -am "ci: launch-check the Windows exe with --version"`
 
 ---
 
