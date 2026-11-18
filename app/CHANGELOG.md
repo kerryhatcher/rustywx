@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.0](https://github.com/kerryhatcher/rustywx/compare/v0.10.2...v0.11.0) (2026-11-18)
+
+
+### Features
+
+* make first-load processing non-blocking ([081df73](https://github.com/kerryhatcher/rustywx/commit/081df73251798defeeabdb35c63ddec70988b854))
+* **tropical:** spaghetti model guidance overlay ([#25](https://github.com/kerryhatcher/rustywx/issues/25)) ([2519787](https://github.com/kerryhatcher/rustywx/commit/2519787c65f306d0d6002a5b491f4cb015b4129c))
+
 ## [0.10.2](https://github.com/kerryhatcher/rustywx/compare/v0.10.1...v0.10.2) (2026-08-21)
 
 
