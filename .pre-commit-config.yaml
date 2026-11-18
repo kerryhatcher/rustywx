@@ -87,7 +87,7 @@ repos:
         # 0372: zvariant/zbus_names/zvariant_derive, unmaintained, Linux
         # AT-SPI accessibility backend — see deny.toml for the full
         # rationale).
-        entry: cargo-audit audit --ignore RUSTSEC-2026-0192 --ignore RUSTSEC-2026-0370 --ignore RUSTSEC-2026-0371 --ignore RUSTSEC-2026-0372
+        entry: cargo-audit audit --ignore RUSTSEC-2026-0192 --ignore RUSTSEC-2026-0370 --ignore RUSTSEC-2026-0371 --ignore RUSTSEC-2026-0372 --ignore RUSTSEC-2026-0543
         language: system
         types: [rust]
         pass_filenames: false

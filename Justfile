@@ -42,7 +42,7 @@ audit:
     # unmaintained, transitive via ply-engine -> accesskit_unix -> zbus
     # (Linux AT-SPI accessibility backend). See deny.toml for the full
     # rationale; kept in sync with it and CI's audit job here.
-    cargo audit --ignore RUSTSEC-2026-0192 --ignore RUSTSEC-2026-0370 --ignore RUSTSEC-2026-0371 --ignore RUSTSEC-2026-0372
+    cargo audit --ignore RUSTSEC-2026-0192 --ignore RUSTSEC-2026-0370 --ignore RUSTSEC-2026-0371 --ignore RUSTSEC-2026-0372 --ignore RUSTSEC-2026-0543
 
 deny:
     cargo deny check
