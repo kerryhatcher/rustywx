@@ -242,6 +242,12 @@ pub struct Settings {
     /// honest rendering by default.
     #[serde(default)]
     pub melting_layer_hint_enabled: bool,
+    /// Whether the spaghetti-models overlay (ATCF model-guidance tracks,
+    /// legend, intensity chart) is on. Default OFF: it is unofficial
+    /// guidance and costs one extra download per active storm. Nothing is
+    /// fetched while off (see `docs/plans/spaghetti-models-overlay.md`).
+    #[serde(default)]
+    pub show_model_tracks: bool,
 }
 
 impl Default for Settings {
@@ -280,6 +286,7 @@ impl Default for Settings {
             multi_scale_texture_enabled: false,
             sun_spike_removal_enabled: false,
             melting_layer_hint_enabled: false,
+            show_model_tracks: false,
         }
     }
 }
@@ -317,6 +324,7 @@ mod tests {
         assert!(!settings.multi_scale_texture_enabled);
         assert!(!settings.sun_spike_removal_enabled);
         assert!(!settings.melting_layer_hint_enabled);
+        assert!(!settings.show_model_tracks);
     }
 
     #[test]
@@ -355,6 +363,7 @@ mod tests {
             multi_scale_texture_enabled: true,
             sun_spike_removal_enabled: true,
             melting_layer_hint_enabled: true,
+            show_model_tracks: true,
         };
         let json = serde_json::to_string(&settings).expect("serialize");
         let restored: Settings = serde_json::from_str(&json).expect("deserialize");
@@ -421,5 +430,7 @@ mod tests {
         assert!(!s.sun_spike_removal_enabled);
         // Missing melting-layer field defaults off (honest rendering by default).
         assert!(!s.melting_layer_hint_enabled);
+        // Missing spaghetti-models field defaults off (opt-in overlay).
+        assert!(!s.show_model_tracks);
     }
 }

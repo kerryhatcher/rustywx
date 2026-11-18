@@ -74,7 +74,7 @@ pub async fn fetch_latest_scan(
 
     let timestamp = identifier
         .date_time()
-        .ok_or_else(|| anyhow!("unparseable volume name: {}", identifier.name()))?;
+        .ok_or_else(|| anyhow!("unparsable volume name: {}", identifier.name()))?;
 
     if last_seen == Some(timestamp) {
         return Ok(None);
@@ -336,7 +336,7 @@ mod tests {
         let req = crate::demo::DemoRequest::File(path.clone());
         let err = match rt.block_on(fetch_demo_scan(&req, None)) {
             Err(e) => e,
-            Ok(_) => panic!("expected an error for an unparseable volume name"),
+            Ok(_) => panic!("expected an error for an unparsable volume name"),
         };
         assert!(err.to_string().contains("timestamp"), "got: {err:#}");
         let _ = std::fs::remove_file(&path);
